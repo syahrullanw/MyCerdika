@@ -3418,11 +3418,14 @@ button, .form-select, input, textarea, [data-testid$="card"] {
     font-size: 0.8rem;
   }
 
-  [data-testid="admin-topbar"] > div:first-child {
-    display: grid !important;
-    grid-template-columns: minmax(0, 1fr);
-    gap: 10px !important;
-    align-items: start !important;
+  [data-testid="admin-topbar"] > div:first-child,
+  [data-testid="student-topbar"] > div:first-child {
+    display: flex !important;
+    flex-direction: row !important;
+    align-items: center !important;
+    justify-content: space-between !important;
+    width: 100% !important;
+    gap: 8px !important;
   }
 
   [data-testid="admin-role-label"] {
@@ -3433,17 +3436,22 @@ button, .form-select, input, textarea, [data-testid$="card"] {
 
   [data-testid="admin-page-title"] {
     max-width: 100%;
-    font-size: 1.45rem !important;
+    font-size: 1.35rem !important;
     line-height: 1.12 !important;
     letter-spacing: 0 !important;
-    word-break: break-word;
+    word-break: normal !important;
+    white-space: nowrap !important;
+    overflow: hidden !important;
+    text-overflow: ellipsis !important;
   }
 
-  [data-testid="admin-topbar"] > div:first-child > div:last-child {
-    display: grid !important;
-    width: 100%;
-    grid-template-columns: 42px minmax(0, 1fr) 78px 78px;
-    gap: 6px !important;
+  [data-testid="admin-topbar"] > div:first-child > div:last-child,
+  [data-testid="student-topbar"] > div:first-child > div:last-child {
+    display: flex !important;
+    flex-direction: row !important;
+    align-items: center !important;
+    width: auto !important;
+    gap: 8px !important;
   }
 
   [data-testid="admin-user-badge"] {
@@ -5372,18 +5380,6 @@ button, .form-select, input, textarea, [data-testid$="card"] {
 }
 
 @media (max-width: 380px) {
-  [data-testid="admin-topbar"] > div:first-child > div:last-child {
-    grid-template-columns: 42px 1fr 1fr;
-  }
-
-  [data-testid="admin-profile-button"] {
-    grid-column: 2;
-  }
-
-  [data-testid="admin-logout-button"] {
-    grid-column: 2 / -1;
-  }
-
   [data-testid="student-topbar"] .notification-center-panel {
     position: fixed;
     top: calc(env(safe-area-inset-top, 0px) + 112px);

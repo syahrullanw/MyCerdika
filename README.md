@@ -10,6 +10,7 @@ Versi aplikasi saat ini dapat dilihat pada file [`VERSION`](./VERSION) atau endp
 
 - [`CHANGELOG.md`](./CHANGELOG.md) — histori fitur, perbaikan, migration, dan release.
 - [`PANDUAN_LMS.md`](./PANDUAN_LMS.md) — alur operasional admin, dosen, mahasiswa, dan akhir semester.
+- [`PANDUAN_SINKRONISASI_FEEDER.md`](./PANDUAN_SINKRONISASI_FEEDER.md) — migrasi OLD-SIAKAD, audit tiga arah, persetujuan, dan sinkronisasi aman ke Feeder.
 - [`VERSIONING.md`](./VERSIONING.md) — aturan SemVer, metadata deployment, dan rollback.
 - [`BACKUP_GITHUB.md`](./BACKUP_GITHUB.md) — prosedur backup, push, tag, dan update server.
 - [`CONTRIBUTING.md`](./CONTRIBUTING.md) — aturan branch, commit, Pull Request, dan release.

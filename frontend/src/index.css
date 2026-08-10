@@ -112,3 +112,86 @@ code {
         border-bottom-color: inherit;
     }
 }
+
+/* SSO-SCI Interactive Futuristic Theme Background */
+.sci-landing-bg {
+  position: relative;
+  min-height: 100vh;
+  overflow-x: hidden;
+  background:
+    radial-gradient(circle at 20% 18%, rgba(19, 140, 255, .31), transparent 31%),
+    radial-gradient(circle at 56% 86%, rgba(29, 211, 255, .17), transparent 31%),
+    linear-gradient(128deg, #020d22 0%, #051a3d 42%, #063577 100%);
+  isolation: isolate;
+}
+
+.sci-landing-bg::before {
+  position: fixed;
+  inset: 0;
+  z-index: -2;
+  pointer-events: none;
+  content: "";
+  background:
+    linear-gradient(90deg, rgba(2, 13, 34, .08), rgba(0, 21, 60, .25) 48%, rgba(1, 13, 35, .42)),
+    radial-gradient(ellipse at 32% 54%, rgba(43, 212, 255, .08), transparent 38%);
+  animation: sci-ambient-light 9s ease-in-out infinite alternate;
+}
+
+.sci-landing-bg::after {
+  position: fixed;
+  inset: 0;
+  z-index: 0;
+  pointer-events: none;
+  content: "";
+  background:
+    linear-gradient(90deg, transparent 0 57%, rgba(1, 11, 29, .2) 72%, rgba(1, 8, 24, .4) 100%),
+    radial-gradient(circle at center, transparent 46%, rgba(0, 7, 24, .35) 100%);
+}
+
+.sci-data-canvas {
+  position: fixed;
+  inset: 0;
+  z-index: -1;
+  width: 100vw;
+  height: 100vh;
+  pointer-events: none;
+  opacity: .92;
+}
+
+.sci-cursor-glow {
+  position: fixed;
+  z-index: 2;
+  top: 0;
+  left: 0;
+  width: 92px;
+  height: 92px;
+  pointer-events: none;
+  border: 1px solid rgba(123, 226, 255, .24);
+  border-radius: 999px;
+  opacity: .72;
+  background: radial-gradient(circle, rgba(158, 240, 255, .17), rgba(42, 192, 255, .05) 38%, transparent 72%);
+  box-shadow: 0 0 34px rgba(42, 192, 255, .14), inset 0 0 24px rgba(140, 233, 255, .08);
+  transform: translate3d(calc(29vw - 46px), calc(55vh - 46px), 0);
+  transition: opacity .2s ease;
+  animation: sci-pointer-pulse 2.4s ease-in-out infinite;
+  will-change: transform, opacity;
+}
+
+@keyframes sci-ambient-light {
+  0% { opacity: .72; }
+  100% { opacity: 1; }
+}
+
+@keyframes sci-pointer-pulse {
+  0%, 100% { opacity: .52; scale: .94; }
+  50% { opacity: .82; scale: 1.06; }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .sci-landing-bg::before {
+    animation: none;
+  }
+  .sci-cursor-glow {
+    display: none;
+  }
+}

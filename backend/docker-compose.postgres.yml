@@ -6,7 +6,7 @@ services:
       POSTGRES_USER: nugaslagi
       POSTGRES_PASSWORD: nugaslagi
     ports:
-      - "5432:5432"
+      - "5434:5432"
     volumes:
       - nugaslagi_postgres_data:/var/lib/postgresql/data
     healthcheck:

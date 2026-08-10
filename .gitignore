@@ -1,10 +1,13 @@
 .env
 .env.*
 !.env.example
+!frontend/.env.example
 !frontend/.env.production
+!frontend-pmb/.env.example
 __pycache__/
 *.pyc
 node_modules/
+frontend-pmb/node_modules
 .venv/
 venv/
 *.egg-info/
@@ -20,5 +23,10 @@ backend/.drive_config.key
 credentials*.json
 *.dump
 *.backup
+*.sql
 *.sql.gz
 backups/
+dump_feeder/
+db siakad old siap*.json
+.pytest_cache/
+build/

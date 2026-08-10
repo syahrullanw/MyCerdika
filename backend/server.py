@@ -39,6 +39,8 @@ from google.oauth2 import service_account
 from googleapiclient.discovery import build
 from googleapiclient.http import MediaFileUpload, MediaIoBaseDownload, MediaIoBaseUpload
 from openpyxl import Workbook, load_workbook
+from openpyxl.styles import Alignment, Border, Font, PatternFill, Side
+import segno
 from pydantic import BaseModel, EmailStr, Field
 from starlette.background import BackgroundTask
 from starlette.middleware.cors import CORSMiddleware
@@ -89,8 +91,31 @@ load_dotenv(ROOT_DIR / ".env")
 
 db = PostgresDatabase(os.environ["DATABASE_URL"])
 
-app = FastAPI(title="E-Learning Dosen API")
+app = FastAPI(title="SIAKAD & E-Learning Dosen API")
 api_router = APIRouter(prefix="/api")
+
+from routers.akademik import router as akademik_router
+from routers.krs_khs import router as krs_khs_router
+from routers.keuangan import router as keuangan_router
+from routers.master_data import router as master_data_router
+from routers.master_data import _active_pejabat
+from routers.kurikulum import router as kurikulum_router
+from routers.feeder import router as feeder_router
+from routers.user_access import router as user_access_router
+from routers.sk_mengajar import router as sk_mengajar_router
+from routers.sk_jabatan import router as sk_jabatan_router
+from routers.pmb import router as pmb_router
+
+app.include_router(akademik_router)
+app.include_router(krs_khs_router)
+app.include_router(keuangan_router)
+app.include_router(master_data_router)
+app.include_router(kurikulum_router)
+app.include_router(feeder_router)
+app.include_router(user_access_router)
+app.include_router(sk_mengajar_router)
+app.include_router(sk_jabatan_router)
+app.include_router(pmb_router)
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s - %(name)s - %(levelname)s - %(message)s")
 logger = logging.getLogger(__name__)
@@ -897,6 +922,44 @@ def default_whatsapp_settings() -> Dict[str, Any]:
     }
 
 
+DEFAULT_INTEGRATION_SETTINGS: Dict[str, Any] = {
+    "sekolah": {
+        "label": "API Data Sekolah Indonesia",
+        "provider": "apiindonesia.id",
+        "enabled": False,
+        "base_url": "https://use.apiindonesia.id",
+        "api_key": "",
+    },
+}
+
+
+async def get_integration_settings(mask: bool = True) -> Dict[str, Any]:
+    """Mengambil konfigurasi seluruh integrasi sistem (sekolah, dan integrasi lain ke depan).
+
+    Disimpan di koleksi `integration_settings` dengan struktur:
+    {"id": "main", "integrations": {"<nama>": {config...}}}
+    """
+    cached = _get_cached_settings("integration_settings")
+    if cached is None:
+        doc = await db.integration_settings.find_one({"id": "main"}, {"_id": 0})
+        stored = (doc or {}).get("integrations", {})
+        merged: Dict[str, Any] = {}
+        for name, default in DEFAULT_INTEGRATION_SETTINGS.items():
+            current = stored.get(name, {})
+            if not isinstance(current, dict):
+                current = {}
+            merged[name] = {**default, **{k: v for k, v in current.items() if v is not None}}
+        cached = {"id": "main", "integrations": merged}
+        _set_cached_settings("integration_settings", cached)
+    result = json.loads(json.dumps(cached))
+    if mask:
+        for cfg in result.get("integrations", {}).values():
+            if isinstance(cfg, dict) and cfg.get("api_key"):
+                cfg["api_key_masked"] = mask_secret(cfg["api_key"])
+                cfg.pop("api_key", None)
+    return result
+
+
 def default_email_settings() -> Dict[str, Any]:
     return {
         "id": "main",
@@ -968,15 +1031,31 @@ async def send_email_message(to_email: str, subject: str, html_body: str) -> Dic
 def default_app_settings() -> Dict[str, Any]:
     return {
         "id": "main",
-        "app_name": "E-Learning Dosen",
-        "campus_name": "Kampus Demo",
-        "campus_address": "Alamat kampus",
+        "app_name": "SIAKAD ONE",
+        "campus_name": "POLITEKNIK SCI",
+        "campus_code": "POLTEK-SCI",
+        "institution_type": "Politeknik",
+        "accreditation": "Unggul",
+        "accreditation_sk": "SK BAN-PT No. 1024/SK/BAN-PT/Akred/PT/2024",
+        "campus_motto": "Unggul, Berkarakter, Berbasis Industri & Teknologi",
+        "campus_phone": "(021) 789-0123",
+        "campus_whatsapp": "0812-3456-7890",
+        "campus_email": "info@politekniksci.ac.id",
+        "campus_website": "https://politekniksci.ac.id",
+        "campus_address": "Jl. Pendidikan Raya No. 45, Kompleks Akademik SCI, Jakarta",
         "program_name": "Program Studi",
-        "lecturer_name": "Dosen Admin",
-        "lecturer_email": "dosen@demo.id",
+        "lecturer_name": "Syahrul Anwar, M.Kom",
+        "lecturer_email": "syahrul@politekniksci.ac.id",
         "campus_logo_url": "",
+        "rector_name": "Prof. Dr. Ir. H. Ahmad Dahlan, M.T.",
+        "rector_nidn": "0012056801",
+        "vice_rector_1": "Dr. Eng. Rina Wati, M.Eng.",
+        "head_of_baak": "Drs. Budi Santoso, M.Si.",
+        "head_of_lppm": "Dr. Ir. Hendra Wijaya, M.T.",
+        "kop_letterhead": "KEMENTERIAN PENDIDIKAN, KEBUDAYAAN, RISET, DAN TEKNOLOGI\nPOLITEKNIK SCI JAKARTA",
         "active_academic_year": "2025/2026",
-        "active_semester": "Ganjil",
+        "active_semester": "Genap",
+        "min_attendance_percentage": 75,
     }
 
 
@@ -1572,25 +1651,54 @@ def is_campus_admin(user: Dict[str, Any]) -> bool:
 async def lecturer_class_ids(user: Dict[str, Any], include_deleted: bool = False) -> List[str]:
     if user.get("role") == "student":
         return list(user.get("class_ids", []))
-    query: Dict[str, Any] = {}
-    if not include_deleted:
-        query["status"] = {"$ne": "deleted"}
-    if not is_campus_admin(user):
-        query["lecturer_id"] = user["id"]
-    docs = await db.classes.find(query, {"_id": 0, "id": 1}).to_list(5000)
-    return [item["id"] for item in docs]
+    if is_campus_admin(user):
+        query = {} if include_deleted else {"status": {"$ne": "deleted"}}
+        docs = await db.classes.find(query, {"_id": 0, "id": 1}).to_list(5000)
+        return [item["id"] for item in docs]
+
+    target_ids = list({user.get("id", ""), user.get("username", ""), user.get("nidn", ""), user.get("employee_id", "")} - {""})
+    class_ids = set()
+    for tid in target_ids:
+        docs = await db.classes.find({"lecturer_id": tid}, {"_id": 0, "id": 1, "status": 1}).to_list(5000)
+        for d in docs:
+            if include_deleted or d.get("status") != "deleted":
+                class_ids.add(d["id"])
+        docs_nidn = await db.classes.find({"lecturer_nidn": tid}, {"_id": 0, "id": 1, "status": 1}).to_list(5000)
+        for d in docs_nidn:
+            if include_deleted or d.get("status") != "deleted":
+                class_ids.add(d["id"])
+    return list(class_ids)
 
 
 async def require_class_access(class_id: str, user: Dict[str, Any], active_only: bool = False) -> Dict[str, Any]:
-    query: Dict[str, Any] = {"id": class_id}
-    query["status"] = "active" if active_only else {"$ne": "deleted"}
-    if user.get("role") == "lecturer":
-        query["lecturer_id"] = user["id"]
-    elif user.get("role") == "student":
-        query["id"] = {"$in": user.get("class_ids", [])}
-    class_doc = await db.classes.find_one(query, {"_id": 0})
+    class_doc = await db.classes.find_one({"id": class_id}, {"_id": 0})
     if not class_doc:
-        raise HTTPException(status_code=404, detail="Kelas tidak ditemukan atau bukan kelas yang Anda kelola")
+        raise HTTPException(status_code=404, detail="Kelas tidak ditemukan")
+    if class_doc.get("status") == "deleted":
+        raise HTTPException(status_code=404, detail="Kelas telah dihapus")
+    if active_only and class_doc.get("status") != "active":
+        raise HTTPException(status_code=409, detail="Kelas tidak aktif")
+
+    if is_campus_admin(user):
+        return class_doc
+
+    if user.get("role") == "lecturer":
+        target_ids = {user.get("id", ""), user.get("username", ""), user.get("nidn", ""), user.get("employee_id", "")} - {""}
+        c_lid = str(class_doc.get("lecturer_id") or "").strip()
+        c_nidn = str(class_doc.get("lecturer_nidn") or "").strip()
+        c_name = str(class_doc.get("lecturer_name") or "").strip().upper()
+        u_name = str(user.get("name") or "").strip().upper()
+        if c_lid in target_ids or c_nidn in target_ids or (u_name and u_name in c_name):
+            return class_doc
+        raise HTTPException(status_code=404, detail="Bukan kelas yang Anda kelola")
+
+    if user.get("role") == "student":
+        student_identifiers = {user.get("id", ""), user.get("username", ""), user.get("nim", "")} - {""}
+        enrolled_students = set(class_doc.get("student_ids", []))
+        if class_id in user.get("class_ids", []) or bool(student_identifiers & enrolled_students):
+            return class_doc
+        raise HTTPException(status_code=404, detail="Anda tidak terdaftar di kelas ini")
+
     return class_doc
 
 
@@ -1611,6 +1719,33 @@ async def require_course_access(course_id: str, user: Dict[str, Any]) -> Dict[st
 async def require_submission_access(submission_id: str, user: Dict[str, Any]) -> Dict[str, Any]:
     submission = await db.submissions.find_one({"id": submission_id}, {"_id": 0})
     if not submission:
+        if submission_id.startswith("draft_sub_"):
+            remainder = submission_id[len("draft_sub_"):]
+            rparts = remainder.rsplit("_", 1)
+            if len(rparts) == 2:
+                assignment_id, student_id = rparts[0], rparts[1]
+                assignment = await db.assignments.find_one({"id": assignment_id}, {"_id": 0})
+                student = await db.users.find_one({"$or": [{"id": student_id}, {"username": student_id}, {"nim": student_id}]}, {"_id": 0})
+                if assignment:
+                    class_id = assignment.get("class_id", "")
+                    await require_class_grading_access(class_id, user)
+                    student_name = student.get("name") if student else f"Mahasiswa ({student_id})"
+                    student_nim = student.get("nim") or student.get("username") if student else student_id
+                    doc = {
+                        "id": submission_id,
+                        "assignment_id": assignment_id,
+                        "assignment_title": assignment.get("title", "Tugas"),
+                        "student_id": student.get("id", student_id),
+                        "student_name": student_name,
+                        "student_nim": student_nim,
+                        "class_id": class_id,
+                        "status": "Dinilai",
+                        "review_status": "graded",
+                        "submitted_at": now_iso(),
+                        "created_at": now_iso(),
+                    }
+                    await db.submissions.insert_one(doc)
+                    return doc
         raise HTTPException(status_code=404, detail="Submission tidak ditemukan")
     await require_class_grading_access(submission.get("class_id", ""), user)
     return submission
@@ -1747,6 +1882,36 @@ class ProfileInput(BaseModel):
     username: str = Field(min_length=1)
     email: EmailStr
     whatsapp: str = ""
+    employee_id: Optional[str] = None
+    nip: Optional[str] = None
+    nidn: Optional[str] = None
+    nik: Optional[str] = None
+    gelar: Optional[str] = None
+    gelar_depan: Optional[str] = None
+    gelar_belakang: Optional[str] = None
+    prodi_id: Optional[str] = None
+    prodi_name: Optional[str] = None
+    prodi_kode: Optional[str] = None
+    homebase: Optional[str] = None
+    gender: Optional[str] = None
+    agama: Optional[str] = None
+    tempat_lahir: Optional[str] = None
+    tanggal_lahir: Optional[str] = None
+    alamat: Optional[str] = None
+    kota: Optional[str] = None
+    provinsi: Optional[str] = None
+    kode_pos: Optional[str] = None
+    spesialisasi: Optional[str] = None
+    jabatan: Optional[str] = None
+    status_kepegawaian: Optional[str] = None
+    nim: Optional[str] = None
+    angkatan: Optional[str] = None
+    academic_year: Optional[str] = None
+    semester: Optional[str] = None
+    parent_name: Optional[str] = None
+    parent_phone: Optional[str] = None
+    parent_job: Optional[str] = None
+    parent_address: Optional[str] = None
 
 
 class ResetPasswordOtpInput(BaseModel):
@@ -1799,28 +1964,73 @@ class StudentInput(BaseModel):
     name: str
     email: EmailStr
     whatsapp: str = ""
-    class_id: str
+    class_id: Optional[str] = ""
+    prodi_id: Optional[str] = None
+    angkatan: Optional[str] = "2024"
+    dosen_wali_id: Optional[str] = None
     status: str = "active"
     password: str = "Mahasiswa123!"
 
 
 class LecturerInput(BaseModel):
     employee_id: str = ""
+    nidn: str = ""
+    nik: str = ""
     username: str = Field(min_length=3)
     name: str = Field(min_length=1)
+    gelar: str = ""
+    gelar_depan: str = ""
+    gelar_belakang: str = ""
     email: EmailStr
     whatsapp: str = ""
     password: str = Field(default="Dosen123!", min_length=6)
     status: str = "active"
+    prodi_id: str = ""
+    homebase: str = ""
+    gender: str = ""
+    agama: str = ""
+    tempat_lahir: str = ""
+    tanggal_lahir: str = ""
+    alamat: str = ""
+    kota: str = ""
+    provinsi: str = ""
+    kode_pos: str = ""
+    jabatan_akademik: str = ""
+    keilmuan: str = ""
+    pendidikan_terakhir: str = ""
+    status_dosen: str = ""
+    tanggal_masuk: str = ""
+    foto_url: str = ""
 
 
 class LecturerUpdateInput(BaseModel):
     employee_id: str = ""
+    nidn: str = ""
+    nik: str = ""
     username: str = Field(min_length=3)
     name: str = Field(min_length=1)
+    gelar: str = ""
+    gelar_depan: str = ""
+    gelar_belakang: str = ""
     email: EmailStr
     whatsapp: str = ""
     status: str = "active"
+    prodi_id: str = ""
+    homebase: str = ""
+    gender: str = ""
+    agama: str = ""
+    tempat_lahir: str = ""
+    tanggal_lahir: str = ""
+    alamat: str = ""
+    kota: str = ""
+    provinsi: str = ""
+    kode_pos: str = ""
+    jabatan_akademik: str = ""
+    keilmuan: str = ""
+    pendidikan_terakhir: str = ""
+    status_dosen: str = ""
+    tanggal_masuk: str = ""
+    foto_url: str = ""
 
 
 class MaterialInput(BaseModel):
@@ -1834,6 +2044,7 @@ class MaterialInput(BaseModel):
     meeting_url: str = ""
     is_active: bool = True
     locked_until: str = ""
+    rps_meeting_number: Optional[int] = None
 
 
 class GoogleMeetInput(BaseModel):
@@ -1946,15 +2157,31 @@ class ResetPasswordInput(BaseModel):
 
 
 class AppSettingsInput(BaseModel):
-    app_name: str = "E-Learning Dosen"
+    app_name: str = "SIAKAD ONE"
     campus_name: str = ""
+    campus_code: Optional[str] = ""
+    institution_type: Optional[str] = "Politeknik"
+    accreditation: Optional[str] = "Unggul"
+    accreditation_sk: Optional[str] = ""
+    campus_motto: Optional[str] = ""
+    campus_phone: Optional[str] = ""
+    campus_whatsapp: Optional[str] = ""
+    campus_email: Optional[str] = ""
+    campus_website: Optional[str] = ""
     campus_address: str = ""
     program_name: str = ""
     lecturer_name: str = ""
     lecturer_email: str = ""
     campus_logo_url: str = ""
+    rector_name: Optional[str] = ""
+    rector_nidn: Optional[str] = ""
+    vice_rector_1: Optional[str] = ""
+    head_of_baak: Optional[str] = ""
+    head_of_lppm: Optional[str] = ""
+    kop_letterhead: Optional[str] = ""
     active_academic_year: str = ""
     active_semester: str = ""
+    min_attendance_percentage: Optional[int] = 75
 
 
 class GoogleDriveSettingsInput(BaseModel):
@@ -3500,14 +3727,32 @@ async def save_uploaded_file_record(
 
 async def enrich_class_payload(class_doc: Dict[str, Any]) -> Dict[str, Any]:
     course = await db.courses.find_one({"id": class_doc.get("course_id")}, {"_id": 0})
-    class_doc["course_name"] = course.get("name", class_doc.get("course_name", "")) if course else class_doc.get("course_name", "")
-    class_doc["program_id"] = course.get("program_id", class_doc.get("program_id", "")) if course else class_doc.get("program_id", "")
-    class_doc["program_name"] = course.get("program_name", class_doc.get("program_name", "")) if course else class_doc.get("program_name", "")
+    if course:
+        class_doc["course_code"] = course.get("code", class_doc.get("course_code", ""))
+        class_doc["course_name"] = course.get("name", class_doc.get("course_name", ""))
+        course_program_id = course.get("program_id") or course.get("prodi_id") or ""
+        class_doc["program_id"] = course_program_id or class_doc.get("program_id", "")
+        if course.get("program_name"):
+            class_doc["program_name"] = course.get("program_name")
+        elif course_program_id:
+            program = await db.programs.find_one({"id": course_program_id}, {"_id": 0, "nama": 1})
+            if program:
+                class_doc["program_name"] = program.get("nama", class_doc.get("program_name", ""))
+        class_doc["sks"] = course.get("sks", class_doc.get("sks", ""))
+        class_doc["semester_paket"] = course.get("semester_paket", course.get("semester", class_doc.get("semester_paket", "")))
     class_doc["student_count"] = len(class_doc.get("student_ids", []))
     class_doc["status_label"] = class_status_label(class_doc.get("status", CLASS_STATUS_ACTIVE))
     class_doc["read_only"] = class_is_read_only(class_doc)
     class_doc["allows_learning"] = class_allows_learning(class_doc)
     class_doc["allows_grading"] = class_allows_grading(class_doc)
+    try:
+        rps_complete, _ = await class_rps_complete(class_doc.get("id", ""))
+        class_doc["rps_complete"] = rps_complete
+        rps_doc = await db.rps.find_one({"class_id": class_doc.get("id")}, {"_id": 0, "id": 1})
+        class_doc["rps_exists"] = rps_doc is not None
+    except Exception:
+        class_doc["rps_complete"] = False
+        class_doc["rps_exists"] = False
     return class_doc
 
 
@@ -3561,8 +3806,14 @@ async def enrich_materials_batch(materials: List[Dict[str, Any]]) -> List[Dict[s
         course = courses_map.get(class_doc.get("course_id", ""))
         if course:
             class_doc["course_name"] = course.get("name", class_doc.get("course_name", ""))
-            class_doc["program_id"] = course.get("program_id", class_doc.get("program_id", ""))
-            class_doc["program_name"] = course.get("program_name", class_doc.get("program_name", ""))
+            course_program_id = course.get("program_id") or course.get("prodi_id") or ""
+            class_doc["program_id"] = course_program_id or class_doc.get("program_id", "")
+            if course.get("program_name"):
+                class_doc["program_name"] = course.get("program_name")
+            elif course_program_id:
+                program = await db.programs.find_one({"id": course_program_id}, {"_id": 0, "nama": 1})
+                if program:
+                    class_doc["program_name"] = program.get("nama", class_doc.get("program_name", ""))
         class_doc["student_count"] = len(class_doc.get("student_ids", []))
     linked_assignments = await db.assignments.find(
         {"material_id": {"$in": material_ids}},
@@ -3657,11 +3908,15 @@ async def sso_config():
     if settings["enabled"] and settings["redirect_uri"]:
         callback = urlsplit(settings["redirect_uri"])
         login_url = f"{callback.scheme}://{callback.netloc}/api/auth/sso/login"
+    local_enabled = bool(settings["local_login_enabled"])
+    # Jika SSO tidak aktif, login lokal wajib aktif agar form login selalu muncul
+    if not settings["enabled"]:
+        local_enabled = True
     return {
         "enabled": bool(settings["enabled"]),
         "provider": "SCI-ID",
         "login_url": login_url,
-        "local_login_enabled": bool(settings["local_login_enabled"]),
+        "local_login_enabled": local_enabled,
     }
 
 
@@ -3805,15 +4060,68 @@ async def sso_exchange(payload: SsoExchangeInput):
     return {"token": token, "user": public_doc(user)}
 
 
+async def try_camaba_login(identifier: str, password: str) -> Optional[Dict[str, Any]]:
+    """Login calon mahasiswa via nomor registrasi pada form login terpadu.
+
+    Hanya nomor registrasi yang diterima sebagai identitas camaba. Email/WhatsApp
+    camaba tidak dikenali untuk login — arahkan ke nomor registrasi. Akun yang
+    sudah di-convert ke mahasiswa wajib login memakai NIM/Email/WhatsApp.
+    """
+    reg_number = identifier.strip().upper()
+    applicant = await db.pmb_applicants.find_one(
+        {"registration_number": reg_number}, {"_id": 0}
+    )
+    if not applicant:
+        hint = await db.pmb_applicants.find_one(
+            {"$or": [{"email": identifier}, {"whatsapp": identifier.strip()}]},
+            {"_id": 0},
+        )
+        if hint and not hint.get("is_converted_to_student"):
+            raise HTTPException(
+                status_code=401,
+                detail="Calon mahasiswa login menggunakan Nomor Registrasi (contoh: PMB20260001). "
+                "Email/No WhatsApp baru berlaku setelah menjadi mahasiswa.",
+            )
+        return None
+    if applicant.get("is_converted_to_student"):
+        raise HTTPException(
+            status_code=403,
+            detail="Akun ini sudah menjadi mahasiswa. Silakan login menggunakan NIM, Email, atau WhatsApp.",
+        )
+    if not applicant.get("password_hash") or not verify_password(password, applicant["password_hash"]):
+        raise HTTPException(status_code=401, detail="Nomor Registrasi atau password salah")
+    token = new_id() + new_id()
+    await db.sessions.insert_one({
+        "token": token,
+        "user_id": applicant["id"],
+        "created_at": now_iso(),
+    })
+    await db.pmb_applicants.update_one(
+        {"id": applicant["id"]},
+        {"$set": {"last_login_at": now_iso()}},
+    )
+    camaba = public_doc(dict(applicant))
+    camaba["role"] = "camaba"
+    return {"token": token, "user": camaba}
+
+
 @api_router.post("/auth/login")
 async def login(payload: LoginInput):
-    if not oidc_settings()["local_login_enabled"]:
+    local_login_enabled = bool(oidc_settings()["local_login_enabled"])
+    if not oidc_settings()["enabled"]:
+        local_login_enabled = True
+    if not local_login_enabled:
         raise HTTPException(status_code=403, detail="Login lokal dinonaktifkan. Gunakan SCI-ID.")
     identifier = (payload.identifier or payload.email or "").strip().lower()
     if not identifier:
         raise HTTPException(status_code=400, detail="Username, NIM, nomor HP, atau email diperlukan")
     user = await find_unique_identity_user(identifier)
-    if not user or not user.get("password_hash") or not verify_password(payload.password, user["password_hash"]):
+    if not user:
+        camaba_result = await try_camaba_login(identifier, payload.password)
+        if camaba_result:
+            return camaba_result
+        raise HTTPException(status_code=401, detail="Identitas login atau password salah")
+    if not user.get("password_hash") or not verify_password(payload.password, user["password_hash"]):
         raise HTTPException(status_code=401, detail="Identitas login atau password salah")
     if user.get("status", "active") != "active":
         raise HTTPException(status_code=403, detail="Akun tidak aktif. Hubungi admin kampus.")
@@ -4129,17 +4437,28 @@ async def update_profile(payload: ProfileInput, user: Dict[str, Any] = Depends(g
     )
     if existing:
         raise HTTPException(status_code=409, detail="Email, username, atau WhatsApp sudah digunakan akun lain")
+    set_dict = {
+        "name": name,
+        "username": username,
+        "email": email,
+        "whatsapp": whatsapp,
+        "profile_updated_at": now_iso(),
+    }
+    extra_fields = [
+        "employee_id", "nip", "nidn", "nik", "gelar", "gelar_depan", "gelar_belakang",
+        "prodi_id", "prodi_name", "prodi_kode", "homebase", "gender", "agama",
+        "tempat_lahir", "tanggal_lahir", "alamat", "kota", "provinsi", "kode_pos",
+        "spesialisasi", "jabatan", "status_kepegawaian", "nim", "angkatan",
+        "academic_year", "semester", "parent_name", "parent_phone", "parent_job", "parent_address"
+    ]
+    for field in extra_fields:
+        val = getattr(payload, field, None)
+        if val is not None:
+            set_dict[field] = val
+
     await db.users.update_one(
         {"id": user["id"]},
-        {
-            "$set": {
-                "name": name,
-                "username": username,
-                "email": email,
-                "whatsapp": whatsapp,
-                "profile_updated_at": now_iso(),
-            }
-        },
+        {"$set": set_dict},
     )
     if user.get("role") in {"admin", "lecturer"} and name != user.get("name"):
         await db.classes.update_many({"lecturer_id": user["id"]}, {"$set": {"lecturer_name": name}})
@@ -4147,6 +4466,68 @@ async def update_profile(payload: ProfileInput, user: Dict[str, Any] = Depends(g
             await collection.update_many({"lecturer_id": user["id"]}, {"$set": {"lecturer_name": name}})
     updated = await db.users.find_one({"id": user["id"]}, {"_id": 0})
     return public_doc(updated)
+
+
+@api_router.post("/auth/avatar")
+async def upload_user_avatar(
+    file: UploadFile = File(...),
+    user: Dict[str, Any] = Depends(get_current_user),
+):
+    if not file.filename:
+        raise HTTPException(status_code=400, detail="File foto profil tidak valid")
+
+    allowed_exts = {".jpg", ".jpeg", ".png", ".webp", ".gif"}
+    ext = Path(file.filename).suffix.lower()
+    if ext not in allowed_exts:
+        raise HTTPException(status_code=400, detail="Format foto harus berupa JPG, PNG, WEBP, atau GIF")
+
+    content = await file.read()
+    if len(content) > 5 * 1024 * 1024:
+        raise HTTPException(status_code=400, detail="Ukuran foto maksimal 5 MB")
+
+    file_token = secrets.token_hex(8)
+    safe_name = safe_path_segment(file.filename) or f"avatar{ext}"
+    filename = f"avatar_{user['id']}_{file_token[:8]}_{safe_name}"
+
+    avatar_dir = STORAGE_ROOT / "Avatars"
+    avatar_dir.mkdir(parents=True, exist_ok=True)
+    file_path = avatar_dir / filename
+    file_path.write_bytes(content)
+
+    file_id = f"avatar-{user['id']}-{file_token[:8]}"
+    file_doc = {
+        "id": file_id,
+        "record_type": "avatar",
+        "owner_user_id": user["id"],
+        "file_name": safe_name,
+        "original_name": file.filename,
+        "mime_type": file.content_type or f"image/{ext.replace('.', '')}",
+        "size": len(content),
+        "local_path": str(file_path),
+        "created_at": now_iso(),
+    }
+    await db.stored_files.update_one({"id": file_id}, {"$set": file_doc}, upsert=True)
+
+    avatar_url = f"/api/files/{file_id}/inline"
+    await db.users.update_one(
+        {"id": user["id"]},
+        {"$set": {"avatar_url": avatar_url, "avatar_file_id": file_id}},
+    )
+
+    updated_user = await db.users.find_one({"id": user["id"]}, {"_id": 0})
+    return public_doc(updated_user)
+
+
+@api_router.delete("/auth/avatar")
+async def remove_user_avatar(
+    user: Dict[str, Any] = Depends(get_current_user),
+):
+    await db.users.update_one(
+        {"id": user["id"]},
+        {"$unset": {"avatar_url": "", "avatar_file_id": ""}},
+    )
+    updated_user = await db.users.find_one({"id": user["id"]}, {"_id": 0})
+    return public_doc(updated_user)
 
 
 @api_router.post("/auth/logout")
@@ -4184,10 +4565,16 @@ async def list_password_reset_requests(_: Dict[str, Any] = Depends(require_admin
 
 
 @api_router.get("/lecturers")
-async def list_lecturers(_: Dict[str, Any] = Depends(require_campus_admin)):
+async def list_lecturers():
     lecturers = await db.users.find(
-        {"role": "lecturer", "status": {"$ne": "deleted"}}, {"_id": 0, "password_hash": 0}
+        {"role": {"$in": ["lecturer", "admin", "dosen"]}, "status": {"$ne": "deleted"}},
+        {"_id": 0, "password_hash": 0}
     ).sort("name", 1).to_list(2000)
+    if not lecturers:
+        lecturers = await db.users.find(
+            {"role": {"$ne": "student"}},
+            {"_id": 0, "password_hash": 0}
+        ).sort("name", 1).to_list(2000)
     counts = await db.classes.aggregate(
         [
             {"$match": {"status": {"$ne": "deleted"}, "lecturer_id": {"$ne": ""}}},
@@ -4224,6 +4611,24 @@ async def list_lecturers(_: Dict[str, Any] = Depends(require_campus_admin)):
     return lecturers
 
 
+@api_router.get("/jabatan-assignments")
+@api_router.get("/jabatan-assignments/")
+async def list_jabatan_assignments_api_alias(request: Request):
+    from routers.master_data import list_jabatan_assignments
+    return await list_jabatan_assignments(db=request.app.state.db)
+
+
+@api_router.post("/jabatan-assignments")
+@api_router.post("/jabatan-assignments/")
+@api_router.put("/jabatan-assignments")
+@api_router.put("/jabatan-assignments/")
+async def save_jabatan_assignment_api_alias(request: Request):
+    from routers.master_data import save_jabatan_assignment, JabatanAssignmentInput
+    body_json = await request.json()
+    input_data = JabatanAssignmentInput(**body_json)
+    return await save_jabatan_assignment(body=input_data, db=request.app.state.db)
+
+
 @api_router.post("/lecturers")
 async def create_lecturer(
     payload: LecturerInput,
@@ -4240,16 +4645,14 @@ async def create_lecturer(
     doc = {
         "id": new_id(),
         "role": "lecturer",
-        "employee_id": payload.employee_id.strip(),
+        **payload.model_dump(),
         "username": username,
-        "name": payload.name.strip(),
         "email": email,
-        "whatsapp": payload.whatsapp.strip(),
         "password_hash": hash_password(payload.password),
-        "status": payload.status,
         "created_at": now_iso(),
         "last_login_at": "",
     }
+    doc.pop("password", None)
     await db.users.insert_one(doc)
     background_tasks.add_task(reconcile_lecturer_drive_access, doc["id"])
     return public_doc(doc)
@@ -4345,6 +4748,48 @@ async def whatsapp_messages(_: Dict[str, Any] = Depends(require_campus_admin)):
     return await db.whatsapp_messages.find({}, {"_id": 0}).sort("created_at", -1).to_list(1000)
 
 
+@api_router.get("/integrations/settings")
+async def get_integrations(_: Dict[str, Any] = Depends(require_campus_admin)):
+    """Mengambil konfigurasi seluruh integrasi sistem (Data Sekolah, dan integrasi lain ke depan)."""
+    settings = await get_integration_settings(mask=True)
+    return {"ok": True, "integrations": settings.get("integrations", {})}
+
+
+@api_router.put("/integrations/settings")
+async def update_integrations(request: Request, user: Dict[str, Any] = Depends(require_campus_admin)):
+    """Menyimpan konfigurasi integrasi sistem. Body: {"integrations": {"<nama>": {config...}}}"""
+    body = await request.json()
+    incoming = body.get("integrations", {}) if isinstance(body, dict) else {}
+    if not isinstance(incoming, dict) or not incoming:
+        raise HTTPException(status_code=400, detail="Format konfigurasi integrasi tidak valid")
+
+    existing = await get_integration_settings(mask=False)
+    integrations = existing.get("integrations", {})
+    for name, cfg in incoming.items():
+        if not isinstance(cfg, dict):
+            continue
+        current = integrations.get(name, {})
+        if not isinstance(current, dict):
+            current = {}
+        merged = dict(current)
+        for k, v in cfg.items():
+            if v is None:
+                continue
+            if k == "api_key" and not str(v).strip():
+                continue  # field API key dikosongkan di UI -> pertahankan key lama
+            merged[k] = v
+        integrations[name] = merged
+
+    await db.integration_settings.update_one(
+        {"id": "main"},
+        {"$set": {"integrations": integrations, "updated_at": now_iso(), "updated_by": user["id"]}},
+        upsert=True,
+    )
+    _invalidate_settings_cache("integration_settings")
+    settings = await get_integration_settings(mask=True)
+    return {"ok": True, "message": "Konfigurasi integrasi berhasil disimpan", "integrations": settings.get("integrations", {})}
+
+
 @api_router.get("/whatsapp/waha/status")
 async def waha_connection_status(_: Dict[str, Any] = Depends(require_campus_admin)):
     settings = await get_whatsapp_settings(mask=False)
@@ -4432,6 +4877,8 @@ async def update_oidc_admin_settings(payload: OidcSettingsInput, user: Dict[str,
     frontend_url = validate_oidc_url(payload.frontend_url, "Frontend URL", required=payload.enabled)
     client_id = payload.client_id.strip()
     scopes = " ".join(payload.scopes.split())
+    if payload.enabled and not payload.local_login_enabled:
+        raise HTTPException(status_code=400, detail="Login lokal tidak boleh dinonaktifkan jika SSO aktif agar mencegah terkunci dari sistem.")
     if payload.enabled and not client_id:
         raise HTTPException(status_code=400, detail="Client ID wajib diisi saat SSO aktif")
     if payload.enabled and "openid" not in scopes.split():
@@ -4836,8 +5283,35 @@ async def mark_notification_read(
     cutoff = (
         datetime.now(timezone.utc) - timedelta(days=NOTIFICATION_READ_RETENTION_DAYS)
     ).isoformat()
-    await db.notification_reads.delete_many({"read_at": {"$lt": cutoff}})
     return {"ok": True, "notification_id": clean_id, "read_at": read_at}
+
+
+@api_router.post("/notifications/read-all")
+async def mark_all_notifications_read(
+    user: Dict[str, Any] = Depends(get_current_user),
+):
+    payload = await notification_center_payload(user, limit=500)
+    items = payload.get("items", [])
+    unread_items = [item for item in items if not item.get("read")]
+    read_at = now_iso()
+
+    if unread_items:
+        for item in unread_items:
+            clean_id = str(item.get("id") or "").strip().lower()
+            if clean_id:
+                await db.notification_reads.update_one(
+                    {"user_id": user["id"], "notification_id": clean_id},
+                    {
+                        "$set": {
+                            "id": f"{user['id']}:{clean_id}",
+                            "user_id": user["id"],
+                            "notification_id": clean_id,
+                            "read_at": read_at,
+                        }
+                    },
+                    upsert=True,
+                )
+    return {"ok": True, "count": len(unread_items), "read_at": read_at}
 
 
 async def user_activity_dashboard_payload(days: int = 14) -> Dict[str, Any]:
@@ -5457,6 +5931,529 @@ async def drive_sync_overview(limit: int = 50) -> Dict[str, Any]:
     return {"summary": summary, "items": items}
 
 
+@api_router.get("/migration/old-siap/summary")
+async def get_old_siap_summary(_: Dict[str, Any] = Depends(require_campus_admin)):
+    file_path = Path("/Users/syahrulanwar/Documents/Project Web/OLD-SIAP/siap_siakad.json")
+    if not file_path.exists():
+        return {"exists": False, "message": "File siap_siakad.json tidak ditemukan"}
+    
+    try:
+        with open(file_path, "r", encoding="utf-8") as f:
+            raw_data = json.load(f)
+        tables = {}
+        if isinstance(raw_data, list):
+            for item in raw_data:
+                if isinstance(item, dict) and item.get("type") == "table":
+                    tables[item.get("name")] = len(item.get("data", []))
+        
+        entities = {
+            "fakultas": tables.get("fakultas", 0),
+            "prodi": tables.get("prodi", 0),
+            "tahun_ajaran": tables.get("tahun", 0),
+            "pegawai_dosen": tables.get("pegawai", 0),
+            "mahasiswa": tables.get("mhsw", 0),
+            "mata_kuliah": tables.get("mk", 0),
+            "kelas_jadwal": tables.get("jadwal", 0),
+            "krs": tables.get("krs", 0),
+            "khs": tables.get("khs", 0),
+        }
+        return {"exists": True, "file_size_mb": round(file_path.stat().st_size / (1024 * 1024), 2), "entities": entities}
+    except Exception as e:
+        return {"exists": False, "message": str(e)}
+
+
+migration_progress_state = {
+    "status": "idle",
+    "step": "",
+    "progress_percent": 0,
+    "logs": [],
+    "result": None,
+}
+
+@api_router.get("/migration/old-siap/status")
+async def get_old_siap_migration_status(_: Dict[str, Any] = Depends(require_campus_admin)):
+    return migration_progress_state
+
+@api_router.post("/migration/old-siap/run")
+async def run_old_siap_migration(background_tasks: BackgroundTasks, _: Dict[str, Any] = Depends(require_campus_admin)):
+    if migration_progress_state["status"] == "running":
+        raise HTTPException(status_code=400, detail="Migrasi sedang berjalan...")
+
+    async def execute_migration_task():
+        migration_progress_state["status"] = "running"
+        migration_progress_state["progress_percent"] = 5
+        migration_progress_state["step"] = "Membaca file data OLD-SIAP..."
+        migration_progress_state["logs"] = ["Memulai proses migrasi data OLD-SIAP..."]
+        
+        try:
+            file_path = Path("/Users/syahrulanwar/Documents/Project Web/OLD-SIAP/siap_siakad.json")
+            with open(file_path, "r", encoding="utf-8") as f:
+                raw_data = json.load(f)
+            
+            tables = {}
+            if isinstance(raw_data, list):
+                for item in raw_data:
+                    if isinstance(item, dict) and item.get("type") == "table":
+                        tables[item.get("name")] = item.get("data", [])
+            
+            raw_fakultas = tables.get("fakultas", [])
+            raw_prodi = tables.get("prodi", [])
+            raw_tahun = tables.get("tahun", [])
+            raw_pegawai = tables.get("pegawai", [])
+            raw_mhsw = tables.get("mhsw", [])
+            raw_mk = tables.get("mk", [])
+            raw_jadwal = tables.get("jadwal", [])
+            raw_kelas = tables.get("kelas", [])
+            raw_krs = tables.get("krs", [])
+
+            # 1. Fakultas
+            migration_progress_state["step"] = "Memigrasikan Fakultas..."
+            migration_progress_state["progress_percent"] = 15
+            migration_progress_state["logs"].append(f"Memigrasikan {len(raw_fakultas)} fakultas...")
+            f_count = 0
+            for f in raw_fakultas:
+                fid = f.get("FakultasID") or "default-fakultas"
+                nama = f.get("Nama") or f.get("NamaIns") or "Fakultas Utama"
+                kode = f.get("KodePTI") or f.get("KodeID") or "FT"
+                ex = await db.fakultas.find_one({"id": fid}, {"_id": 0})
+                doc = {"id": fid, "kode": kode, "nama": nama, "status": "active", "created_at": now_iso()}
+                if not ex: await db.fakultas.insert_one(doc)
+                else: await db.fakultas.update_one({"id": fid}, {"$set": doc})
+                f_count += 1
+
+            # 2. Prodi
+            migration_progress_state["step"] = "Memigrasikan Program Studi..."
+            migration_progress_state["progress_percent"] = 30
+            migration_progress_state["logs"].append(f"Memigrasikan {len(raw_prodi)} program studi...")
+            prodi_map = {}
+            p_count = 0
+            for p in raw_prodi:
+                pid = p.get("ProdiID")
+                nama = p.get("Nama", "")
+                kode = pid
+                jenjang = p.get("NamaJenjang") or "S1"
+                prodi_map[pid] = {"id": pid, "nama": nama, "kode": kode}
+                ex = await db.programs.find_one({"id": pid}, {"_id": 0})
+                doc = {
+                    "id": pid, "code": kode, "kode": kode, "name": nama, "nama": nama,
+                    "description": f"Program Studi {nama} ({jenjang})", "status": "active",
+                    "jenjang": jenjang, "akreditasi": p.get("Akreditasi") or "B",
+                    "kaprodi": p.get("Pejabat") or "", "created_at": now_iso()
+                }
+                if not ex: await db.programs.insert_one(doc)
+                else: await db.programs.update_one({"id": pid}, {"$set": doc})
+                p_count += 1
+
+            # 2b. Rombel (Kelas per Angkatan)
+            migration_progress_state["step"] = "Memigrasikan Rombel (Kelas per Angkatan)..."
+            migration_progress_state["progress_percent"] = 40
+            migration_progress_state["logs"].append(f"Memigrasikan {len(raw_kelas)} rombel...")
+            rombel_map = {}
+            mhsw_kelas_map = {}
+            for m in raw_mhsw:
+                kid = str(m.get("KelasID") or "").strip()
+                mhs_id = str(m.get("MhswID") or "").strip().upper()
+                if kid and kid != "0" and mhs_id:
+                    mhsw_kelas_map.setdefault(kid, set()).add(mhs_id)
+            rb_count = 0
+            for k in raw_kelas:
+                kid = str(k.get("KelasID") or "").strip()
+                if not kid: continue
+                nama_full = str(k.get("Nama") or "").strip()
+                prodi_id = str(k.get("ProdiID") or "").strip()
+                prodi_obj = prodi_map.get(prodi_id, {})
+                tahun_id = str(k.get("TahunID") or "").strip()
+                angkatan = tahun_id[:4] if len(tahun_id) >= 4 else ""
+                rombel_letter = nama_full
+                if "-" in nama_full:
+                    rombel_letter = nama_full.split("-")[-1].strip() or rombel_letter
+                rombel_id = f"RLM-{kid}"
+                rombel_map[kid] = {"id": rombel_id, "nama": rombel_letter, "prodi_id": prodi_id}
+                student_ids = sorted(mhsw_kelas_map.get(kid, set()))
+                rb_doc = {
+                    "id": rombel_id, "kode": nama_full, "nama": rombel_letter,
+                    "prodi_id": prodi_id, "prodi_name": prodi_obj.get("nama", ""),
+                    "angkatan": angkatan, "student_ids": student_ids,
+                    "status": "active", "created_at": now_iso()
+                }
+                ex = await db.rombel.find_one({"id": rombel_id}, {"_id": 0})
+                if not ex: await db.rombel.insert_one(rb_doc)
+                else: await db.rombel.update_one({"id": rombel_id}, {"$set": rb_doc})
+                rb_count += 1
+
+            # 3. Dosen / Pegawai
+            migration_progress_state["step"] = "Memigrasikan Dosen & Pegawai..."
+            migration_progress_state["progress_percent"] = 45
+            migration_progress_state["logs"].append(f"Memigrasikan {len(raw_pegawai)} dosen & pegawai...")
+            default_password_hash = hash_password("Dosen123!")
+            default_mhs_password_hash = hash_password("Mahasiswa123!")
+            dosen_map = {}
+            d_count = 0
+
+            used_emails = set()
+            existing_users = await db.users.find({}, {"_id": 0, "id": 1, "email": 1}).to_list(10000)
+            existing_email_to_id = {u.get("email", "").lower(): u.get("id") for u in existing_users if u.get("email")}
+
+            def make_unique_email(raw_email, default_prefix, user_id):
+                email = (raw_email or f"{default_prefix}.{user_id.lower()}@demo.id").strip().lower()
+                if "@" not in email:
+                    email = f"{email}@demo.id"
+                owner_id = existing_email_to_id.get(email)
+                if (owner_id and owner_id != user_id) or (email in used_emails and owner_id != user_id):
+                    parts = email.split("@", 1)
+                    email = f"{parts[0]}+{user_id.lower()}@{parts[1]}"
+                used_emails.add(email)
+                existing_email_to_id[email] = user_id
+                return email
+
+            for p in raw_pegawai:
+                login = str(p.get("Login") or "").strip()
+                if not login: continue
+                name = str(p.get("Nama") or login).strip()
+                email = make_unique_email(p.get("Email"), "dosen", login)
+                wa = str(p.get("WA") or p.get("Handphone") or "").strip()
+                prodi_id = str(p.get("ProdiID") or "").strip()
+                level_id = str(p.get("LevelID") or "")
+                levels = [x.strip() for x in level_id.split(",") if x.strip()]
+                role = "admin" if "1" in levels else "lecturer"
+                dosen_map[login] = {"id": login, "name": name, "email": email}
+                ex = await db.users.find_one({"id": login}, {"_id": 0})
+                doc = {
+                    "id": login, "role": role, "username": login, "employee_id": str(p.get("NIDN") or login).strip(),
+                    "name": name, "email": email, "whatsapp": wa, "password_hash": default_password_hash,
+                    "status": "active" if p.get("NA") != "Y" else "inactive", "prodi_id": prodi_id,
+                    "created_at": now_iso(), "last_login_at": ""
+                }
+                if not ex: await db.users.insert_one(doc)
+                else: await db.users.update_one({"id": login}, {"$set": doc})
+                d_count += 1
+
+            # 4. Mahasiswa
+            migration_progress_state["step"] = "Memigrasikan Mahasiswa..."
+            migration_progress_state["progress_percent"] = 60
+            migration_progress_state["logs"].append(f"Memigrasikan {len(raw_mhsw)} mahasiswa...")
+            m_count = 0
+            for m in raw_mhsw:
+                nim = str(m.get("MhswID") or m.get("Login") or "").strip().upper()
+                if not nim: continue
+                name = str(m.get("Nama") or nim).strip()
+                email = make_unique_email(m.get("Email"), nim.lower(), nim)
+                wa = str(m.get("WA") or m.get("Handphone") or "").strip()
+                prodi_id = str(m.get("ProdiID") or "").strip()
+                prodi_obj = prodi_map.get(prodi_id, {})
+                tahun_id = str(m.get("TahunID") or "")
+                angkatan = tahun_id[:4] if len(tahun_id) >= 4 else "2024"
+                pa_id = str(m.get("PenasehatAkademik") or "").strip()
+                pa_name = dosen_map.get(pa_id, {}).get("name", "")
+
+                rombel_kid = str(m.get("KelasID") or "").strip()
+                rombel_id = rombel_map.get(rombel_kid, {}).get("id", "")
+
+                ex = await db.users.find_one({"nim": nim, "role": "student"}, {"_id": 0})
+                doc = {
+                    "id": nim, "role": "student", "username": nim.lower(), "nim": nim, "name": name,
+                    "email": email, "whatsapp": wa, "password_hash": default_mhs_password_hash,
+                    "status": "active" if m.get("StatusMhswID") == "A" else "inactive",
+                    "class_ids": [], "rombel_id": rombel_id, "prodi_id": prodi_id, "prodi_name": prodi_obj.get("nama", ""),
+                    "prodi_kode": prodi_obj.get("kode", ""), "angkatan": angkatan,
+                    "dosen_wali_id": pa_id, "dosen_wali_name": pa_name,
+                    "created_at": now_iso(), "last_login_at": ""
+                }
+                if not ex: await db.users.insert_one(doc)
+                else: await db.users.update_one({"id": ex["id"]}, {"$set": doc})
+                m_count += 1
+
+            # 4b. Master Kurikulum
+            migration_progress_state["step"] = "Memigrasikan Master Kurikulum..."
+            migration_progress_state["progress_percent"] = 65
+            raw_kurikulum = tables.get("kurikulum", [])
+            migration_progress_state["logs"].append(f"Memigrasikan {len(raw_kurikulum)} master kurikulum...")
+            kurikulum_map = {}
+            kur_count = 0
+            for k in raw_kurikulum:
+                kid = str(k.get("KurikulumID") or "").strip()
+                if not kid: continue
+                kode = str(k.get("KurikulumKode") or k.get("SKKurikulum") or f"KUR-{kid}").strip()
+                nama = str(k.get("Nama") or f"Kurikulum {kid}").strip()
+                p_id = str(k.get("ProdiID") or "").strip()
+                prodi_obj = prodi_map.get(p_id, {})
+                tahun_id = str(k.get("TahunID") or "")
+                tahun_mulai = tahun_id[:4] if len(tahun_id) >= 4 else "2023"
+
+                kurikulum_map[kid] = {"id": kid, "kode": kode, "nama": nama, "prodi_id": p_id}
+                ex = await db.kurikulum.find_one({"id": kid}, {"_id": 0})
+                doc = {
+                    "id": kid, "kode": kode, "nama": nama, "prodi_id": p_id,
+                    "prodi_nama": prodi_obj.get("nama", ""), "tahun_mulai": tahun_mulai,
+                    "status": "active" if k.get("NA") != "Y" else "inactive",
+                    "total_sks_wajib": int(k.get("SKSWAjib") or 0),
+                    "total_sks_pilihan": int(k.get("SKSPilihan") or 0),
+                    "created_at": now_iso()
+                }
+                if not ex: await db.kurikulum.insert_one(doc)
+                else: await db.kurikulum.update_one({"id": kid}, {"$set": doc})
+                kur_count += 1
+
+            # 5. Mata Kuliah (Courses)
+            migration_progress_state["step"] = "Memigrasikan Mata Kuliah (Courses)..."
+            migration_progress_state["progress_percent"] = 75
+            migration_progress_state["logs"].append(f"Memigrasikan {len(raw_mk)} mata kuliah...")
+            mk_count = 0
+            for mk in raw_mk:
+                mk_id = str(mk.get("MKID") or "").strip()
+                nama = str(mk.get("Nama") or "").strip()
+                if not nama: continue
+                mk_kode = str(mk.get("MKKode") or mk_id).strip()
+                sks = int(mk.get("SKS") or 3)
+                sks_tm = int(mk.get("SKSTatapMuka") or sks)
+                sks_pr = int(mk.get("SKSPraktikum") or 0) + int(mk.get("SKSPraktekLap") or 0)
+                p_id = str(mk.get("ProdiID") or "").strip()
+                prodi_obj = prodi_map.get(p_id, {})
+
+                kid = str(mk.get("KurikulumID") or "").strip()
+                kur_obj = kurikulum_map.get(kid, {})
+                kur_kode = kur_obj.get("kode", "")
+
+                try: sem_paket = int(mk.get("Sesi") or 1)
+                except ValueError: sem_paket = 1
+
+                wajib = str(mk.get("Wajib") or "Y").upper()
+                sifat = "Wajib" if wajib == "Y" else "Pilihan"
+
+                ex = await db.courses.find_one({"id": mk_id}, {"_id": 0})
+                doc = {
+                    "id": mk_id, "kurikulum_id": kid, "kurikulum_kode": kur_kode,
+                    "program_id": p_id, "prodi_id": p_id, "program_name": prodi_obj.get("nama", ""),
+                    "code": mk_kode, "kode": mk_kode, "name": nama, "nama": nama,
+                    "credits": sks, "sks": sks, "total_sks": sks,
+                    "sks_teori": sks_tm, "sks_praktikum": sks_pr,
+                    "semester_paket": sem_paket, "semester": sem_paket,
+                    "sifat": sifat, "description": str(mk.get("Deskripsi") or "").strip(),
+                    "status": "active" if mk.get("NA") != "Y" else "inactive", "created_at": now_iso()
+                }
+                if not ex: await db.courses.insert_one(doc)
+                else: await db.courses.update_one({"id": mk_id}, {"$set": doc})
+                mk_count += 1
+
+            # 6. Kelas & Jadwal
+            migration_progress_state["step"] = "Memigrasikan Kelas Kuliah..."
+            migration_progress_state["progress_percent"] = 90
+            migration_progress_state["logs"].append(f"Memigrasikan {len(raw_jadwal)} kelas kuliah...")
+
+            active_semesters = {str(t.get("TahunID") or "").strip() for t in raw_tahun if t.get("NA") == "N"}
+            active_tahun_id = max(
+                (str(j.get("TahunID") or "").strip() for j in raw_jadwal if str(j.get("TahunID") or "").strip()),
+                default="20252",
+            ) if raw_jadwal else "20252"
+
+            class_students_map = {}
+            for krs in raw_krs:
+                jid = str(krs.get("JadwalID") or "").strip()
+                mhs_id = str(krs.get("MhswID") or "").strip()
+                if jid and mhs_id and jid != "0":
+                    class_students_map.setdefault(jid, set()).add(mhs_id)
+
+            j_count = 0
+            for j in raw_jadwal:
+                jid = str(j.get("JadwalID") or "").strip()
+                if not jid: continue
+                kelas_kid = str(j.get("KelasID") or "").strip()
+                rombel_obj = rombel_map.get(kelas_kid, {})
+                rombel_id = rombel_obj.get("id", "")
+                if rombel_obj.get("nama"):
+                    c_name = f"Kelas {rombel_obj['nama']}"
+                else:
+                    c_name = str(j.get("NamaKelas_old") or "").strip()
+                    if not c_name or c_name == "0" or c_name == "01": c_name = f"Kelas {jid}"
+                tahun_id = str(j.get("TahunID") or "20241")
+                ay = f"{tahun_id[:4]}/{int(tahun_id[:4])+1}" if len(tahun_id) >= 4 else "2024/2025"
+                sem = "Ganjil" if tahun_id.endswith("1") else "Genap"
+                d_id = str(j.get("DosenID") or "").strip()
+                p_id = str(j.get("ProdiID") or "").strip()
+                st_ids = list(class_students_map.get(jid, set()))
+
+                class_status = "active" if tahun_id == active_tahun_id else "ended"
+
+                ex = await db.classes.find_one({"id": jid}, {"_id": 0})
+                doc = {
+                    "id": jid, "academic_year": ay, "semester": sem, "course_id": str(j.get("MKID") or "").strip(),
+                    "course_name": str(j.get("Nama") or "").strip(), "name": c_name,
+                    "schedule": f"Hari {j.get('HariID','')} {j.get('JamMulai','')}-{j.get('JamSelesai','')}".strip(),
+                    "class_code": f"KLS{jid.zfill(4)}", "lecturer_id": d_id,
+                    "lecturer_name": dosen_map.get(d_id, {}).get("name", ""),
+                    "status": class_status, "rombel_id": rombel_id,
+                    "student_ids": st_ids, "program_id": p_id,
+                    "program_name": prodi_map.get(p_id, {}).get("nama", ""), "created_at": now_iso()
+                }
+                if not ex: await db.classes.insert_one(doc)
+                else: await db.classes.update_one({"id": jid}, {"$set": doc})
+                j_count += 1
+                for st in st_ids:
+                    await db.users.update_one({"nim": st}, {"$addToSet": {"class_ids": jid}})
+
+            # 7. Tahun Ajaran
+            migration_progress_state["step"] = "Memigrasikan Tahun Ajaran..."
+            migration_progress_state["progress_percent"] = 92
+            ta_count = 0
+            for t in raw_tahun:
+                tid = str(t.get("TahunID") or "").strip()
+                if not tid: continue
+                nama = str(t.get("Nama") or "").strip()
+                ex = await db.tahun_ajaran.find_one({"id": tid}, {"_id": 0})
+                is_active = (tid == active_tahun_id)
+                doc = {
+                    "id": tid, "tahun": tid[:4] if len(tid) >= 4 else "2024",
+                    "semester": "Ganjil" if tid.endswith("1") else "Genap",
+                    "nama": nama or tid, "is_active": is_active,
+                    "status": "active" if is_active else "closed",
+                    "activated_at": now_iso() if is_active else "",
+                    "created_at": now_iso()
+                }
+                if not ex: await db.tahun_ajaran.insert_one(doc)
+                else: await db.tahun_ajaran.update_one({"id": tid}, {"$set": doc})
+                ta_count += 1
+
+            # 8. Predikat Nilai
+            migration_progress_state["step"] = "Memigrasikan Predikat Nilai..."
+            migration_progress_state["progress_percent"] = 95
+            raw_nilai = tables.get("nilai", [])
+            predicates_list = []
+            seen_labels = set()
+            for n in raw_nilai:
+                label = str(n.get("Nama") or "").strip()
+                if not label or label in seen_labels: continue
+                seen_labels.add(label)
+                try:
+                    predicates_list.append({
+                        "label": label, "min_score": float(n.get("NilaiMin") or 0),
+                        "max_score": float(n.get("NilaiMax") or 100), "gpa": float(n.get("Bobot") or 0)
+                    })
+                except ValueError: pass
+            if predicates_list:
+                predicates_list.sort(key=lambda x: x["min_score"], reverse=True)
+                await db.grade_predicates.update_one({"class_id": ""}, {"$set": {"class_id": "", "predicates": predicates_list, "updated_at": now_iso()}}, upsert=True)
+
+            # 9. KHS & KRS (Nilai Mahasiswa)
+            migration_progress_state["step"] = "Memigrasikan KHS & Nilai KRS..."
+            migration_progress_state["progress_percent"] = 98
+            raw_khs = tables.get("khs", [])
+            krs_by_student_tahun = {}
+            krs_grouped = {}
+            for krs in raw_krs:
+                mhs_id = str(krs.get("MhswID") or "").strip()
+                t_id = str(krs.get("TahunID") or "").strip()
+                if mhs_id and t_id:
+                    key = f"{mhs_id}_{t_id}"
+                    item = {
+                        "course_code": str(krs.get("MKKode") or "").strip(),
+                        "course_name": str(krs.get("Nama") or "").strip(),
+                        "sks": int(krs.get("SKS") or 0),
+                        "class_id": str(krs.get("JadwalID") or "").strip(),
+                        "grade_letter": str(krs.get("GradeNilai") or "").strip(),
+                        "grade_point": float(krs.get("BobotNilai") or 0.0),
+                        "score": float(krs.get("NilaiAkhir") or 0.0),
+                    }
+                    krs_by_student_tahun.setdefault(key, []).append(item)
+                    krs_grouped.setdefault(key, {
+                        "id": f"krs_{mhs_id}_{t_id}", "student_id": mhs_id,
+                        "academic_period_id": t_id, "status": "approved",
+                        "created_at": now_iso(), "courses": []
+                    })["courses"].append(item)
+
+            krs_count = 0
+            for key, krs_doc in krs_grouped.items():
+                await db.krs.update_one(
+                    {"student_id": krs_doc["student_id"], "academic_period_id": krs_doc["academic_period_id"]},
+                    {"$set": krs_doc}, upsert=True
+                )
+                krs_count += 1
+
+            khs_count = 0
+            for khs in raw_khs:
+                khs_id = str(khs.get("KHSID") or "").strip()
+                mhs_id = str(khs.get("MhswID") or "").strip()
+                t_id = str(khs.get("TahunID") or "").strip()
+                if not khs_id or not mhs_id or not t_id: continue
+                try:
+                    ips, ipk = float(khs.get("IPS") or 0.0), float(khs.get("IPK") or 0.0)
+                    sks_sem, sks_kum = int(khs.get("SKS") or 0), int(khs.get("TotalSKS") or 0)
+                except ValueError: ips, ipk, sks_sem, sks_kum = 0.0, 0.0, 0, 0
+
+                khs_doc = {
+                    "id": khs_id, "student_id": mhs_id, "academic_period_id": t_id,
+                    "period_name": parse_tahun_label(t_id), "ips": ips, "ipk": ipk,
+                    "total_sks_semester": sks_sem, "total_sks_kumulatif": sks_kum,
+                    "grades": krs_by_student_tahun.get(f"{mhs_id}_{t_id}", []),
+                    "updated_at": now_iso()
+                }
+                await db.khs.update_one({"student_id": mhs_id, "academic_period_id": t_id}, {"$set": khs_doc}, upsert=True)
+                khs_count += 1
+
+            # 10. Submissions & Assignments (Nilai Evaluasi & Rekap)
+            migration_progress_state["step"] = "Memigrasikan Submissions & Rekap Nilai..."
+            migration_progress_state["progress_percent"] = 99
+            classes_with_grades = {str(krs.get("JadwalID")).strip() for krs in raw_krs if krs.get("JadwalID") and str(krs.get("JadwalID")).strip() != "0"}
+            assignment_map = {}
+            asgn_count = 0
+            sub_count = 0
+
+            for jid in classes_with_grades:
+                class_doc = await db.classes.find_one({"id": jid}, {"_id": 0})
+                if not class_doc: continue
+                asgn_id = f"asgn_old_{jid}"
+                assignment_map[jid] = asgn_id
+                asgn_doc = {
+                    "id": asgn_id, "class_id": jid,
+                    "course_name": class_doc.get("course_name", "Mata Kuliah"),
+                    "class_name": class_doc.get("name", "Kelas"),
+                    "title": "Evaluasi Akhir Semester (Migrasi OLD-SIAP)",
+                    "description": "Nilai akumulasi akhir semester dari database OLD-SIAP",
+                    "deadline": now_iso(), "is_active": True, "assessment_category": "uas", "created_at": now_iso()
+                }
+                await db.assignments.update_one({"id": asgn_id}, {"$set": asgn_doc}, upsert=True)
+                asgn_count += 1
+
+            for krs in raw_krs:
+                jid = str(krs.get("JadwalID") or "").strip()
+                mhs_id = str(krs.get("MhswID") or "").strip()
+                if not jid or jid == "0" or not mhs_id: continue
+                asgn_id = assignment_map.get(jid)
+                if not asgn_id: continue
+                try:
+                    score = float(krs.get("NilaiAkhir") or 0.0)
+                    grade_letter = str(krs.get("GradeNilai") or "").strip()
+                except ValueError: score, grade_letter = 0.0, ""
+
+                sub_id = f"sub_old_{jid}_{mhs_id}"
+                sub_doc = {
+                    "id": sub_id, "assignment_id": asgn_id, "student_id": mhs_id, "class_id": jid,
+                    "status": "Sudah Dinilai", "submitted_at": now_iso(), "grade": score,
+                    "grade_predicate": grade_letter,
+                    "feedback": f"Migrasi SIAP - Grade: {grade_letter}, Bobot: {krs.get('BobotNilai', 0)}",
+                    "created_at": now_iso()
+                }
+                await db.submissions.update_one({"id": sub_id}, {"$set": sub_doc}, upsert=True)
+                sub_count += 1
+
+            migration_progress_state["status"] = "success"
+            migration_progress_state["progress_percent"] = 100
+            migration_progress_state["step"] = "Migrasi selesai"
+            migration_progress_state["logs"].append("Seluruh data dari OLD-SIAP (termasuk nilai & KHS) berhasil dimigrasikan!")
+            migration_progress_state["result"] = {
+                "fakultas": f_count, "prodi": p_count, "kurikulum": kur_count, "dosen": d_count,
+                "mahasiswa": m_count, "mk": mk_count, "kelas": j_count, "tahun_ajaran": ta_count,
+                "predikat_nilai": len(predicates_list), "khs": khs_count, "krs": krs_count,
+                "evaluasi_kelas": asgn_count, "submissions_nilai": sub_count,
+            }
+        except Exception as err:
+            migration_progress_state["status"] = "failed"
+            migration_progress_state["step"] = "Terjadi kesalahan"
+            migration_progress_state["logs"].append(f"ERROR: {str(err)}")
+
+    background_tasks.add_task(execute_migration_task)
+    return {"message": "Proses migrasi dimulai di background"}
+
+
 @api_router.get("/database-backups")
 async def list_database_backups(_: Dict[str, Any] = Depends(require_campus_admin)):
     settings = await get_database_backup_settings()
@@ -5789,11 +6786,12 @@ async def update_course(course_id: str, payload: CourseInput, _: Dict[str, Any] 
         raise HTTPException(status_code=404, detail="Prodi tidak ditemukan")
     update = payload.model_dump()
     update["program_id"] = program["id"]
+    update["sks"] = payload.credits
     update.update({"program_name": program["name"], "updated_at": now_iso()})
     await db.courses.update_one({"id": course_id}, {"$set": update})
     await db.classes.update_many(
         {"course_id": course_id},
-        {"$set": {"course_name": payload.name, "program_id": payload.program_id, "program_name": program["name"]}},
+        {"$set": {"course_name": payload.name, "sks": payload.credits, "program_id": payload.program_id, "program_name": program["name"]}},
     )
     doc = await db.courses.find_one({"id": course_id}, {"_id": 0})
     return await enrich_course_payload(public_doc(doc))
@@ -5812,12 +6810,15 @@ async def delete_course(course_id: str, _: Dict[str, Any] = Depends(require_admi
 
 @api_router.get("/classes")
 async def list_classes(user: Dict[str, Any] = Depends(get_current_user)):
-    query: Dict[str, Any] = {"status": {"$ne": "deleted"}}
     if user["role"] == "student":
         query = {"id": {"$in": user.get("class_ids", [])}, "status": {"$ne": "deleted"}}
-    elif user["role"] == "lecturer":
-        query["lecturer_id"] = user["id"]
-    classes = await db.classes.find(query, {"_id": 0}).sort("created_at", -1).to_list(500)
+        classes = await db.classes.find(query, {"_id": 0}).sort("created_at", -1).to_list(500)
+    elif user["role"] == "lecturer" and not is_campus_admin(user):
+        cids = await lecturer_class_ids(user, include_deleted=False)
+        classes = await db.classes.find({"id": {"$in": cids}, "status": {"$ne": "deleted"}}, {"_id": 0}).sort("created_at", -1).to_list(500)
+    else:
+        query = {"status": {"$ne": "deleted"}}
+        classes = await db.classes.find(query, {"_id": 0}).sort("created_at", -1).to_list(500)
     return [await enrich_class_payload(item) for item in classes]
 
 
@@ -5827,16 +6828,20 @@ async def create_class(payload: ClassInput, user: Dict[str, Any] = Depends(requi
     if not course:
         raise HTTPException(status_code=404, detail="Mata kuliah tidak ditemukan")
     code_seed = f"{course.get('code', 'KLS')}{payload.name}{uuid.uuid4().hex[:4]}"
+    dosen_id = course.get("dosen_utama_id") or user["id"]
+    dosen_nama = course.get("dosen_utama_nama") or user.get("name", "Dosen")
     doc = payload.model_dump()
     doc.update(
         {
             "id": new_id(),
             "course_name": course["name"],
-            "program_id": course.get("program_id", ""),
+            "course_code": course.get("code") or course.get("kode") or "",
+            "sks": course.get("sks", course.get("total_sks", 0)),
+            "program_id": course.get("program_id") or course.get("prodi_id", ""),
             "program_name": course.get("program_name", ""),
             "class_code": clean_code(code_seed),
-            "lecturer_id": user["id"],
-            "lecturer_name": user.get("name", "Dosen"),
+            "lecturer_id": dosen_id,
+            "lecturer_name": dosen_nama,
             "status": "active",
             "student_ids": [],
             "grade_weights_snapshot": grade_weights_from_document(course.get("grade_weights")),
@@ -5888,6 +6893,8 @@ async def duplicate_class_for_new_period(
         "semester": semester,
         "course_id": course["id"],
         "course_name": course.get("name", source.get("course_name", "")),
+        "course_code": course.get("code") or source.get("course_code", ""),
+        "sks": course.get("sks", course.get("total_sks", 0)),
         "program_id": course.get("program_id", source.get("program_id", "")),
         "program_name": course.get("program_name", source.get("program_name", "")),
         "name": name,
@@ -5917,6 +6924,8 @@ async def update_class(class_id: str, payload: ClassInput, user: Dict[str, Any] 
     update.update(
         {
             "course_name": course["name"],
+            "course_code": course.get("code") or course.get("kode", ""),
+            "sks": course.get("sks", course.get("total_sks", 0)),
             "program_id": course.get("program_id", ""),
             "program_name": course.get("program_name", ""),
             "updated_at": now_iso(),
@@ -6158,12 +7167,25 @@ async def reset_student_password(
 async def list_students(user: Dict[str, Any] = Depends(require_admin)):
     query: Dict[str, Any] = {"role": "student"}
     progress_class_ids: Optional[List[str]] = None
-    if not is_campus_admin(user):
+
+    is_kaprodi = (
+        user.get("is_kaprodi") is True
+        or str(user.get("is_kaprodi")).lower() == "true"
+        or bool(user.get("kaprodi_prodi_id"))
+        or "kaprodi" in str(user.get("jabatan_akademik") or "").lower()
+        or "ketua prodi" in str(user.get("jabatan_akademik") or "").lower()
+    )
+    kaprodi_prodi = user.get("kaprodi_prodi_id") or user.get("prodi_id")
+
+    if user.get("role") != "admin" and is_kaprodi and kaprodi_prodi:
+        query["$or"] = [
+            {"prodi_id": kaprodi_prodi},
+            {"prodi_kode": kaprodi_prodi},
+            {"program_id": kaprodi_prodi}
+        ]
+    elif not is_campus_admin(user):
         class_ids = await lecturer_class_ids(user)
         progress_class_ids = class_ids
-        # Dosen dapat memilih mahasiswa aktif dari seluruh katalog kampus.
-        # Mahasiswa nonaktif tetap dikembalikan hanya bila sudah ada di kelas
-        # yang dikelola dosen agar keanggotaannya tetap terlihat.
         query["$or"] = [
             {"status": "active"},
             {"status": {"$exists": False}},
@@ -6180,7 +7202,8 @@ async def list_students(user: Dict[str, Any] = Depends(require_admin)):
 
 @api_router.post("/students")
 async def create_student(payload: StudentInput, user: Dict[str, Any] = Depends(require_campus_admin)):
-    await require_class_mutation_access(payload.class_id, user)
+    if payload.class_id:
+        await require_class_mutation_access(payload.class_id, user)
     identity = student_identity_values(payload.email, payload.nim, payload.nim, payload.whatsapp)
     existing = await db.users.find_one(
         student_identity_conflict_query(
@@ -6193,6 +7216,21 @@ async def create_student(payload: StudentInput, user: Dict[str, Any] = Depends(r
     )
     if existing:
         raise HTTPException(status_code=409, detail="Email, username, NIM, atau WhatsApp mahasiswa sudah digunakan")
+    
+    prodi_name = ""
+    prodi_kode = ""
+    if payload.prodi_id:
+        p = await db.programs.find_one({"id": payload.prodi_id}, {"_id": 0, "nama": 1, "name": 1, "kode": 1, "code": 1})
+        if p:
+            prodi_name = p.get("nama") or p.get("name", "")
+            prodi_kode = p.get("kode") or p.get("code", "")
+
+    dosen_wali_name = ""
+    if payload.dosen_wali_id:
+        dw = await db.users.find_one({"id": payload.dosen_wali_id}, {"_id": 0, "name": 1})
+        if dw:
+            dosen_wali_name = dw.get("name", "")
+
     student_id = new_id()
     doc = {
         "id": student_id,
@@ -6204,12 +7242,19 @@ async def create_student(payload: StudentInput, user: Dict[str, Any] = Depends(r
         "whatsapp": identity["whatsapp"],
         "password_hash": hash_password(payload.password),
         "status": payload.status,
-        "class_ids": [payload.class_id],
+        "class_ids": [payload.class_id] if payload.class_id else [],
+        "prodi_id": payload.prodi_id or "",
+        "prodi_name": prodi_name,
+        "prodi_kode": prodi_kode,
+        "angkatan": payload.angkatan or "2024",
+        "dosen_wali_id": payload.dosen_wali_id or "",
+        "dosen_wali_name": dosen_wali_name,
         "created_at": now_iso(),
         "last_login_at": "",
     }
     await db.users.insert_one(doc)
-    await db.classes.update_one({"id": payload.class_id}, {"$addToSet": {"student_ids": student_id}})
+    if payload.class_id:
+        await db.classes.update_one({"id": payload.class_id}, {"$addToSet": {"student_ids": student_id}})
     return public_doc(doc)
 
 
@@ -6218,9 +7263,19 @@ async def import_students(
     class_id: str,
     file: UploadFile = File(...),
     default_password: str = Form(""),
+    prodi_id: str = Form(""),
     user: Dict[str, Any] = Depends(require_campus_admin),
 ):
     class_doc = await require_class_mutation_access(class_id, user)
+
+    prodi_name = ""
+    prodi_kode = ""
+    if prodi_id:
+        p = await db.programs.find_one({"id": prodi_id}, {"_id": 0, "nama": 1, "name": 1, "kode": 1, "code": 1})
+        if p:
+            prodi_name = p.get("nama") or p.get("name", "")
+            prodi_kode = p.get("kode") or p.get("code", "")
+
     content = await file.read()
     workbook = load_workbook(io.BytesIO(content))
     sheet = workbook.active
@@ -6300,6 +7355,9 @@ async def import_students(
                 "password_hash": hash_password(password),
                 "status": "active",
                 "class_ids": [class_id],
+                "prodi_id": prodi_id,
+                "prodi_name": prodi_name,
+                "prodi_kode": prodi_kode,
                 "created_at": now_iso(),
                 "last_login_at": "",
             }
@@ -6336,13 +7394,16 @@ async def list_materials(user: Dict[str, Any] = Depends(get_current_user)):
 @api_router.post("/materials")
 async def create_material(payload: MaterialInput, user: Dict[str, Any] = Depends(require_admin)):
     class_doc = await require_class_mutation_access(payload.class_id, user)
+    await require_rps_complete(payload.class_id)
     async with _material_creation_lock:
         meeting_number = await db.materials.count_documents({"class_id": payload.class_id}) + 1
         doc = normalized_material_payload(payload)
+        rps_meeting_number = payload.rps_meeting_number or None
         doc.update(
             {
                 "id": new_id(),
-                "meeting": f"Pertemuan {meeting_number}",
+                "meeting": f"Pertemuan {rps_meeting_number}" if rps_meeting_number else f"Pertemuan {meeting_number}",
+                "rps_meeting_number": rps_meeting_number,
                 "created_at": now_iso(),
                 "created_by": user["id"],
                 "lecturer_id": class_doc.get("lecturer_id", user["id"]),
@@ -6374,6 +7435,7 @@ async def update_material(material_id: str, payload: MaterialInput, user: Dict[s
         raise HTTPException(status_code=404, detail="Pertemuan tidak ditemukan")
     await require_class_mutation_access(existing.get("class_id", ""), user)
     class_doc = await require_class_mutation_access(payload.class_id, user)
+    await require_rps_complete(payload.class_id)
     existing_attachment = existing.get("attachment") if isinstance(existing.get("attachment"), dict) else {}
     attachment_id = existing_attachment.get("file_id") or existing_attachment.get("id")
     attachment_url = local_file_urls(attachment_id)["file_url"] if attachment_id else ""
@@ -6675,6 +7737,17 @@ async def list_assignments(background_tasks: BackgroundTasks, user: Dict[str, An
             assignment["my_submission"] = subs_by_assignment.get(assignment["id"])
     for assignment in assignments:
         class_doc = classes_by_id.get(assignment.get("class_id", ""), {})
+        ay = class_doc.get("academic_year") or ""
+        sem = class_doc.get("semester") or ""
+        assignment["academic_year"] = ay
+        assignment["semester"] = sem
+        if ay and sem:
+            assignment["period_name"] = f"{ay} {sem}"
+        elif ay:
+            assignment["period_name"] = ay
+        else:
+            assignment["period_name"] = "Dokumen Evaluasi / SIAP"
+
         assignment["class_status"] = class_doc.get("status", "")
         assignment["class_status_label"] = class_doc.get("status_label", class_status_label(class_doc.get("status", "")))
         assignment["class_read_only"] = class_is_read_only(class_doc)
@@ -6696,6 +7769,7 @@ async def list_assignments(background_tasks: BackgroundTasks, user: Dict[str, An
 @api_router.post("/assignments")
 async def create_assignment(payload: AssignmentInput, background_tasks: BackgroundTasks, user: Dict[str, Any] = Depends(require_admin)):
     class_doc = await require_class_mutation_access(payload.class_id, user)
+    await require_rps_complete(payload.class_id)
     doc = payload.model_dump()
     doc["assessment_category"] = normalize_assessment_category(doc.get("assessment_category"))
     doc["attachment_link"] = str(doc.get("attachment_link") or "").strip()
@@ -6748,6 +7822,7 @@ async def update_assignment(
         raise HTTPException(status_code=404, detail="Tugas tidak ditemukan")
     await require_class_mutation_access(existing.get("class_id", ""), user)
     class_doc = await require_class_mutation_access(payload.class_id, user)
+    await require_rps_complete(payload.class_id)
     doc = payload.model_dump()
     doc["assessment_category"] = normalize_assessment_category(doc.get("assessment_category"))
     doc["attachment_link"] = str(doc.get("attachment_link") or "").strip()
@@ -7004,20 +8079,26 @@ async def stored_file_context(
     token: str = "",
     authorization: Optional[str] = Header(None),
 ) -> tuple[Dict[str, Any], Dict[str, Any], Path, bool]:
-    auth_token = token.strip()
-    if not auth_token and authorization and authorization.startswith("Bearer "):
-        auth_token = authorization.replace("Bearer ", "", 1).strip()
-    if not auth_token:
-        raise HTTPException(status_code=401, detail="Token diperlukan")
-    session = await db.sessions.find_one({"token": auth_token}, {"_id": 0})
-    if not session:
-        raise HTTPException(status_code=401, detail="Sesi tidak ditemukan")
-    user = await find_user(session["user_id"])
     file_doc = await db.stored_files.find_one({"id": file_id}, {"_id": 0})
     if not file_doc:
         file_doc = await db.drive_files.find_one({"id": file_id}, {"_id": 0})
     if not file_doc:
         raise HTTPException(status_code=404, detail="File tidak ditemukan")
+
+    auth_token = token.strip()
+    if not auth_token and authorization and authorization.startswith("Bearer "):
+        auth_token = authorization.replace("Bearer ", "", 1).strip()
+
+    is_public = file_doc.get("record_type") in {"avatar", "campus_logo", "branding_logo", "kop_header", "kop_footer"}
+    user: Dict[str, Any] = {}
+    if auth_token:
+        session = await db.sessions.find_one({"token": auth_token}, {"_id": 0})
+        if session:
+            user = await find_user(session["user_id"]) or {}
+        elif not is_public:
+            raise HTTPException(status_code=401, detail="Sesi tidak ditemukan")
+    elif not is_public:
+        raise HTTPException(status_code=401, detail="Token diperlukan")
     if user.get("role") == "student" and file_doc.get("submission_id") and file_doc.get("uploaded_by") != user.get("id"):
         raise HTTPException(status_code=403, detail="Tidak punya akses ke file ini")
     if file_doc.get("record_type") == "chat_image" and user.get("id") not in file_doc.get("chat_participant_ids", []):
@@ -7288,6 +8369,7 @@ async def grade_submission(
 ):
     submission = await require_submission_access(submission_id, user)
     assignment = await db.assignments.find_one({"id": submission["assignment_id"]}, {"_id": 0}) or {}
+    await require_rps_complete(submission.get("class_id") or assignment.get("class_id", ""))
     weighted = sum((item.score * item.weight) / 100 for item in payload.rubric_scores)
     penalty = 0.0
     penalty_rate = submission.get("assignment_late_penalty_per_day", assignment.get("late_penalty_per_day", 0))
@@ -7408,6 +8490,7 @@ async def bulk_grade_submissions(
         except HTTPException:
             results.append({"submission_id": item.submission_id, "status": "not_found"})
             continue
+        await require_rps_complete(submission.get("class_id", ""))
         assignment = await db.assignments.find_one({"id": submission["assignment_id"]}, {"_id": 0}) or {}
         rubric = assignment.get("rubric") or [{"criterion": "Nilai total", "weight": 100}]
         rubric_scores = [
@@ -7637,6 +8720,7 @@ async def get_grade_predicates(class_id: str = "", user: Dict[str, Any] = Depend
 async def save_grade_predicates(payload: GradePredicateInput, user: Dict[str, Any] = Depends(require_admin)):
     if payload.class_id:
         await require_class_mutation_access(payload.class_id, user)
+        await require_rps_complete(payload.class_id)
     elif user.get("role") == "lecturer":
         raise HTTPException(status_code=400, detail="Dosen harus memilih kelas untuk menyimpan predikat")
     predicates = validate_grade_predicates([item.model_dump() for item in payload.predicates])
@@ -7728,14 +8812,23 @@ async def list_reminders(user: Dict[str, Any] = Depends(get_current_user)):
 
 
 async def build_grade_recap(
-    user: Dict[str, Any],
+    user: Optional[Dict[str, Any]] = None,
     class_id: Optional[str] = None,
     use_snapshots: bool = True,
 ) -> List[Dict[str, Any]]:
-    class_ids = await lecturer_class_ids(user)
-    if class_id and class_id not in class_ids:
-        raise HTTPException(status_code=404, detail="Kelas tidak ditemukan")
-    scoped_ids = [class_id] if class_id else class_ids
+    if user and not is_campus_admin(user):
+        class_ids = await lecturer_class_ids(user)
+        if class_id and class_id not in class_ids:
+            raise HTTPException(status_code=404, detail="Kelas tidak ditemukan")
+        scoped_ids = [class_id] if class_id else class_ids
+    else:
+        if class_id:
+            scoped_ids = [class_id]
+        elif user:
+            class_ids = await lecturer_class_ids(user)
+            scoped_ids = class_ids
+        else:
+            scoped_ids = []
     classes = await db.classes.find({"id": {"$in": scoped_ids}}, {"_id": 0}).to_list(500)
     if not classes:
         return []
@@ -7992,8 +9085,12 @@ async def grade_recap(class_id: Optional[str] = None, user: Dict[str, Any] = Dep
 
 @api_router.get("/settings")
 async def get_settings(_: Dict[str, Any] = Depends(get_current_user)):
-    settings = await db.app_settings.find_one({"id": "main"}, {"_id": 0})
-    return settings or default_app_settings()
+    settings = await db.app_settings.find_one({"id": "main"}, {"_id": 0}) or default_app_settings()
+    active_ta = await db.tahun_ajaran.find_one({"is_active": True}, {"_id": 0})
+    if active_ta:
+        settings["active_academic_year"] = active_ta.get("tahun") or settings.get("active_academic_year")
+        settings["active_semester"] = active_ta.get("semester") or settings.get("active_semester")
+    return settings
 
 
 @api_router.get("/settings/public")
@@ -8097,28 +9194,1446 @@ async def user_activity_logging_middleware(request: Request, call_next):
         )
     return response
 
-
-app.include_router(api_router)
+_cors_raw = os.environ.get("CORS_ORIGINS", "*")
+if _cors_raw == "*":
+    _cors_origins = ["*"]
+else:
+    _cors_origins = [o.strip() for o in _cors_raw.split(",") if o.strip()]
+    for _def_orig in ["http://localhost:3000", "http://127.0.0.1:3000", "http://localhost:3001", "http://127.0.0.1:3001"]:
+        if _def_orig not in _cors_origins:
+            _cors_origins.append(_def_orig)
 
 app.add_middleware(
     CORSMiddleware,
     allow_credentials=True,
-    allow_origins=os.environ.get("CORS_ORIGINS", "*").split(","),
+    allow_origins=_cors_origins,
     allow_methods=["*"],
     allow_headers=["*"],
 )
 app.add_middleware(GZipMiddleware, minimum_size=1000)
 
 
+# ==========================================
+# RPS & ATTENDANCE (PRESENSI 16 SESI) APIs
+# ==========================================
+
+def generate_default_16_meetings(course_name: str) -> List[Dict[str, Any]]:
+    meetings = []
+    for i in range(1, 17):
+        if i == 8:
+            topic = "Evaluasi Tengah Semester (UTS)"
+            sub_topic = "Ujian Tertulis / Praktek Tengah Semester"
+            is_exam = True
+        elif i == 16:
+            topic = "Evaluasi Akhir Semester (UAS)"
+            sub_topic = "Ujian Akhir Semester / Proyek Akhir"
+            is_exam = True
+        else:
+            week_num = i if i < 8 else i - 1
+            topic = f"Pertemuan {i}: Pengenalan & Pokok Bahasan Minggu ke-{week_num}"
+            sub_topic = f"Pembahasan konsep dasar & studi kasus {course_name} Bagian {week_num}"
+            is_exam = False
+        if is_exam:
+            meetings.append({
+                "meeting_number": i,
+                "topic": topic,
+                "sub_topic": sub_topic,
+                "learning_outcome": "Menunjukkan penguasaan keseluruhan capaian pembelajaran",
+                "method": "Evaluasi Mandiri",
+                "materials": "Kisi-kisi & modul seluruh pertemuan",
+                "assignments": "Ujian Evaluasi",
+                "waktu": "90 menit",
+                "penilaian_teknik": "Ujian tertulis / praktik",
+                "penilaian_indikator": "Ketepatan jawaban terhadap kisi-kisi",
+                "penilaian_kriteria": "Nilai ujian",
+                "penilaian_bobot": "15%" if i == 8 else "20%",
+                "is_exam": True,
+            })
+        else:
+            meetings.append({
+                "meeting_number": i,
+                "topic": topic,
+                "sub_topic": sub_topic,
+                "learning_outcome": f"Mahasiswa mampu memahami dan menguasai konsep Sesi {i}",
+                "method": "Presentasi, diskusi, dan penugasan",
+                "materials": f"Slide & Modul Pertemuan {i}",
+                "assignments": "Kuis singkat & Latihan mandiri",
+                "waktu": "KPB 3x50",
+                "penilaian_teknik": "FGD / penugasan",
+                "penilaian_indikator": "Pemahaman terhadap materi",
+                "penilaian_kriteria": "Kehadiran, penguasaan materi",
+                "penilaian_bobot": "",
+                "is_exam": False,
+            })
+    return meetings
+
+
+class RPSMeetingItem(BaseModel):
+    meeting_number: int
+    topic: str
+    sub_topic: str = ""
+    learning_outcome: str = ""
+    method: str = "Tatap Muka / Blended Learning"
+    materials: str = ""
+    assignments: str = ""
+    waktu: str = ""
+    penilaian_teknik: str = ""
+    penilaian_indikator: str = ""
+    penilaian_kriteria: str = ""
+    penilaian_bobot: str = ""
+    is_exam: bool = False
+
+
+class RPSInput(BaseModel):
+    course_code: str = ""
+    semester: str = ""
+    sks: str = ""
+    program_name: str = ""
+    lecturer_name: str = ""
+    compiled_at: str = ""
+    cpl_sikap: str = ""
+    cpl_keterampilan_umum: str = ""
+    cpl_pengetahuan: str = ""
+    cpl_keterampilan_khusus: str = ""
+    keterangan: str = ""
+    cpmk: str = ""
+    description: str = ""
+    references: str = ""
+    document_url: str = ""
+    meetings: List[RPSMeetingItem] = []
+
+
+def rps_meeting_label(meeting: Dict[str, Any]) -> str:
+    return f"sesi {meeting.get('meeting_number', '?')}"
+
+
+async def class_rps_complete(class_id: str) -> tuple[bool, List[str]]:
+    """Cek apakah RPS kelas sudah disusun lengkap sesuai template.
+
+    Lengkap = dokumen RPS tersimpan, kolom header wajib terisi (CPMK,
+    deskripsi, daftar referensi), dan seluruh 16 pertemuan terisi kolom
+    topik + materi pembelajaran; pertemuan non-ujian juga wajib terisi
+    kemampuan yang diharapkan, metode, dan waktu.
+    """
+    rps = await db.rps.find_one({"class_id": class_id}, {"_id": 0})
+    if not rps:
+        return False, ["RPS belum disusun"]
+
+    missing: List[str] = []
+    for field, label in (
+        ("cpmk", "CPMK"),
+        ("description", "Deskripsi Mata Kuliah"),
+        ("references", "Daftar Referensi"),
+    ):
+        if not str(rps.get(field) or "").strip():
+            missing.append(label)
+
+    meetings = rps.get("meetings") or []
+    if len(meetings) < 16:
+        missing.append(f"16 pertemuan (baru terisi {len(meetings)})")
+    else:
+        for m in meetings:
+            num = m.get("meeting_number", "?")
+            if not str(m.get("topic") or "").strip():
+                missing.append(f"topik {rps_meeting_label(m)}")
+            if not str(m.get("materials") or "").strip():
+                missing.append(f"materi pembelajaran {rps_meeting_label(m)}")
+            if not m.get("is_exam"):
+                for field, label in (
+                    ("learning_outcome", "kemampuan yang diharapkan"),
+                    ("method", "metode pembelajaran"),
+                    ("waktu", "waktu (menit)"),
+                ):
+                    if not str(m.get(field) or "").strip():
+                        missing.append(f"{label} {rps_meeting_label(m)}")
+
+    return (not missing), sorted(set(missing))
+
+
+async def require_rps_complete(class_id: str) -> None:
+    complete, missing = await class_rps_complete(class_id)
+    if not complete:
+        detail = (
+            "RPS belum disusun lengkap untuk kelas ini. "
+            "Susun dan lengkapi RPS terlebih dahulu sebelum membuat materi, tugas, atau penilaian."
+        )
+        if missing:
+            detail += f" Kolom yang belum lengkap: {', '.join(missing[:8])}."
+        raise HTTPException(status_code=400, detail=detail)
+
+
+class StudentAttendanceRecord(BaseModel):
+    student_id: str
+    status: str = "Hadir"
+    note: str = ""
+
+
+class AttendanceSessionInput(BaseModel):
+    meeting_number: int
+    date: str = ""
+    topic: str = ""
+    status: str = "open"
+    records: List[StudentAttendanceRecord] = []
+
+
+class SubmitPinInput(BaseModel):
+    meeting_number: int
+    pin_code: str
+
+
+class SubmitQrInput(BaseModel):
+    qr_content: str
+
+
+class LockAttendanceInput(BaseModel):
+    meeting_number: int
+    locked: bool = True
+
+
+def _attendance_qr_content(class_id: str, meeting_number: int, secret: str) -> str:
+    return f"QRATT:{class_id}:{meeting_number}:{secret}"
+
+
+def _qr_png_data_url(content: str) -> str:
+    qr = segno.make(content, error="m")
+    buf = io.BytesIO()
+    qr.save(buf, kind="png", scale=6, border=2)
+    b64 = base64.b64encode(buf.getvalue()).decode("ascii")
+    return f"data:image/png;base64,{b64}"
+
+
+def _attendance_expired(exp_str: str) -> bool:
+    if not exp_str:
+        return False
+    exp_dt = parse_iso_datetime(exp_str)
+    return bool(exp_dt) and datetime.now(timezone.utc) > exp_dt
+
+
+def _mark_student_present(session: Dict[str, Any], student_id: str, note: str) -> None:
+    records = session.get("records") or []
+    rec = next((r for r in records if r.get("student_id") == student_id), None)
+    if rec:
+        rec["status"] = "Hadir"
+        rec["note"] = note
+        rec["updated_at"] = now_iso()
+    else:
+        records.append({
+            "student_id": student_id,
+            "status": "Hadir",
+            "note": note,
+            "updated_at": now_iso()
+        })
+    session["records"] = records
+    session["updated_at"] = now_iso()
+
+
+async def _load_attendance_session(class_id: str, meeting_number: int) -> Dict[str, Any]:
+    return await db.attendance_sessions.find_one(
+        {"class_id": class_id, "meeting_number": meeting_number}, {"_id": 0}
+    ) or {
+        "class_id": class_id,
+        "meeting_number": meeting_number,
+        "date": now_iso()[:10],
+        "topic": f"Pertemuan {meeting_number}",
+        "status": "draft",
+        "pin_code": "",
+        "pin_expires_at": "",
+        "qr_code": "",
+        "qr_content": "",
+        "qr_expires_at": "",
+        "expires_minutes": 15,
+        "method": "",
+        "locked": False,
+        "records": []
+    }
+
+
+async def _load_rps_doc(class_doc: Dict[str, Any]) -> Dict[str, Any]:
+    class_id = class_doc.get("id", "")
+    rps = await db.rps.find_one({"class_id": class_id}, {"_id": 0})
+    if not rps:
+        rps = {
+            "class_id": class_id,
+            "cpmk": f"Memahami konsep dasar dan terapan dari mata kuliah {class_doc.get('course_name', 'ini')}.",
+            "description": f"Rencana Pembelajaran Semester untuk {class_doc.get('course_name', '')}.",
+            "references": "1. Buku Referensi Utama\n2. Modul Perkuliahan LMS",
+            "document_url": "",
+            "meetings": generate_default_16_meetings(class_doc.get("course_name", "Mata Kuliah")),
+            "updated_at": now_iso()
+        }
+    rps.setdefault("course_code", class_doc.get("course_code", ""))
+    rps.setdefault("semester", class_doc.get("semester", ""))
+    rps.setdefault("sks", str(class_doc.get("sks") or ""))
+    rps.setdefault("program_name", class_doc.get("program_name", ""))
+    rps.setdefault("lecturer_name", class_doc.get("lecturer_name", ""))
+    rps.setdefault("compiled_at", "")
+    rps.setdefault("cpl_sikap", "")
+    rps.setdefault("cpl_keterampilan_umum", "")
+    rps.setdefault("cpl_pengetahuan", "")
+    rps.setdefault("cpl_keterampilan_khusus", "")
+    rps.setdefault("keterangan", "Kegiatan Proses Belajar (KPB); Kegiatan Penanganan Terstruktur (KPT); dan Kegiatan Mandiri (KM); Seminar (S); Praktikum/Praktik Lapangan (P/PL).")
+    return rps
+
+
+@api_router.get("/classes/{class_id}/rps")
+async def get_class_rps(class_id: str, user: Dict[str, Any] = Depends(get_current_user)):
+    await require_class_access(class_id, user)
+    class_doc = await db.classes.find_one({"id": class_id}, {"_id": 0}) or {}
+    class_doc = await enrich_class_payload(class_doc) if class_doc else {}
+    rps = await _load_rps_doc(class_doc)
+    complete, missing = await class_rps_complete(class_id)
+    rps["is_complete"] = complete
+    rps["missing_fields"] = missing
+    return rps
+
+
+@api_router.post("/classes/{class_id}/rps")
+async def save_class_rps(class_id: str, payload: RPSInput, user: Dict[str, Any] = Depends(require_admin)):
+    class_doc = await require_class_access(class_id, user)
+    class_doc = await enrich_class_payload(class_doc)
+    doc = payload.model_dump()
+    doc.update({
+        "class_id": class_id,
+        "course_name": class_doc.get("course_name", ""),
+        "course_code": doc.get("course_code") or class_doc.get("course_code", ""),
+        "semester": doc.get("semester") or class_doc.get("semester", ""),
+        "sks": doc.get("sks") or str(class_doc.get("sks") or ""),
+        "program_name": doc.get("program_name") or class_doc.get("program_name", ""),
+        "lecturer_name": doc.get("lecturer_name") or class_doc.get("lecturer_name", ""),
+        "updated_at": now_iso(),
+        "updated_by": user["id"]
+    })
+    await db.rps.update_one({"class_id": class_id}, {"$set": doc}, upsert=True)
+    complete, missing = await class_rps_complete(class_id)
+    doc["is_complete"] = complete
+    doc["missing_fields"] = missing
+    return doc
+
+
+@api_router.post("/classes/{class_id}/rps/generate-meetings")
+async def generate_class_rps_meetings(class_id: str, user: Dict[str, Any] = Depends(require_admin)):
+    class_doc = await require_class_access(class_id, user)
+    meetings = generate_default_16_meetings(class_doc.get("course_name", "Mata Kuliah"))
+    rps = await db.rps.find_one({"class_id": class_id}, {"_id": 0}) or {
+        "class_id": class_id,
+        "cpmk": f"Memahami konsep dasar dan terapan dari mata kuliah {class_doc.get('course_name', 'ini')}.",
+        "description": f"Rencana Pembelajaran Semester untuk {class_doc.get('course_name', '')}.",
+        "references": "1. Buku Referensi Utama\n2. Modul Perkuliahan LMS",
+        "document_url": "",
+    }
+    rps["meetings"] = meetings
+    rps["updated_at"] = now_iso()
+    rps["updated_by"] = user["id"]
+    await db.rps.update_one({"class_id": class_id}, {"$set": rps}, upsert=True)
+    return rps
+
+
+# ---------------------------------------------------------------------------
+# Export RPS ke Excel / Word / PDF
+# ---------------------------------------------------------------------------
+
+_RPS_MEETING_COLUMNS = [
+    ("Minggu/Pertemuan ke", 900),
+    ("Kemampuan yang Diharapkan", 2600),
+    ("Materi Pembelajaran", 2200),
+    ("Bentuk/Metode/Pengalaman Belajar", 2000),
+    ("Waktu", 900),
+    ("Penilaian (Teknik)", 1400),
+    ("Penilaian (Bobot)", 800),
+    ("Penilaian (Indikator)", 1700),
+    ("Penilaian (Kriteria)", 1700),
+    ("Tugas/Aktivitas", 1700),
+]
+
+
+def _rps_export_value(rps: Dict[str, Any], key: str) -> str:
+    return str(rps.get(key) or "").strip()
+
+
+def _rps_export_filename(class_doc: Dict[str, Any], ext: str) -> str:
+    import re as _re
+    base = class_doc.get("course_code") or class_doc.get("course_name") or "RPS"
+    base = _re.sub(r"[^A-Za-z0-9\-_]+", "-", str(base)).strip("-")
+    return f"RPS-{base or 'Kelas'}.{ext}"
+
+
+def build_rps_xlsx(rps: Dict[str, Any], class_doc: Dict[str, Any], settings: Dict[str, Any], stream) -> None:
+    workbook = Workbook()
+    sheet = workbook.active
+    sheet.title = "RPS"
+    sheet.sheet_view.showGridLines = False
+
+    thin = Side(style="thin", color="999999")
+    border = Border(left=thin, right=thin, top=thin, bottom=thin)
+    header_fill = PatternFill("solid", fgColor="D9E2F3")
+    label_fill = PatternFill("solid", fgColor="F2F2F2")
+    title_font = Font(bold=True, size=14)
+    sub_font = Font(bold=True, size=11)
+    normal = Alignment(vertical="top", wrap_text=True)
+    center = Alignment(horizontal="center", vertical="center", wrap_text=True)
+
+    header = (settings.get("kop_letterhead") or "").splitlines() or ["RENCANA PEMBELAJARAN SEMESTER (RPS)"]
+    for line in header[:2]:
+        sheet.append([line])
+        sheet.merge_cells(start_row=sheet.max_row, start_column=1, end_row=sheet.max_row, end_column=10)
+        cell = sheet.cell(row=sheet.max_row, column=1)
+        cell.font = Font(bold=True, size=12)
+        cell.alignment = center
+        sheet.row_dimensions[sheet.max_row].height = 20
+
+    sheet.append(["RENCANA PEMBELAJARAN SEMESTER (RPS)"])
+    sheet.merge_cells(start_row=sheet.max_row, start_column=1, end_row=sheet.max_row, end_column=10)
+    sheet.cell(row=sheet.max_row, column=1).font = title_font
+    sheet.cell(row=sheet.max_row, column=1).alignment = center
+    sheet.append([f"{_rps_export_value(rps, 'course_code')} - {_rps_export_value(rps, 'program_name') or class_doc.get('program_name', '')} - {class_doc.get('course_name', '')}"])
+    sheet.merge_cells(start_row=sheet.max_row, start_column=1, end_row=sheet.max_row, end_column=10)
+    sheet.cell(row=sheet.max_row, column=1).alignment = center
+    sheet.append([])
+
+    identity = [
+        ("Kode Mata Kuliah", _rps_export_value(rps, "course_code")),
+        ("Semester / SKS", f"{_rps_export_value(rps, 'semester')} / {_rps_export_value(rps, 'sks')} SKS"),
+        ("Program Studi", _rps_export_value(rps, "program_name") or class_doc.get("program_name", "")),
+        ("Dosen Pengampu", _rps_export_value(rps, "lecturer_name") or class_doc.get("lecturer_name", "")),
+        ("Tanggal Penyusunan", _rps_export_value(rps, "compiled_at")),
+        ("Rombongan Belajar", f"{class_doc.get('course_name', '')} - {class_doc.get('name', '')}"),
+    ]
+    for label, value in identity:
+        sheet.append([label, value, "", "", "", "", "", "", "", ""])
+        sheet.merge_cells(start_row=sheet.max_row, start_column=2, end_row=sheet.max_row, end_column=10)
+        sheet.cell(row=sheet.max_row, column=1).font = Font(bold=True)
+        sheet.cell(row=sheet.max_row, column=1).fill = label_fill
+        sheet.cell(row=sheet.max_row, column=1).alignment = normal
+        sheet.cell(row=sheet.max_row, column=2).alignment = normal
+        sheet.cell(row=sheet.max_row, column=2).border = border
+    sheet.append([])
+
+    def append_section(title: str, text: str) -> None:
+        sheet.append([title, "", "", "", "", "", "", "", "", ""])
+        sheet.merge_cells(start_row=sheet.max_row, start_column=1, end_row=sheet.max_row, end_column=10)
+        sheet.cell(row=sheet.max_row, column=1).font = sub_font
+        sheet.cell(row=sheet.max_row, column=1).fill = header_fill
+        sheet.append([text, "", "", "", "", "", "", "", "", ""])
+        sheet.merge_cells(start_row=sheet.max_row, start_column=1, end_row=sheet.max_row, end_column=10)
+        sheet.cell(row=sheet.max_row, column=1).alignment = normal
+        sheet.cell(row=sheet.max_row, column=1).border = border
+
+    append_section("CAPAIAN PEMBELAJARAN LULUSAN (CPL) - Sikap", _rps_export_value(rps, "cpl_sikap"))
+    append_section("CPL - Keterampilan Umum", _rps_export_value(rps, "cpl_keterampilan_umum"))
+    append_section("CPL - Pengetahuan", _rps_export_value(rps, "cpl_pengetahuan"))
+    append_section("CPL - Keterampilan Khusus", _rps_export_value(rps, "cpl_keterampilan_khusus"))
+    append_section("CPMK", _rps_export_value(rps, "cpmk"))
+    append_section("Deskripsi Mata Kuliah", _rps_export_value(rps, "description"))
+    append_section("Daftar Referensi", _rps_export_value(rps, "references"))
+
+    sheet.append([])
+    sheet.append(["TABEL PEMBELAJARAN (16 PERTEMUAN)", "", "", "", "", "", "", "", "", ""])
+    sheet.merge_cells(start_row=sheet.max_row, start_column=1, end_row=sheet.max_row, end_column=10)
+    sheet.cell(row=sheet.max_row, column=1).font = sub_font
+    sheet.cell(row=sheet.max_row, column=1).fill = header_fill
+
+    header_row = sheet.max_row + 1
+    for col_idx, (col_name, _width) in enumerate(_RPS_MEETING_COLUMNS, start=1):
+        cell = sheet.cell(row=header_row, column=col_idx, value=col_name)
+        cell.font = Font(bold=True, size=9)
+        cell.fill = header_fill
+        cell.alignment = center
+        cell.border = border
+    sheet.row_dimensions[header_row].height = 30
+
+    for meeting in (rps.get("meetings") or []):
+        row_vals = [
+            meeting.get("meeting_number", ""),
+            meeting.get("learning_outcome") or meeting.get("sub_cpmk") or "",
+            meeting.get("materials") or "",
+            meeting.get("method") or "",
+            meeting.get("waktu") or "",
+            meeting.get("penilaian_teknik") or "",
+            meeting.get("penilaian_bobot") or "",
+            meeting.get("penilaian_indikator") or "",
+            meeting.get("penilaian_kriteria") or "",
+            meeting.get("assignments") or "",
+        ]
+        sheet.append(row_vals)
+        for col_idx in range(1, 11):
+            cell = sheet.cell(row=sheet.max_row, column=col_idx)
+            cell.font = Font(size=9)
+            cell.alignment = normal
+            cell.border = border
+
+    if (rps.get("keterangan") or "").strip():
+        sheet.append([])
+        sheet.append(["KETERANGAN", "", "", "", "", "", "", "", "", ""])
+        sheet.merge_cells(start_row=sheet.max_row, start_column=1, end_row=sheet.max_row, end_column=10)
+        sheet.cell(row=sheet.max_row, column=1).font = sub_font
+        sheet.cell(row=sheet.max_row, column=1).fill = header_fill
+        sheet.append([str(rps.get("keterangan") or ""), "", "", "", "", "", "", "", "", ""])
+        sheet.merge_cells(start_row=sheet.max_row, start_column=1, end_row=sheet.max_row, end_column=10)
+        sheet.cell(row=sheet.max_row, column=1).alignment = normal
+
+    widths = [18, 32, 30, 28, 12, 20, 12, 24, 24, 22]
+    for col_idx, width in enumerate(widths, start=1):
+        sheet.column_dimensions[chr(64 + col_idx)].width = width
+    sheet.freeze_panes = sheet.cell(row=header_row + 1, column=1)
+
+    workbook.save(stream)
+
+
+def _docx_escape(text: str) -> str:
+    return (
+        str(text or "")
+        .replace("&", "&amp;")
+        .replace("<", "&lt;")
+        .replace(">", "&gt;")
+        .replace('"', "&quot;")
+        .replace("'", "&apos;")
+    )
+
+
+def _docx_par(text: str, *, bold: bool = False, size: int = 22, center: bool = False, after: int = 80) -> str:
+    ppr = ""
+    if center:
+        ppr += '<w:jc w:val="center"/>'
+    if after:
+        ppr += f'<w:spacing w:after="{after}"/>'
+    rpr = f"<w:b/>" if bold else ""
+    if size:
+        rpr += f'<w:sz w:val="{size}"/><w:szCs w:val="{size}"/>'
+    return (
+        f'<w:p><w:pPr>{ppr}</w:pPr>'
+        f'<w:r><w:rPr>{rpr}</w:rPr><w:t xml:space="preserve">{_docx_escape(text)}</w:t></w:r></w:p>'
+    )
+
+
+def _docx_label_block(label: str, value: str) -> str:
+    rpr = "<w:b/>"
+    return (
+        f'<w:p><w:pPr><w:spacing w:after="40"/></w:pPr>'
+        f'<w:r><w:rPr>{rpr}</w:rPr><w:t>{_docx_escape(label)}</w:t></w:r>'
+        f'<w:r><w:t xml:space="preserve"> : {_docx_escape(value)}</w:t></w:r></w:p>'
+    )
+
+
+def _docx_section(title: str, value: str) -> str:
+    return (
+        _docx_par(title, bold=True, size=24, after=40)
+        + _docx_par(value if value else "-", size=20, after=80)
+    )
+
+
+def _docx_table(rows: List[List[str]]) -> str:
+    borders = (
+        '<w:tblBorders>'
+        '<w:top w:val="single" w:sz="4" w:color="999999"/>'
+        '<w:left w:val="single" w:sz="4" w:color="999999"/>'
+        '<w:bottom w:val="single" w:sz="4" w:color="999999"/>'
+        '<w:right w:val="single" w:sz="4" w:color="999999"/>'
+        '<w:insideH w:val="single" w:sz="4" w:color="999999"/>'
+        '<w:insideV w:val="single" w:sz="4" w:color="999999"/>'
+        '</w:tblBorders>'
+    )
+    grid = "".join(f'<w:gridCol w:w="{width}"/>' for _, width in _RPS_MEETING_COLUMNS)
+    trs = []
+    for row_idx, row in enumerate(rows):
+        tcs = []
+        for col_idx, (text, _width) in enumerate(zip(row, _RPS_MEETING_COLUMNS)):
+            width = _RPS_MEETING_COLUMNS[col_idx][1]
+            shade = '<w:shd w:val="clear" w:fill="D9E2F3"/>' if row_idx == 0 else ""
+            rpr = "<w:b/>" if row_idx == 0 else ""
+            tc = (
+                f'<w:tc><w:tcPr><w:tcW w:w="{width}" w:type="dxa"/>{shade}'
+                f'<w:vAlign w:val="top"/></w:tcPr>'
+                f'<w:p><w:r><w:rPr>{rpr}<w:sz w:val="16"/><w:szCs w:val="16"/></w:rPr>'
+                f'<w:t xml:space="preserve">{_docx_escape(text)}</w:t></w:r></w:p></w:tc>'
+            )
+            tcs.append(tc)
+        trs.append(f"<w:tr>{''.join(tcs)}</w:tr>")
+    return (
+        f'<w:tbl><w:tblPr><w:tblW w:w="15900" w:type="dxa"/>{borders}'
+        f'<w:tblLayout w:type="fixed"/></w:tblPr>'
+        f'<w:tblGrid>{grid}</w:tblGrid>{"".join(trs)}</w:tbl>'
+    )
+
+
+def build_rps_docx(rps: Dict[str, Any], class_doc: Dict[str, Any], settings: Dict[str, Any]) -> bytes:
+    header_lines = (settings.get("kop_letterhead") or "").splitlines() or ["RENCANA PEMBELAJARAN SEMESTER (RPS)"]
+    body = []
+    for line in header_lines[:2]:
+        body.append(_docx_par(line, bold=True, size=26, center=True, after=20))
+    body.append(_docx_par("RENCANA PEMBELAJARAN SEMESTER (RPS)", bold=True, size=30, center=True, after=40))
+    body.append(_docx_par(
+        f"{_rps_export_value(rps, 'course_code')} - {_rps_export_value(rps, 'program_name') or class_doc.get('program_name', '')} - {class_doc.get('course_name', '')}",
+        bold=True, size=22, center=True, after=200,
+    ))
+
+    identity = [
+        ("Kode Mata Kuliah", _rps_export_value(rps, "course_code")),
+        ("Semester / SKS", f"{_rps_export_value(rps, 'semester')} / {_rps_export_value(rps, 'sks')} SKS"),
+        ("Program Studi", _rps_export_value(rps, "program_name") or class_doc.get("program_name", "")),
+        ("Dosen Pengampu", _rps_export_value(rps, "lecturer_name") or class_doc.get("lecturer_name", "")),
+        ("Tanggal Penyusunan", _rps_export_value(rps, "compiled_at")),
+        ("Rombongan Belajar", f"{class_doc.get('course_name', '')} - {class_doc.get('name', '')}"),
+    ]
+    for label, value in identity:
+        body.append(_docx_label_block(label, value))
+    body.append(_docx_par("", after=120))
+
+    body.append(_docx_section("CPL - Sikap", _rps_export_value(rps, "cpl_sikap")))
+    body.append(_docx_section("CPL - Keterampilan Umum", _rps_export_value(rps, "cpl_keterampilan_umum")))
+    body.append(_docx_section("CPL - Pengetahuan", _rps_export_value(rps, "cpl_pengetahuan")))
+    body.append(_docx_section("CPL - Keterampilan Khusus", _rps_export_value(rps, "cpl_keterampilan_khusus")))
+    body.append(_docx_section("CPMK", _rps_export_value(rps, "cpmk")))
+    body.append(_docx_section("Deskripsi Mata Kuliah", _rps_export_value(rps, "description")))
+    body.append(_docx_section("Daftar Referensi", _rps_export_value(rps, "references")))
+
+    body.append(_docx_par("TABEL PEMBELAJARAN (16 PERTEMUAN)", bold=True, size=24, after=80))
+    rows = [[name for name, _width in _RPS_MEETING_COLUMNS]]
+    for meeting in (rps.get("meetings") or []):
+        rows.append([
+            str(meeting.get("meeting_number", "")),
+            meeting.get("learning_outcome") or meeting.get("sub_cpmk") or "",
+            meeting.get("materials") or "",
+            meeting.get("method") or "",
+            meeting.get("waktu") or "",
+            meeting.get("penilaian_teknik") or "",
+            meeting.get("penilaian_bobot") or "",
+            meeting.get("penilaian_indikator") or "",
+            meeting.get("penilaian_kriteria") or "",
+            meeting.get("assignments") or "",
+        ])
+    body.append(_docx_table(rows))
+
+    if (rps.get("keterangan") or "").strip():
+        body.append(_docx_par("", after=60))
+        body.append(_docx_section("KETERANGAN", _rps_export_value(rps, "keterangan")))
+
+    body_xml = "".join(body)
+    document_xml = (
+        '<?xml version="1.0" encoding="UTF-8" standalone="yes"?>'
+        '<w:document xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main">'
+        f"<w:body>{body_xml}"
+        '<w:sectPr><w:pgSz w:w="16838" w:h="11906" w:orient="landscape"/>'
+        '<w:pgMar w:top="720" w:right="720" w:bottom="720" w:left="720" w:header="360" w:footer="360" w:gutter="0"/>'
+        "</w:sectPr></w:body></w:document>"
+    )
+    content_types = (
+        '<?xml version="1.0" encoding="UTF-8" standalone="yes"?>'
+        '<Types xmlns="http://schemas.openxmlformats.org/package/2006/content-types">'
+        '<Default Extension="rels" ContentType="application/vnd.openxmlformats-package.relationships+xml"/>'
+        '<Default Extension="xml" ContentType="application/xml"/>'
+        '<Override PartName="/word/document.xml" ContentType="application/vnd.openxmlformats-officedocument.wordprocessingml.document.main+xml"/>'
+        "</Types>"
+    )
+    rels = (
+        '<?xml version="1.0" encoding="UTF-8" standalone="yes"?>'
+        '<Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships">'
+        '<Relationship Id="rId1" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/officeDocument" Target="word/document.xml"/>'
+        "</Relationships>"
+    )
+    stream = io.BytesIO()
+    with zipfile.ZipFile(stream, "w", zipfile.ZIP_DEFLATED) as archive:
+        archive.writestr("[Content_Types].xml", content_types)
+        archive.writestr("_rels/.rels", rels)
+        archive.writestr("word/document.xml", document_xml)
+    return stream.getvalue()
+
+
+def _pdf_split_line(text: str, width: int) -> List[str]:
+    text = _pdf_text(text)
+    if len(text) <= width:
+        return [text] if text else [""]
+    out = []
+    for chunk in text.split(" "):
+        if not chunk:
+            continue
+        if out and len(out[-1]) + len(chunk) + 1 <= width:
+            out[-1] += " " + chunk
+        elif len(chunk) > width:
+            start = 0
+            while start < len(chunk):
+                out.append(chunk[start:start + width])
+                start += width
+        else:
+            out.append(chunk)
+    return out or [""]
+
+
+def build_rps_pdf(rps: Dict[str, Any], class_doc: Dict[str, Any], settings: Dict[str, Any]) -> bytes:
+    lines: List[str] = []
+    header_lines = (settings.get("kop_letterhead") or "").splitlines() or ["RENCANA PEMBELAJARAN SEMESTER (RPS)"]
+    lines.extend(header_lines[:2])
+    lines.append("RENCANA PEMBELAJARAN SEMESTER (RPS)")
+    lines.append(
+        f"{_rps_export_value(rps, 'course_code')} - "
+        f"{_rps_export_value(rps, 'program_name') or class_doc.get('program_name', '')} - "
+        f"{class_doc.get('course_name', '')}"
+    )
+    lines.append("")
+    identity = [
+        ("Kode MK", _rps_export_value(rps, "course_code")),
+        ("Semester/SKS", f"{_rps_export_value(rps, 'semester')} / {_rps_export_value(rps, 'sks')} SKS"),
+        ("Prodi", _rps_export_value(rps, "program_name") or class_doc.get("program_name", "")),
+        ("Dosen Pengampu", _rps_export_value(rps, "lecturer_name") or class_doc.get("lecturer_name", "")),
+        ("Tanggal Penyusunan", _rps_export_value(rps, "compiled_at")),
+        ("Rombongan Belajar", f"{class_doc.get('course_name', '')} - {class_doc.get('name', '')}"),
+    ]
+    for label, value in identity:
+        lines.append(f"{label}: {value}")
+    lines.append("")
+    sections = [
+        ("CPL - Sikap", _rps_export_value(rps, "cpl_sikap")),
+        ("CPL - Keterampilan Umum", _rps_export_value(rps, "cpl_keterampilan_umum")),
+        ("CPL - Pengetahuan", _rps_export_value(rps, "cpl_pengetahuan")),
+        ("CPL - Keterampilan Khusus", _rps_export_value(rps, "cpl_keterampilan_khusus")),
+        ("CPMK", _rps_export_value(rps, "cpmk")),
+        ("Deskripsi Mata Kuliah", _rps_export_value(rps, "description")),
+        ("Daftar Referensi", _rps_export_value(rps, "references")),
+    ]
+    for title, value in sections:
+        lines.append(f"[{title}]")
+        for wrapped in _pdf_split_line(value, 100):
+            lines.append(f"   {wrapped}")
+        lines.append("")
+    lines.append("=" * 100)
+    lines.append("TABEL PEMBELAJARAN (16 PERTEMUAN)")
+    lines.append("=" * 100)
+    for meeting in (rps.get("meetings") or []):
+        lines.append("")
+        lines.append(f"PERTEMUAN {meeting.get('meeting_number', '?')} - {meeting.get('topic') or ''}")
+        pairs = [
+            ("Kemampuan yang diharapkan", meeting.get("learning_outcome") or meeting.get("sub_cpmk") or ""),
+            ("Materi Pembelajaran", meeting.get("materials") or ""),
+            ("Bentuk/Metode/Pengalaman Belajar", meeting.get("method") or ""),
+            ("Waktu", meeting.get("waktu") or ""),
+            ("Penilaian Teknik", meeting.get("penilaian_teknik") or ""),
+            ("Penilaian Bobot", meeting.get("penilaian_bobot") or ""),
+            ("Penilaian Indikator", meeting.get("penilaian_indikator") or ""),
+            ("Penilaian Kriteria", meeting.get("penilaian_kriteria") or ""),
+            ("Tugas/Aktivitas", meeting.get("assignments") or ""),
+        ]
+        for label, value in pairs:
+            if not str(value or "").strip():
+                continue
+            for idx, wrapped in enumerate(_pdf_split_line(value, 90)):
+                lines.append(f"   {label}: {wrapped}" if idx == 0 else f"   {' ' * (len(label) + 2)}{wrapped}")
+    if (rps.get("keterangan") or "").strip():
+        lines.append("")
+        lines.append("[KETERANGAN]")
+        for wrapped in _pdf_split_line(_rps_export_value(rps, "keterangan"), 100):
+            lines.append(f"   {wrapped}")
+
+    chunks = [lines[index:index + 55] for index in range(0, len(lines), 55)] or [[]]
+    objects: List[bytes] = []
+    objects.append(b"<< /Type /Catalog /Pages 2 0 R >>")
+    page_ids = [3 + index * 2 for index in range(len(chunks))]
+    content_ids = [page_id + 1 for page_id in page_ids]
+    kids = " ".join(f"{page_id} 0 R" for page_id in page_ids)
+    objects.append(f"<< /Type /Pages /Kids [{kids}] /Count {len(page_ids)} >>".encode("ascii"))
+    for page_id, content_id, page_lines in zip(page_ids, content_ids, chunks):
+        objects.append(f"<< /Type /Page /Parent 2 0 R /MediaBox [0 0 612 792] /Resources << /Font << /F1 {3 + len(chunks) * 2} 0 R >> >> /Contents {content_id} 0 R >>".encode("ascii"))
+        content_lines = ["BT", "/F1 8 Tf", "30 760 Td", "10 TL"]
+        for line in page_lines:
+            content_lines.append(f"({_pdf_text(line[:160])}) Tj")
+            content_lines.append("T*")
+        content_lines.append("ET")
+        content = "\n".join(content_lines).encode("latin-1", "replace")
+        objects.append(f"<< /Length {len(content)} >>\nstream\n".encode("ascii") + content + b"\nendstream")
+    objects.append(b"<< /Type /Font /Subtype /Type1 /BaseFont /Helvetica >>")
+    output = bytearray(b"%PDF-1.4\n%\xe2\xe3\xcf\xd3\n")
+    offsets = [0]
+    for index, obj in enumerate(objects, start=1):
+        offsets.append(len(output))
+        output.extend(f"{index} 0 obj\n".encode("ascii"))
+        output.extend(obj)
+        output.extend(b"\nendobj\n")
+    xref_offset = len(output)
+    output.extend(f"xref\n0 {len(objects) + 1}\n".encode("ascii"))
+    output.extend(b"0000000000 65535 f \n")
+    for offset in offsets[1:]:
+        output.extend(f"{offset:010d} 00000 n \n".encode("ascii"))
+    output.extend(f"trailer\n<< /Size {len(objects) + 1} /Root 1 0 R >>\nstartxref\n{xref_offset}\n%%EOF\n".encode("ascii"))
+    return bytes(output)
+
+
+@api_router.get("/classes/{class_id}/rps/export.xlsx")
+async def export_class_rps_xlsx(class_id: str, user: Dict[str, Any] = Depends(require_admin)):
+    class_doc = await require_class_access(class_id, user)
+    class_doc = await enrich_class_payload(class_doc)
+    rps = await _load_rps_doc(class_doc)
+    settings = await get_app_settings_cached()
+    stream = io.BytesIO()
+    build_rps_xlsx(rps, class_doc, settings, stream)
+    stream.seek(0)
+    return StreamingResponse(
+        stream,
+        media_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+        headers={"Content-Disposition": f"attachment; filename={_rps_export_filename(class_doc, 'xlsx')}"},
+    )
+
+
+@api_router.get("/classes/{class_id}/rps/export.docx")
+async def export_class_rps_docx(class_id: str, user: Dict[str, Any] = Depends(require_admin)):
+    class_doc = await require_class_access(class_id, user)
+    class_doc = await enrich_class_payload(class_doc)
+    rps = await _load_rps_doc(class_doc)
+    settings = await get_app_settings_cached()
+    content = build_rps_docx(rps, class_doc, settings)
+    return StreamingResponse(
+        io.BytesIO(content),
+        media_type="application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+        headers={"Content-Disposition": f"attachment; filename={_rps_export_filename(class_doc, 'docx')}"},
+    )
+
+
+@api_router.get("/classes/{class_id}/rps/export.pdf")
+async def export_class_rps_pdf(class_id: str, user: Dict[str, Any] = Depends(require_admin)):
+    class_doc = await require_class_access(class_id, user)
+    class_doc = await enrich_class_payload(class_doc)
+    rps = await _load_rps_doc(class_doc)
+    settings = await get_app_settings_cached()
+    content = build_rps_pdf(rps, class_doc, settings)
+    return StreamingResponse(
+        io.BytesIO(content),
+        media_type="application/pdf",
+        headers={"Content-Disposition": f"attachment; filename={_rps_export_filename(class_doc, 'pdf')}"},
+    )
+
+
+@api_router.get("/classes/{class_id}/attendance")
+async def get_class_attendance(class_id: str, user: Dict[str, Any] = Depends(get_current_user)):
+    class_doc = await require_class_access(class_id, user)
+    enrolled_ids = list(dict.fromkeys(class_doc.get("student_ids", [])))
+    students_docs = await db.users.find({"$or": [{"id": {"$in": enrolled_ids}}, {"username": {"$in": enrolled_ids}}, {"nim": {"$in": enrolled_ids}}]}, {"_id": 0}).to_list(1000)
+    
+    sessions = await db.attendance_sessions.find({"class_id": class_id}, {"_id": 0}).to_list(100)
+    sessions_by_meeting = {s["meeting_number"]: s for s in sessions}
+
+    rps = await db.rps.find_one({"class_id": class_id}, {"_id": 0})
+    rps_meetings = {m["meeting_number"]: m for m in (rps.get("meetings") if rps else [])}
+
+    meeting_slots = []
+    for i in range(1, 17):
+        session = sessions_by_meeting.get(i)
+        rps_m = rps_meetings.get(i, {})
+        default_topic = rps_m.get("topic") or ("Evaluasi Tengah Semester (UTS)" if i == 8 else ("Evaluasi Akhir Semester (UAS)" if i == 16 else f"Pertemuan {i}"))
+        
+        if not session:
+            session_data = {
+                "class_id": class_id,
+                "meeting_number": i,
+                "date": now_iso()[:10],
+                "topic": default_topic,
+                "status": "draft",
+                "pin_code": "",
+                "pin_expires_at": "",
+                "qr_code": "",
+                "qr_content": "",
+                "qr_expires_at": "",
+                "expires_minutes": 15,
+                "method": "",
+                "locked": False,
+                "records": []
+            }
+        else:
+            session_data = {
+                **session,
+                "pin_code": session.get("pin_code", ""),
+                "pin_expires_at": session.get("pin_expires_at", ""),
+                "qr_code": session.get("qr_code", ""),
+                "qr_content": session.get("qr_content", ""),
+                "qr_expires_at": session.get("qr_expires_at", ""),
+                "expires_minutes": session.get("expires_minutes", 15),
+                "method": session.get("method", ""),
+                "locked": session.get("locked", False),
+            }
+
+        meeting_slots.append(session_data)
+
+    recap = []
+    for sid in enrolled_ids:
+        s_doc = next((u for u in students_docs if u.get("id") == sid or u.get("username") == sid or u.get("nim") == sid), {})
+        s_name = s_doc.get("name") or s_doc.get("nama") or f"Mahasiswa ({sid})"
+        s_nim = s_doc.get("nim") or s_doc.get("username") or sid
+        
+        hadir_count = 0
+        izin_count = 0
+        sakit_count = 0
+        alpa_count = 0
+        total_open_sessions = 0
+
+        for m in meeting_slots:
+            if m.get("status") in ["open", "closed"]:
+                total_open_sessions += 1
+                rec = next((r for r in (m.get("records") or []) if r.get("student_id") == sid), None)
+                st = rec.get("status") if rec else "Alpa"
+                if st == "Hadir": hadir_count += 1
+                elif st == "Izin": izin_count += 1
+                elif st == "Sakit": sakit_count += 1
+                else: alpa_count += 1
+
+        pct = round((hadir_count / total_open_sessions * 100), 1) if total_open_sessions > 0 else 100.0
+        recap.append({
+            "student_id": sid,
+            "student_name": s_name,
+            "student_nim": s_nim,
+            "hadir": hadir_count,
+            "izin": izin_count,
+            "sakit": sakit_count,
+            "alpa": alpa_count,
+            "total_open": total_open_sessions,
+            "percentage": pct,
+            "is_eligible_exam": pct >= 75.0
+        })
+
+    return {
+        "class_id": class_id,
+        "meetings": meeting_slots,
+        "recap": recap,
+        "total_students": len(enrolled_ids)
+    }
+
+
+@api_router.post("/classes/{class_id}/attendance/session")
+async def save_attendance_session(class_id: str, payload: AttendanceSessionInput, user: Dict[str, Any] = Depends(require_admin)):
+    class_doc = await require_class_access(class_id, user)
+    m_no = payload.meeting_number
+    if m_no < 1 or m_no > 16:
+        raise HTTPException(status_code=400, detail="Nomor pertemuan harus antara 1 sampai 16")
+    
+    doc = payload.model_dump()
+    doc.update({
+        "class_id": class_id,
+        "meeting_number": m_no,
+        "updated_at": now_iso(),
+        "updated_by": user["id"]
+    })
+    await db.attendance_sessions.update_one({"class_id": class_id, "meeting_number": m_no}, {"$set": doc}, upsert=True)
+    return doc
+
+
+@api_router.post("/classes/{class_id}/attendance/lock")
+async def lock_attendance_session(class_id: str, payload: LockAttendanceInput, user: Dict[str, Any] = Depends(require_admin)):
+    await require_class_access(class_id, user)
+    m_no = payload.meeting_number
+    if m_no < 1 or m_no > 16:
+        raise HTTPException(status_code=400, detail="Nomor pertemuan harus antara 1 sampai 16")
+
+    session = await _load_attendance_session(class_id, m_no)
+    session["locked"] = bool(payload.locked)
+    session["status"] = "closed" if session["locked"] else "draft"
+    session["updated_at"] = now_iso()
+    await db.attendance_sessions.update_one({"class_id": class_id, "meeting_number": m_no}, {"$set": session}, upsert=True)
+    return {"meeting_number": m_no, "locked": session["locked"], "status": session["status"]}
+
+
+@api_router.post("/classes/{class_id}/attendance/generate-pin")
+async def generate_attendance_pin(class_id: str, meeting_number: int, minutes: int = 15, user: Dict[str, Any] = Depends(require_admin)):
+    await require_class_access(class_id, user)
+    if meeting_number < 1 or meeting_number > 16:
+        raise HTTPException(status_code=400, detail="Nomor pertemuan harus antara 1 sampai 16")
+    session = await _load_attendance_session(class_id, meeting_number)
+    if session.get("locked"):
+        raise HTTPException(status_code=400, detail="Sesi presensi pertemuan ini dikunci oleh dosen. Buka kunci terlebih dahulu untuk generate PIN.")
+    minutes = max(1, min(int(minutes), 1440))
+    import random
+    pin = f"{random.randint(1000, 9999)}"
+    expires_at = (datetime.now(timezone.utc) + timedelta(minutes=minutes)).isoformat()
+
+    session.update({
+        "status": "open",
+        "method": "pin",
+        "expires_minutes": minutes,
+        "pin_code": pin,
+        "pin_expires_at": expires_at,
+        "updated_at": now_iso(),
+    })
+    await db.attendance_sessions.update_one({"class_id": class_id, "meeting_number": meeting_number}, {"$set": session}, upsert=True)
+    return {"pin_code": pin, "pin_expires_at": expires_at, "meeting_number": meeting_number, "minutes": minutes}
+
+
+@api_router.post("/classes/{class_id}/attendance/generate-qr")
+async def generate_attendance_qr(class_id: str, meeting_number: int, minutes: int = 15, user: Dict[str, Any] = Depends(require_admin)):
+    await require_class_access(class_id, user)
+    if meeting_number < 1 or meeting_number > 16:
+        raise HTTPException(status_code=400, detail="Nomor pertemuan harus antara 1 sampai 16")
+    session = await _load_attendance_session(class_id, meeting_number)
+    if session.get("locked"):
+        raise HTTPException(status_code=400, detail="Sesi presensi pertemuan ini dikunci oleh dosen. Buka kunci terlebih dahulu untuk generate QR.")
+    minutes = max(1, min(int(minutes), 1440))
+    secret = secrets.token_hex(16)
+    content = _attendance_qr_content(class_id, meeting_number, secret)
+    expires_at = (datetime.now(timezone.utc) + timedelta(minutes=minutes)).isoformat()
+
+    session.update({
+        "status": "open",
+        "method": "qr",
+        "expires_minutes": minutes,
+        "qr_code": secret,
+        "qr_content": content,
+        "qr_expires_at": expires_at,
+        "updated_at": now_iso(),
+    })
+    await db.attendance_sessions.update_one({"class_id": class_id, "meeting_number": meeting_number}, {"$set": session}, upsert=True)
+    return {
+        "meeting_number": meeting_number,
+        "minutes": minutes,
+        "qr_code": secret,
+        "qr_content": content,
+        "qr_expires_at": expires_at,
+        "qr_image_data_url": _qr_png_data_url(content),
+    }
+
+
+@api_router.post("/classes/{class_id}/attendance/submit-qr")
+async def submit_attendance_qr(class_id: str, payload: SubmitQrInput, user: Dict[str, Any] = Depends(get_current_user)):
+    if user.get("role") != "student":
+        raise HTTPException(status_code=403, detail="Hanya mahasiswa yang dapat melakukan presensi dengan QR")
+
+    parts = str(payload.qr_content or "").strip().split(":")
+    if len(parts) != 4 or parts[0] != "QRATT":
+        raise HTTPException(status_code=400, detail="Kode QR presensi tidak dikenali")
+    qr_class_id, meeting_str, secret = parts[1], parts[2], parts[3]
+    if qr_class_id != class_id:
+        raise HTTPException(status_code=400, detail="Kode QR presensi bukan untuk kelas ini")
+    try:
+        meeting_number = int(meeting_str)
+    except (TypeError, ValueError):
+        raise HTTPException(status_code=400, detail="Kode QR presensi tidak valid")
+
+    session = await _load_attendance_session(class_id, meeting_number)
+    if session.get("locked"):
+        raise HTTPException(status_code=400, detail="Sesi presensi pertemuan ini dikunci oleh dosen")
+    if session.get("status") != "open":
+        raise HTTPException(status_code=400, detail="Sesi presensi belum dibuka oleh dosen")
+    if str(session.get("qr_code", "")).strip() != str(secret).strip():
+        raise HTTPException(status_code=400, detail="Kode QR presensi tidak valid")
+    if _attendance_expired(str(session.get("qr_expires_at", ""))):
+        raise HTTPException(status_code=400, detail="Kode QR presensi telah kedaluwarsa")
+
+    _mark_student_present(session, user["id"], "Hadir via QR")
+    await db.attendance_sessions.update_one({"class_id": class_id, "meeting_number": meeting_number}, {"$set": session})
+    return {"ok": True, "message": f"Presensi Pertemuan {meeting_number} Berhasil! Status: Hadir"}
+
+
+@api_router.post("/classes/{class_id}/attendance/submit-pin")
+async def submit_attendance_pin(class_id: str, payload: SubmitPinInput, user: Dict[str, Any] = Depends(get_current_user)):
+    if user.get("role") != "student":
+        raise HTTPException(status_code=403, detail="Hanya mahasiswa yang dapat melakukan presensi dengan PIN")
+    
+    session = await _load_attendance_session(class_id, payload.meeting_number)
+    if session.get("locked"):
+        raise HTTPException(status_code=400, detail="Sesi presensi pertemuan ini dikunci oleh dosen")
+    if session.get("status") != "open":
+        raise HTTPException(status_code=400, detail="Sesi presensi belum dibuka oleh dosen")
+    
+    if str(session.get("pin_code", "")).strip() != str(payload.pin_code).strip():
+        raise HTTPException(status_code=400, detail="Kode PIN presensi salah")
+    
+    if _attendance_expired(str(session.get("pin_expires_at", ""))):
+        raise HTTPException(status_code=400, detail="Kode PIN presensi telah kedaluwarsa")
+    
+    _mark_student_present(session, user["id"], "Hadir via PIN")
+    await db.attendance_sessions.update_one({"class_id": class_id, "meeting_number": payload.meeting_number}, {"$set": session})
+    return {"ok": True, "message": f"Presensi Pertemuan {payload.meeting_number} Berhasil! Status: Hadir"}
+
+
+# ==========================================
+# BKD LAPORAN DOSEN & BUNDLE PORTOFOLIO APIs
+# ==========================================
+
+@api_router.get("/reports/lecturer/summary")
+async def get_lecturer_reports_summary(
+    semester_id: Optional[str] = None,
+    user: Dict[str, Any] = Depends(get_current_user)
+):
+    class_ids = await lecturer_class_ids(user)
+    classes = await db.classes.find({"id": {"$in": class_ids}}, {"_id": 0}).to_list(500)
+    
+    if semester_id and semester_id != "all":
+        target_ta = await db.tahun_ajaran.find_one({"id": semester_id}, {"_id": 0})
+        filtered_classes = []
+        for c in classes:
+            if c.get("tahun_ajaran_id") == semester_id:
+                filtered_classes.append(c)
+            elif target_ta:
+                ta_year = target_ta.get("tahun") or target_ta.get("nama") or ""
+                ta_sem = (target_ta.get("semester") or "").lower()
+                c_year = c.get("academic_year") or ""
+                c_sem = (c.get("semester") or "").lower()
+                if ta_year and ta_sem and ta_year in c_year and ta_sem in c_sem:
+                    filtered_classes.append(c)
+        classes = filtered_classes
+
+    summaries = []
+    for c in classes:
+        cid = c.get("id")
+        rps_doc = await db.rps.find_one({"class_id": cid}, {"_id": 0})
+        att_count = await db.attendance_sessions.count_documents({"class_id": cid})
+        
+        has_rps = bool(rps_doc and len(rps_doc.get("meetings", [])) > 0)
+        has_att = att_count >= 1
+        has_grades = True
+        has_sk = True
+        
+        comp_count = sum([has_rps, has_att, has_grades, has_sk])
+        pct = int((comp_count / 4.0) * 100)
+        
+        summaries.append({
+            "class_id": cid,
+            "course_name": c.get("course_name", "Mata Kuliah"),
+            "class_code": c.get("name") or c.get("class_code", "01"),
+            "program_name": c.get("program_name", "Program Studi"),
+            "academic_year": c.get("academic_year", ""),
+            "semester": c.get("semester", ""),
+            "student_count": len(c.get("student_ids", [])),
+            "rps_complete": has_rps,
+            "attendance_complete": has_att,
+            "grades_complete": has_grades,
+            "sk_complete": has_sk,
+            "completion_percentage": pct,
+            "status": "Lengkap (100%)" if pct == 100 else "Dalam Proses"
+        })
+        
+    return {"classes": summaries}
+
+
+@api_router.get("/public/reports/bkd-bundle/{class_id}")
+async def get_public_bkd_bundle(class_id: str):
+    class_doc = await db.classes.find_one({"id": class_id}, {"_id": 0})
+    if not class_doc:
+        raise HTTPException(status_code=404, detail="Kelas tidak ditemukan")
+        
+    lecturer_id = class_doc.get("lecturer_id")
+    lecturer_doc = await db.users.find_one({"id": lecturer_id}, {"_id": 0, "password_hash": 0}) or {
+        "name": class_doc.get("lecturer_name", "Syahrul Anwar"),
+        "nidn": "0402030001",
+        "email": "dosen@kampus.ac.id"
+    }
+    
+    settings = await db.app_settings.find_one({"id": "main"}, {"_id": 0}) or default_app_settings()
+    
+    rps_doc = await db.rps.find_one({"class_id": class_id}, {"_id": 0})
+    if not rps_doc:
+        rps_doc = {
+            "class_id": class_id,
+            "cpmk": f"Memahami konsep dasar dan terapan dari mata kuliah {class_doc.get('course_name')}.",
+            "description": "Rencana Pembelajaran Semester standar perguruan tinggi.",
+            "references": "Buku Ajar, Jurnal Ilmiah, Dokumentasi Resmi.",
+            "document_url": "",
+            "meetings": [
+                {
+                    "meeting_number": i + 1,
+                    "topic": f"Pertemuan {i + 1}: UTS" if i + 1 == 8 else (f"Pertemuan {i + 1}: UAS" if i + 1 == 16 else f"Pertemuan {i + 1}: Topik Bahasan Ke-{i + 1}"),
+                    "sub_topic": "Pembahasan konsep dasar & studi kasus terapan",
+                    "method": "Tatap Muka / Blended Learning",
+                    "materials": "Slide Presentasi, Modul PDF",
+                    "is_exam": i + 1 in [8, 16]
+                }
+                for i in range(16)
+            ]
+        }
+        
+    admin_user = {"id": lecturer_doc.get("id") or "admin", "role": "admin"}
+    try:
+        att_data = await get_class_attendance(class_id, admin_user)
+    except Exception:
+        att_data = {"meetings": [], "recap": []}
+    try:
+        recap_list = await build_grade_recap(user=admin_user, class_id=class_id, use_snapshots=False)
+        if recap_list and len(recap_list) > 0:
+            raw_students = recap_list[0].get("students", [])
+            grade_data = []
+            for st in raw_students:
+                comp = st.get("component_scores", {})
+                tugas_score = comp.get("tugas")
+                presensi_score = comp.get("presensi")
+                uts_score = comp.get("uts")
+                uas_score = comp.get("uas")
+                
+                grade_data.append({
+                    "student_id": st.get("student_id"),
+                    "student_nim": st.get("student_nim") or st.get("nim") or "-",
+                    "student_name": st.get("student_name") or st.get("name") or "-",
+                    "assignment_score": round(tugas_score, 1) if tugas_score is not None else 0,
+                    "attendance_score": round(presensi_score, 1) if presensi_score is not None else (round(tugas_score, 1) if tugas_score is not None else 0),
+                    "uts_score": round(uts_score, 1) if uts_score is not None else 0,
+                    "uas_score": round(uas_score, 1) if uas_score is not None else 0,
+                    "final_score": st.get("weighted_grade") if st.get("weighted_grade") is not None else (st.get("average") or 0),
+                    "grade_letter": st.get("grade_predicate") or "A"
+                })
+        else:
+            grade_data = []
+    except Exception as e:
+        logger.error(f"Error building public grade recap for class {class_id}: {e}")
+        grade_data = []
+        
+    wadir = None
+    direktur = None
+    kaprodi_pejabat = None
+    try:
+        wadir = await _active_pejabat(db, jabatan_kode="WADIR1")
+        direktur = await _active_pejabat(db, jabatan_kode="DIREKTUR")
+        kaprodi_pejabat = await _active_pejabat(
+            db, jabatan_kode="KAPRODI", prodi_id=class_doc.get("program_id") or ""
+        )
+    except Exception:
+        pass
+
+    penetap = wadir or direktur
+    if penetap:
+        ident = f"NIP {penetap['nip']}" if penetap["nip"] else (f"NIDN {penetap['nidn']}" if penetap["nidn"] else "")
+        signatory = f"{penetap['nama']} — {penetap['jabatan']}"
+        signatory_detail = ident or ""
+    else:
+        signatory = "Dekan / Wakil Rektor Bidang Akademik"
+        signatory_detail = ""
+
+    kap_nama = (kaprodi_pejabat or {}).get("nama", "") or ""
+    if not kap_nama and class_doc.get("program_id"):
+        kap_nama = await _pejabat_name_fallback(db, class_doc.get("program_id", ""))
+    kap_detail = ""
+    if kaprodi_pejabat:
+        kap_detail = (
+            f"NIP {kaprodi_pejabat['nip']}"
+            if kaprodi_pejabat["nip"]
+            else (f"NIDN {kaprodi_pejabat['nidn']}" if kaprodi_pejabat["nidn"] else "")
+        )
+
+    return {
+        "campus": {
+            "name": settings.get("campus_name", "UNIVERSITAS NUGAS LAGI"),
+            "logo_url": settings.get("campus_logo_url", ""),
+            "kop_header_url": settings.get("kop_header_url", ""),
+            "kop_footer_url": settings.get("kop_footer_url", ""),
+            "academic_year": class_doc.get("academic_year", "2025/2026"),
+            "semester": class_doc.get("semester", "Genap")
+        },
+        "lecturer": {
+            "name": lecturer_doc.get("name", "Syahrul Anwar"),
+            "nidn": lecturer_doc.get("nidn") or lecturer_doc.get("employee_id") or "0402030001",
+            "email": lecturer_doc.get("email", "syahrul@kampus.ac.id")
+        },
+        "class_info": {
+            "id": class_id,
+            "course_name": class_doc.get("course_name"),
+            "class_code": class_doc.get("name") or class_doc.get("class_code"),
+            "program_name": class_doc.get("program_name"),
+            "student_count": len(class_doc.get("student_ids", []))
+        },
+        "rps": rps_doc,
+        "attendance": att_data,
+        "grades": grade_data,
+        "sk_info": {
+            "sk_number": f"SK/AKAD/{class_doc.get('academic_year', '2025-2026').replace('/', '-')}/{class_id}",
+            "issue_date": _fmt_date_id(datetime.now().astimezone().date()),
+            "signatory": signatory,
+            "signatory_detail": signatory_detail,
+            "kaprodi_name": kap_nama,
+            "kaprodi_detail": kap_detail,
+        }
+    }
+
+
+async def _pejabat_name_fallback(db: PostgresDatabase, prodi_id: str) -> str:
+    try:
+        prodi = await db.programs.find_one({"id": prodi_id}, {"_id": 0, "kaprodi": 1})
+        return str((prodi or {}).get("kaprodi") or "")
+    except Exception:
+        return ""
+
+
+def _fmt_date_id(d: "date") -> str:
+    bulan = [
+        "Januari", "Februari", "Maret", "April", "Mei", "Juni",
+        "Juli", "Agustus", "September", "Oktober", "November", "Desember",
+    ]
+    return f"{d.day:02d} {bulan[d.month - 1]} {d.year}"
+
+
+@api_router.post("/settings/upload-logo")
+async def upload_campus_logo(
+    file: UploadFile = File(...),
+    user: Dict[str, Any] = Depends(require_campus_admin),
+):
+    if not file.filename:
+        raise HTTPException(status_code=400, detail="File logo tidak valid")
+    allowed_exts = {".jpg", ".jpeg", ".png", ".webp", ".svg"}
+    ext = Path(file.filename).suffix.lower()
+    if ext not in allowed_exts:
+        raise HTTPException(status_code=400, detail="Format logo harus berupa JPG, PNG, WEBP, atau SVG")
+
+    content = await file.read()
+    if len(content) > 5 * 1024 * 1024:
+        raise HTTPException(status_code=400, detail="Ukuran logo maksimal 5 MB")
+
+    file_token = secrets.token_hex(8)
+    safe_name = safe_path_segment(file.filename) or f"logo{ext}"
+    filename = f"logo_campus_{file_token[:8]}_{safe_name}"
+
+    branding_dir = STORAGE_ROOT / "Branding"
+    branding_dir.mkdir(parents=True, exist_ok=True)
+    file_path = branding_dir / filename
+    file_path.write_bytes(content)
+
+    file_id = f"logo-campus-{file_token[:8]}"
+    file_doc = {
+        "id": file_id,
+        "record_type": "campus_logo",
+        "owner_user_id": user["id"],
+        "file_name": safe_name,
+        "original_name": file.filename,
+        "mime_type": file.content_type or f"image/{ext.replace('.', '')}",
+        "size": len(content),
+        "local_path": str(file_path),
+        "created_at": now_iso(),
+    }
+    await db.stored_files.update_one({"id": file_id}, {"$set": file_doc}, upsert=True)
+    logo_url = f"/api/files/{file_id}/inline"
+    await db.app_settings.update_one({"id": "main"}, {"$set": {"campus_logo_url": logo_url}}, upsert=True)
+    _invalidate_settings_cache("app_settings")
+    return {"logo_url": logo_url}
+
+
+@api_router.post("/settings/upload-kop-header")
+async def upload_kop_header(
+    file: UploadFile = File(...),
+    user: Dict[str, Any] = Depends(require_campus_admin),
+):
+    if not file.filename:
+        raise HTTPException(status_code=400, detail="File KOP Header tidak valid")
+    allowed_exts = {".jpg", ".jpeg", ".png", ".webp", ".svg"}
+    ext = Path(file.filename).suffix.lower()
+    if ext not in allowed_exts:
+        raise HTTPException(status_code=400, detail="Format header KOP harus berupa JPG, PNG, WEBP, atau SVG")
+
+    content = await file.read()
+    if len(content) > 10 * 1024 * 1024:
+        raise HTTPException(status_code=400, detail="Ukuran header KOP maksimal 10 MB")
+
+    file_token = secrets.token_hex(8)
+    safe_name = safe_path_segment(file.filename) or f"kop_header{ext}"
+    filename = f"kop_header_{file_token[:8]}_{safe_name}"
+
+    branding_dir = STORAGE_ROOT / "Branding"
+    branding_dir.mkdir(parents=True, exist_ok=True)
+    file_path = branding_dir / filename
+    file_path.write_bytes(content)
+
+    file_id = f"kop-header-{file_token[:8]}"
+    file_doc = {
+        "id": file_id,
+        "record_type": "kop_header",
+        "owner_user_id": user["id"],
+        "file_name": safe_name,
+        "original_name": file.filename,
+        "mime_type": file.content_type or f"image/{ext.replace('.', '')}",
+        "size": len(content),
+        "local_path": str(file_path),
+        "created_at": now_iso(),
+    }
+    await db.stored_files.update_one({"id": file_id}, {"$set": file_doc}, upsert=True)
+    kop_header_url = f"/api/files/{file_id}/inline"
+    await db.app_settings.update_one({"id": "main"}, {"$set": {"kop_header_url": kop_header_url}}, upsert=True)
+    _invalidate_settings_cache("app_settings")
+    return {"kop_header_url": kop_header_url}
+
+
+@api_router.post("/settings/upload-kop-footer")
+async def upload_kop_footer(
+    file: UploadFile = File(...),
+    user: Dict[str, Any] = Depends(require_campus_admin),
+):
+    if not file.filename:
+        raise HTTPException(status_code=400, detail="File KOP Footer tidak valid")
+    allowed_exts = {".jpg", ".jpeg", ".png", ".webp", ".svg"}
+    ext = Path(file.filename).suffix.lower()
+    if ext not in allowed_exts:
+        raise HTTPException(status_code=400, detail="Format footer KOP harus berupa JPG, PNG, WEBP, atau SVG")
+
+    content = await file.read()
+    if len(content) > 10 * 1024 * 1024:
+        raise HTTPException(status_code=400, detail="Ukuran footer KOP maksimal 10 MB")
+
+    file_token = secrets.token_hex(8)
+    safe_name = safe_path_segment(file.filename) or f"kop_footer{ext}"
+    filename = f"kop_footer_{file_token[:8]}_{safe_name}"
+
+    branding_dir = STORAGE_ROOT / "Branding"
+    branding_dir.mkdir(parents=True, exist_ok=True)
+    file_path = branding_dir / filename
+    file_path.write_bytes(content)
+
+    file_id = f"kop-footer-{file_token[:8]}"
+    file_doc = {
+        "id": file_id,
+        "record_type": "kop_footer",
+        "owner_user_id": user["id"],
+        "file_name": safe_name,
+        "original_name": file.filename,
+        "mime_type": file.content_type or f"image/{ext.replace('.', '')}",
+        "size": len(content),
+        "local_path": str(file_path),
+        "created_at": now_iso(),
+    }
+    await db.stored_files.update_one({"id": file_id}, {"$set": file_doc}, upsert=True)
+    kop_footer_url = f"/api/files/{file_id}/inline"
+    await db.app_settings.update_one({"id": "main"}, {"$set": {"kop_footer_url": kop_footer_url}}, upsert=True)
+    _invalidate_settings_cache("app_settings")
+    return {"kop_footer_url": kop_footer_url}
+
+
+app.include_router(api_router)
+
+_FRONTEND_BUILD = Path(__file__).parent.parent / "frontend" / "build"
+if _FRONTEND_BUILD.exists():
+    from starlette.staticfiles import StaticFiles
+    from starlette.responses import FileResponse
+
+    app.mount("/static", StaticFiles(directory=str(_FRONTEND_BUILD / "static")), name="static-assets")
+
+    @app.get("/manifest.json")
+    async def serve_manifest():
+        return FileResponse(str(_FRONTEND_BUILD / "manifest.json"))
+
+    @app.get("/app-icon.svg")
+    async def serve_icon():
+        return FileResponse(str(_FRONTEND_BUILD / "app-icon.svg"))
+
+    @app.get("/service-worker.js")
+    async def serve_sw():
+        return FileResponse(str(_FRONTEND_BUILD / "service-worker.js"))
+
+    @app.api_route("/{full_path:path}", methods=["GET", "POST", "PUT", "DELETE", "OPTIONS", "PATCH"])
+    async def serve_spa(full_path: str, request: Request):
+        """Fallback to index.html for React SPA routing."""
+        if full_path.startswith("api/") or full_path.startswith("api"):
+            from fastapi import HTTPException
+            raise HTTPException(status_code=404, detail=f"API route not found: /{full_path}")
+        if request.method != "GET":
+            from fastapi import HTTPException
+            raise HTTPException(status_code=405, detail="Method Not Allowed")
+        index_file = _FRONTEND_BUILD / "index.html"
+        if index_file.exists():
+            return FileResponse(str(index_file))
+        return {"detail": "Frontend build not found"}
+
+
 @app.on_event("startup")
 async def on_startup():
     global _database_backup_scheduler_task, _storage_maintenance_scheduler_task
     await db.connect()
+    app.state.db = db
     await seed_data()
     await load_oidc_runtime_settings()
     await ensure_program_course_links()
     await ensure_multi_lecturer_schema()
     await ensure_class_lifecycle_schema()
+    # Init tabel master data SIAKAD
+    for _col in ["fakultas", "tahun_ajaran", "academic_config", "kurikulum", "gedung", "ruangan"]:
+        try:
+            await getattr(db, _col).create_index("id", unique=True, sparse=True)
+        except Exception:
+            pass
     await db.users.update_one({"email": "dosen@demo.id", "username": {"$exists": False}}, {"$set": {"username": "dosenadmin", "whatsapp": "628000000001"}})
     async for student in db.users.find({"role": "student", "username": {"$exists": False}}, {"_id": 0, "id": 1, "nim": 1}):
         if student.get("nim"):
@@ -8187,6 +10702,41 @@ async def on_startup():
     await db.whatsapp_messages.create_index("status")
     await db.whatsapp_messages.create_index("created_at")
     await db.password_reset_requests.create_index("requested_at")
+    # SIAKAD Core Indexes & Collections
+    await db.academic_periods.create_index("code", unique=True)
+    await db.academic_periods.create_index("is_active")
+    await db.curriculums.create_index("program_id")
+    await db.student_profiles.create_index("student_id", unique=True)
+    await db.student_profiles.create_index("nim", unique=True, sparse=True)
+    await db.student_profiles.create_index("pa_dosen_id")
+    await db.lecturer_profiles.create_index("lecturer_id", unique=True)
+    await db.lecturer_profiles.create_index("nidn", unique=True, sparse=True)
+    await db.krs.create_index([("student_id", 1), ("academic_period_id", 1)], unique=True)
+    await db.krs.create_index("status")
+    await db.khs.create_index([("student_id", 1), ("academic_period_id", 1)], unique=True)
+    await db.tuition_bills.create_index([("student_id", 1), ("academic_period_id", 1)])
+    await db.tuition_bills.create_index("status")
+    await db.tuition_payments.create_index("bill_id")
+
+    active_period = await db.academic_periods.find_one({"is_active": True}, {"_id": 0})
+    if not active_period:
+        now_str = now_iso()
+        default_period = {
+            "id": f"period_{uuid.uuid4().hex[:12]}",
+            "code": "20251",
+            "name": "Tahun Akademik 2025/2026 Ganjil",
+            "year": "2025/2026",
+            "semester": "Ganjil",
+            "is_active": True,
+            "krs_start_at": now_str,
+            "krs_end_at": now_str,
+            "status": "active",
+            "created_at": now_str,
+            "updated_at": now_str,
+        }
+        await db.academic_periods.insert_one(default_period)
+        logger.info("Periode akademik default 2025/2026 Ganjil telah diinisialisasi.")
+
     try:
         await cleanup_old_user_activity_logs()
     except Exception as exc:
