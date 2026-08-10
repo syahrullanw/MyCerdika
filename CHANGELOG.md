@@ -2,6 +2,34 @@
 
 Semua perubahan penting pada aplikasi ini dicatat di sini. Versi rilis utama disimpan di file [`VERSION`](./VERSION), sedangkan versi skema database yang sudah diterapkan dicatat oleh tabel `app_schema_migrations` di PostgreSQL.
 
+## [1.6.1] — 2026-08-10
+
+### Optimasi performa untuk server kecil
+
+- Mengurangi beban awal setelah login dengan pemuatan data dashboard dan modul secara lebih terarah.
+- Menambahkan cache singkat untuk sesi autentikasi dan cakupan kelas dosen agar permintaan paralel tidak mengulang query PostgreSQL yang sama.
+- Memindahkan pencatatan aktivitas pengguna ke proses latar belakang sehingga tidak menambah waktu respons API utama.
+- Menyesuaikan default koneksi database agar lebih hemat memori dan sesuai untuk server dengan RAM 1 GB.
+
+### Kebijakan akun dan halaman login
+
+- Menghapus akses pendaftaran akun mandiri dari halaman login.
+- Akun pengguna kini dibuat oleh admin atau melalui formulir PMB.
+
+### Sinkronisasi identitas kampus pada landing page PMB
+
+- Menambahkan endpoint publik terkurasi untuk identitas dan kontak dari **Pengaturan Kampus** tanpa membuka konfigurasi internal aplikasi.
+- Landing page PMB di SIAKAD dan portal PMB mandiri kini mengambil nama kampus, logo, alamat, telepon/WhatsApp, email, motto, dan copyright dari Pengaturan Kampus.
+- Floating WhatsApp PMB menggunakan nomor WhatsApp kampus dari Pengaturan Kampus, dengan fallback aman bila kolom belum diisi.
+- Memastikan portal PMB mandiri berjalan pada port `3001` dan dapat memuat konfigurasi PMB serta data kampus.
+
+### Validasi rilis
+
+- Backend berhasil melewati pemeriksaan sintaks Python.
+- Frontend utama dan frontend PMB mandiri berhasil melalui production build.
+- Smoke test `GET /api/version`, `GET /api/settings/public`, dan `GET /api/v1/pmb/public/config` berhasil.
+- Tidak ada migration SQL baru; versi skema tetap `002_domain_tables`.
+
 ## [1.6.0] — 2026-08-10
 
 ### Pengiriman Salinan Pendaftaran & Backup Akses Login (Email & WhatsApp)

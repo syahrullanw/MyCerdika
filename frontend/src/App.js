@@ -1270,14 +1270,6 @@ function LoginScreen({ onAuth, branding, ssoError = "", version }) {
   const resetQuery = useMemo(() => getResetPasswordQuery(), []);
   const [mode, setMode] = useState(resetQuery.active ? "forgot" : "login");
   const [login, setLogin] = useState({ identifier: "", password: "" });
-  const [register, setRegister] = useState({
-    username: "",
-    nim: "",
-    name: "",
-    email: "",
-    whatsapp: "",
-    password: "",
-  });
   const [forgot, setForgot] = useState({
     identifier: resetQuery.identifier,
     otp: "",
@@ -1406,26 +1398,6 @@ function LoginScreen({ onAuth, branding, ssoError = "", version }) {
     } catch (error) {
       progress.fail(operation, error.response?.data?.detail || "Login gagal");
       toast.error(error.response?.data?.detail || "Login gagal");
-    } finally {
-      setBusy(false);
-    }
-  }
-
-  async function submitRegister(event) {
-    event.preventDefault();
-    setBusy(true);
-    const operation = progress.begin("Membuat akun mahasiswa");
-    try {
-      const { data } = await axios.post(
-        `${API}/auth/register-student`,
-        register,
-      );
-      progress.finish(operation, "Akun berhasil dibuat");
-      onAuth(data);
-      toast.success("Akun mahasiswa berhasil dibuat");
-    } catch (error) {
-      progress.fail(operation, error.response?.data?.detail || "Daftar gagal");
-      toast.error(error.response?.data?.detail || "Daftar gagal");
     } finally {
       setBusy(false);
     }
@@ -1605,8 +1577,8 @@ function LoginScreen({ onAuth, branding, ssoError = "", version }) {
               >
                 {mode === "login"
                   ? "Satu pintu login"
-                  : mode === "register"
-                    ? "Daftar mahasiswa"
+                  : mode === "pmb"
+                    ? "Pendaftaran PMB"
                     : "Lupa password"}
               </h2>
             </div>
@@ -1635,7 +1607,7 @@ function LoginScreen({ onAuth, branding, ssoError = "", version }) {
           </div>
 
           <div
-            className="mb-5 grid grid-cols-4 gap-1.5 rounded-2xl border border-blue-200 bg-white p-1 text-xs"
+            className="mb-5 grid grid-cols-3 gap-1.5 rounded-2xl border border-blue-200 bg-white p-1 text-xs"
             data-testid="front-auth-tabs"
           >
             <Button
@@ -1646,15 +1618,6 @@ function LoginScreen({ onAuth, branding, ssoError = "", version }) {
               className="text-xs px-2"
             >
               Masuk
-            </Button>
-            <Button
-              type="button"
-              variant={mode === "register" ? "default" : "ghost"}
-              data-testid="front-register-tab-button"
-              onClick={() => setMode("register")}
-              className="text-xs px-2"
-            >
-              Daftar
             </Button>
             <Button
               type="button"
@@ -1751,14 +1714,6 @@ function LoginScreen({ onAuth, branding, ssoError = "", version }) {
                       <button
                         type="button"
                         className="font-semibold text-blue-700"
-                        data-testid="front-register-inline-button"
-                        onClick={() => setMode("register")}
-                      >
-                        Belum punya akun? Daftar
-                      </button>
-                      <button
-                        type="button"
-                        className="font-semibold text-blue-700"
                         data-testid="front-forgot-inline-button"
                         onClick={() => setMode("forgot")}
                       >
@@ -1769,92 +1724,6 @@ function LoginScreen({ onAuth, branding, ssoError = "", version }) {
                 </>
               )}
             </div>
-          )}
-          {mode === "register" && (
-            <form
-              onSubmit={submitRegister}
-              className="space-y-4 border border-slate-200 bg-white p-6"
-              data-testid="student-register-form"
-            >
-              <div className="grid gap-4 sm:grid-cols-2">
-                <Field id="register-nim" label="NIM">
-                  <Input
-                    id="register-nim"
-                    data-testid="student-register-nim-input"
-                    value={register.nim}
-                    onChange={(e) =>
-                      setRegister({ ...register, nim: e.target.value })
-                    }
-                  />
-                </Field>
-                <Field id="register-username" label="Username">
-                  <Input
-                    id="register-username"
-                    data-testid="student-register-username-input"
-                    value={register.username}
-                    onChange={(e) =>
-                      setRegister({ ...register, username: e.target.value })
-                    }
-                    placeholder="Opsional, default NIM"
-                  />
-                </Field>
-                <Field id="register-name" label="Nama lengkap">
-                  <Input
-                    id="register-name"
-                    data-testid="student-register-name-input"
-                    value={register.name}
-                    onChange={(e) =>
-                      setRegister({ ...register, name: e.target.value })
-                    }
-                  />
-                </Field>
-                <Field id="register-email" label="Email">
-                  <Input
-                    id="register-email"
-                    data-testid="student-register-email-input"
-                    value={register.email}
-                    onChange={(e) =>
-                      setRegister({ ...register, email: e.target.value })
-                    }
-                  />
-                </Field>
-                <Field id="register-whatsapp" label="Nomor HP / WhatsApp">
-                  <Input
-                    id="register-whatsapp"
-                    data-testid="student-register-whatsapp-input"
-                    value={register.whatsapp}
-                    onChange={(e) =>
-                      setRegister({ ...register, whatsapp: e.target.value })
-                    }
-                  />
-                </Field>
-                <Field id="register-password" label="Password">
-                  <Input
-                    id="register-password"
-                    type="password"
-                    data-testid="student-register-password-input"
-                    value={register.password}
-                    onChange={(e) =>
-                      setRegister({ ...register, password: e.target.value })
-                    }
-                  />
-                </Field>
-              </div>
-              <Button
-                className="w-full"
-                disabled={busy}
-                data-testid="student-register-submit-button"
-              >
-                <Users /> Buat akun mahasiswa
-              </Button>
-              <p
-                className="text-sm text-slate-500"
-                data-testid="student-register-help"
-              >
-                Setelah daftar, masukkan kode kelas di dashboard mahasiswa dan
-                tunggu ACC dosen.
-              </p>
-            </form>
           )}
           {mode === "forgot" && (
             <form
@@ -4587,112 +4456,57 @@ function AdminApp({
   const progress = useActionProgress();
 
   async function loadAll(event) {
+    const isRefresh = event?.type === "click";
     const operation =
-      event?.type === "click"
+      isRefresh
         ? progress.begin(
             "Memuat ulang data",
             "Mengambil data terbaru dari server...",
           )
         : null;
-    try {
-      const campusGet = (path, fallback) =>
-        isCampusAdmin
-          ? axios.get(`${API}${path}`, auth)
-          : Promise.resolve({ data: fallback });
-      const [
-        dashboard,
-        programs,
-        courses,
-        classes,
-        students,
-        assignments,
-        materials,
-        submissions,
-        studentProgress,
-        reminders,
-        calendar,
-        report,
-        enrollments,
-        settings,
-        whatsappSettings,
-        whatsappMessages,
-        gradePredicates,
-        driveSettings,
-        cleanData,
-        emailSettings,
-        ssoSettings,
-        gradeRecap,
-        lecturers,
-        tahunAjaranRes,
-      ] = await Promise.all([
-        axios.get(`${API}/dashboard`, auth),
-        axios.get(`${API}/programs`, auth),
-        axios.get(`${API}/courses`, auth),
-        axios.get(`${API}/classes`, auth),
-        axios.get(`${API}/students`, auth),
-        axios.get(`${API}/assignments`, auth),
-        axios.get(`${API}/materials`, auth),
-        axios.get(`${API}/submissions`, auth),
-        axios.get(`${API}/progress`, auth),
-        axios.get(`${API}/reminders`, auth),
-        axios.get(`${API}/calendar`, auth),
-        axios.get(`${API}/reports/summary`, auth),
-        axios.get(`${API}/enrollment-requests`, auth),
-        axios.get(`${API}/settings`, auth),
-        campusGet("/whatsapp/settings", defaultWhatsAppForm),
-        campusGet("/whatsapp/messages", []),
-        axios.get(`${API}/grade-predicates`, auth),
-        campusGet("/drive/settings", defaultDriveForm),
-        campusGet("/clean-data/summary", []),
-        campusGet("/email/settings", defaultEmailForm),
-        campusGet("/sso/settings", defaultSsoForm),
-        axios.get(`${API}/reports/grade-recap`, auth),
-        campusGet("/lecturers", []),
-        axios.get(`${API}/v1/master/tahun-ajaran`, auth),
-      ]);
-      const programsData = programs.data;
-      const coursesData = courses.data;
-      const classesData = classes.data;
-      const tahunAjaranData = Array.isArray(tahunAjaranRes?.data) ? tahunAjaranRes.data : [];
+    const campusGet = (path, fallback) =>
+      isCampusAdmin
+        ? axios.get(`${API}${path}`, auth)
+        : Promise.resolve({ data: fallback });
+
+    async function loadCoreData() {
+      // Only data needed to paint the authenticated dashboard is fetched in
+      // the critical path. Large management tables and integration settings
+      // load after the shell is already usable.
+      const [dashboard, classes, assignments, submissions, studentProgress, tahunAjaranRes] =
+        await Promise.all([
+          axios.get(`${API}/dashboard`, {
+            ...auth,
+            params: { include_activity: false },
+          }),
+          axios.get(`${API}/classes`, auth),
+          axios.get(`${API}/assignments`, auth),
+          axios.get(`${API}/submissions`, auth),
+          axios.get(`${API}/progress`, auth),
+          axios.get(`${API}/v1/master/tahun-ajaran`, auth),
+        ]);
+      const classesData = classes.data || [];
+      const tahunAjaranData = Array.isArray(tahunAjaranRes?.data)
+        ? tahunAjaranRes.data
+        : [];
       const activeTa = tahunAjaranData.find((ta) => ta.is_active) || tahunAjaranData[0];
-      if (activeTa && activeTa.id) {
+      if (activeTa?.id) {
         setSelectedSemester((prev) => (prev === "all" ? activeTa.id : prev));
       }
-      setData({
+      setData((current) => ({
+        ...current,
         dashboard: dashboard.data,
-        lecturers: lecturers.data || [],
-        programs: programsData,
-        courses: coursesData,
         classes: classesData,
         tahunAjaran: tahunAjaranData,
-        students: students.data,
-        assignments: assignments.data,
-        materials: materials.data,
-        submissions: submissions.data,
-        progress: studentProgress.data,
-        reminders: reminders.data,
-        calendar: calendar.data,
-        report: report.data,
-        enrollments: enrollments.data,
-        settings: settings.data,
-        whatsappSettings: whatsappSettings.data,
-        whatsappMessages: whatsappMessages.data,
-        emailSettings: emailSettings.data,
-        ssoSettings: ssoSettings.data,
-        driveSettings: driveSettings.data,
-        gradePredicates: gradePredicates.data.predicates || [],
-        cleanData: cleanData.data || [],
-        gradeRecap: gradeRecap.data || [],
-      });
+        assignments: assignments.data || [],
+        submissions: submissions.data || [],
+        progress: studentProgress.data || [],
+      }));
       setForms((prev) => ({
         ...prev,
-        course: {
-          ...prev.course,
-          program_id: prev.course.program_id || programsData[0]?.id || "",
-        },
         class: {
           ...prev.class,
-          course_id: prev.class.course_id || coursesData[0]?.id || "",
+          course_id: prev.class.course_id || "",
         },
         student: {
           ...prev.student,
@@ -4708,10 +4522,93 @@ function AdminApp({
         },
         grade: {
           ...prev.grade,
-          submission_id:
-            prev.grade.submission_id || submissions.data[0]?.id || "",
+          submission_id: prev.grade.submission_id || submissions.data?.[0]?.id || "",
         },
-        settings: settings.data || prev.settings,
+      }));
+    }
+
+    async function loadSecondaryData() {
+      const [
+        programs,
+        courses,
+        students,
+        materials,
+        reminders,
+        calendar,
+        report,
+        enrollments,
+        settings,
+        whatsappSettings,
+        whatsappMessages,
+        gradePredicates,
+        driveSettings,
+        cleanData,
+        emailSettings,
+        ssoSettings,
+        gradeRecap,
+        lecturers,
+        userActivity,
+      ] = await Promise.all([
+        axios.get(`${API}/programs`, auth),
+        axios.get(`${API}/courses`, auth),
+        axios.get(`${API}/students`, auth),
+        axios.get(`${API}/materials`, auth),
+        axios.get(`${API}/reminders`, auth),
+        axios.get(`${API}/calendar`, auth),
+        axios.get(`${API}/reports/summary`, auth),
+        axios.get(`${API}/enrollment-requests`, auth),
+        axios.get(`${API}/settings`, auth),
+        campusGet("/whatsapp/settings", defaultWhatsAppForm),
+        campusGet("/whatsapp/messages", []),
+        axios.get(`${API}/grade-predicates`, auth),
+        campusGet("/drive/settings", defaultDriveForm),
+        campusGet("/clean-data/summary", []),
+        campusGet("/email/settings", defaultEmailForm),
+        campusGet("/sso/settings", defaultSsoForm),
+        axios.get(`${API}/reports/grade-recap`, auth),
+        campusGet("/lecturers", []),
+        isCampusAdmin
+          ? axios.get(`${API}/user-activity`, { ...auth, params: { days: 14 } })
+          : Promise.resolve({ data: null }),
+      ]);
+      const programsData = programs.data || [];
+      const coursesData = courses.data || [];
+      const settingsData = settings.data || null;
+      setData((current) => ({
+        ...current,
+        lecturers: lecturers.data || [],
+        programs: programsData,
+        courses: coursesData,
+        students: students.data || [],
+        materials: materials.data || [],
+        reminders: reminders.data || [],
+        calendar: calendar.data || [],
+        report: report.data || null,
+        enrollments: enrollments.data || [],
+        settings: settingsData,
+        whatsappSettings: whatsappSettings.data,
+        whatsappMessages: whatsappMessages.data || [],
+        emailSettings: emailSettings.data,
+        ssoSettings: ssoSettings.data,
+        driveSettings: driveSettings.data,
+        gradePredicates: gradePredicates.data?.predicates || [],
+        cleanData: cleanData.data || [],
+        gradeRecap: gradeRecap.data || [],
+        dashboard: userActivity.data
+          ? { ...(current.dashboard || {}), user_activity: userActivity.data }
+          : current.dashboard,
+      }));
+      setForms((prev) => ({
+        ...prev,
+        course: {
+          ...prev.course,
+          program_id: prev.course.program_id || programsData[0]?.id || "",
+        },
+        class: {
+          ...prev.class,
+          course_id: prev.class.course_id || coursesData[0]?.id || "",
+        },
+        settings: settingsData || prev.settings,
         whatsapp: {
           ...prev.whatsapp,
           ...whatsappSettings.data,
@@ -4735,9 +4632,15 @@ function AdminApp({
           client_secret: "",
           clear_client_secret: false,
         },
-        gradePredicates:
-          gradePredicates.data.predicates || prev.gradePredicates,
+        gradePredicates: gradePredicates.data?.predicates || prev.gradePredicates,
       }));
+    }
+
+    try {
+      await loadCoreData();
+      const secondary = loadSecondaryData();
+      if (isRefresh) await secondary;
+      else secondary.catch(() => {});
       if (operation) progress.finish(operation, "Data terbaru dimuat");
     } catch (error) {
       if (operation)
@@ -4750,7 +4653,8 @@ function AdminApp({
   }
   useEffect(() => {
     loadAll();
-    // The authenticated admin shell owns one initial aggregate fetch.
+    // The shell fetches critical dashboard data first, then hydrates the
+    // larger management datasets without blocking the first paint.
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
   async function postJson(path, payload, success) {
@@ -18228,50 +18132,51 @@ function StudentApp({ token, user, onLogout, branding, onUserUpdate, version }) 
   } = useUserNotifications(token);
   const progress = useActionProgress();
   async function loadStudent() {
-    const [
-      assignments,
-      materials,
-      submissions,
-      calendar,
-      reminders,
-      progress,
-      enrollments,
-      tahunAjaranRes,
-      classesRes,
-      myKrsRes,
-    ] = await Promise.all([
-      axios.get(`${API}/assignments`, auth),
-      axios.get(`${API}/materials`, auth),
-      axios.get(`${API}/submissions`, auth),
+    // The home page only needs learning content and progress. Calendar,
+    // reminders and academic administration are hydrated in the background.
+    const [assignments, materials, submissions, studentProgress, tahunAjaranRes] =
+      await Promise.all([
+        axios.get(`${API}/assignments`, auth),
+        axios.get(`${API}/materials`, auth),
+        axios.get(`${API}/submissions`, auth),
+        axios.get(`${API}/progress`, auth),
+        axios.get(`${API}/v1/master/tahun-ajaran`, auth),
+      ]);
+    const listTa = Array.isArray(tahunAjaranRes?.data)
+      ? tahunAjaranRes.data
+      : [];
+    const activeTa = listTa.find((ta) => ta.is_active) || listTa[0];
+    if (activeTa?.id) {
+      setSelectedSemester((prev) => (prev === "all" ? activeTa.id : prev));
+    }
+    setData((current) => ({
+      ...current,
+      assignments: assignments.data || [],
+      materials: materials.data || [],
+      submissions: submissions.data || [],
+      progress: studentProgress.data,
+      tahunAjaran: listTa,
+    }));
+    const [calendar, reminders, enrollments, classesRes, myKrsRes] = await Promise.all([
       axios.get(`${API}/calendar`, auth),
       axios.get(`${API}/reminders`, auth),
-      axios.get(`${API}/progress`, auth),
       axios.get(`${API}/enrollment-requests`, auth),
-      axios.get(`${API}/v1/master/tahun-ajaran`, auth),
       axios.get(`${API}/classes`, auth).catch(() => ({ data: [] })),
       axios.get(`${API}/v1/krs/all-my-krs`, auth).catch(() => ({ data: { krs_list: [] } })),
     ]);
-    const listTa = Array.isArray(tahunAjaranRes?.data) ? tahunAjaranRes.data : [];
-    const activeTa = listTa.find((ta) => ta.is_active) || listTa[0];
-    if (activeTa && activeTa.id) {
-      setSelectedSemester((prev) => (prev === "all" ? activeTa.id : prev));
-    }
-    setData({
-      assignments: assignments.data,
-      materials: materials.data,
-      submissions: submissions.data,
-      calendar: calendar.data,
-      reminders: reminders.data,
-      progress: progress.data,
-      enrollments: enrollments.data,
-      tahunAjaran: listTa,
+    setData((current) => ({
+      ...current,
+      calendar: calendar.data || [],
+      reminders: reminders.data || [],
+      enrollments: enrollments.data || [],
       classes: classesRes?.data || [],
       myKrsList: myKrsRes?.data?.krs_list || [],
-    });
+    }));
   }
   useEffect(() => {
     loadStudent().catch(() => toast.error("Gagal memuat ruang mahasiswa"));
-    // The authenticated student shell owns one initial aggregate fetch.
+    // Learning content is loaded first; calendar and administration data
+    // follow in the same background hydration pass.
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
   async function requestJoinClass(event) {

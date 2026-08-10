@@ -1405,7 +1405,17 @@ async def get_pmb_public_config(request: Request):
     branding_info = {
         "name": campus_name,
         "campus_name": campus_name,
-        "app_name": app_settings.get("app_name", "POLITEKNIK SCI"),
+        "app_name": app_settings.get("app_name") or "POLITEKNIK SCI",
+        "campus_code": app_settings.get("campus_code") or "",
+        "institution_type": app_settings.get("institution_type") or "",
+        "accreditation": app_settings.get("accreditation") or "",
+        "accreditation_sk": app_settings.get("accreditation_sk") or "",
+        "campus_motto": app_settings.get("campus_motto") or "",
+        "campus_phone": app_settings.get("campus_phone") or "",
+        "campus_whatsapp": app_settings.get("campus_whatsapp") or "",
+        "campus_email": app_settings.get("campus_email") or "",
+        "campus_website": app_settings.get("campus_website") or "",
+        "campus_address": app_settings.get("campus_address") or "",
         "campus_logo_url": campus_logo_url,
         "logo_url": campus_logo_url,
     }
@@ -4076,4 +4086,3 @@ async def save_admin_landing_config(request: Request, user: Dict[str, Any] = Dep
     await db.pmb_settings.update_one({"id": "pmb_global_settings"}, {"$set": updates})
     updated = await db.pmb_settings.find_one({"id": "pmb_global_settings"}, {"_id": 0})
     return {"ok": True, "message": "Kustomisasi Halaman Informasi PMB berhasil disimpan!", "settings": updated}
-

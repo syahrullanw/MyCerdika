@@ -59,7 +59,7 @@ export function PmbWhatsAppFloatingWidget({ settings, branding }) {
   const [isOpen, setIsOpen] = useState(false);
   const [message, setMessage] = useState("");
 
-  const rawPhone = settings?.landing_contact_whatsapp || settings?.landing_contact_phone || "0812-3456-7890";
+  const rawPhone = branding?.campus_whatsapp || branding?.campus_phone || settings?.landing_contact_whatsapp || settings?.landing_contact_phone || "0812-3456-7890";
   const waNumber = normalizeWhatsAppNumber(rawPhone);
   const campusName = branding?.campus_name || branding?.name || "Politeknik SCI";
   const campusLogoUrl = branding?.campus_logo_url || branding?.logo_url;

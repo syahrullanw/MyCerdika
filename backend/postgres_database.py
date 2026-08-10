@@ -73,6 +73,42 @@ def _sql_node(path: str) -> str:
     return f"data #> ARRAY[{parts}]"
 
 
+def _projection_expression(projection: Optional[Dict[str, int]]) -> str:
+    """Build a small JSONB projection in PostgreSQL.
+
+    The old compatibility layer selected the complete JSON document and only
+    removed fields after it had crossed the database/driver boundary. That is
+    particularly expensive for submissions and users because those documents
+    may contain attachment metadata and nested arrays. Keep the Mongo-like
+    projection API, but let PostgreSQL discard unused fields first.
+    """
+    if not projection:
+        return "data"
+
+    included = [
+        str(path)
+        for path, enabled in projection.items()
+        if enabled and path != "_id"
+    ]
+    if included:
+        fragments: List[str] = []
+        for path in included:
+            parts = _path_parts(path)
+            expression = _sql_node(path)
+            for part in reversed(parts):
+                expression = f"jsonb_build_object({_sql_literal(part)}, {expression})"
+            fragments.append(expression)
+        # jsonb_strip_nulls keeps missing fields close to Mongo projection
+        # semantics while still avoiding a full-row transfer.
+        return "jsonb_strip_nulls(" + " || ".join(fragments) + ")"
+
+    expression = "data"
+    for path, enabled in projection.items():
+        if not enabled and path != "_id":
+            expression = f"({expression} #- ARRAY[{','.join(_sql_literal(part) for part in _path_parts(str(path)))}])"
+    return expression
+
+
 def _nested_document(path: str, value: Any) -> Dict[str, Any]:
     nested: Any = json_value(value)
     for part in reversed(_path_parts(path)):
@@ -456,8 +492,9 @@ class PostgresCursor:
             sort_fields=self.sort_fields,
             skip=self.skip_count,
             limit=length,
+            projection=self.projection,
         )
-        return [_project(document, self.projection) for document in documents]
+        return documents
 
     def __aiter__(self) -> AsyncIterator[Dict[str, Any]]:
         async def iterate() -> AsyncIterator[Dict[str, Any]]:
@@ -546,6 +583,7 @@ class PostgresCollection:
         sort_fields: Optional[List[Tuple[str, int]]] = None,
         skip: int = 0,
         limit: Optional[int] = None,
+        projection: Optional[Dict[str, int]] = None,
     ) -> List[Any]:
         await self._ensure_table()
         compiler = _QueryCompiler(first_parameter=1)
@@ -564,7 +602,8 @@ class PostgresCollection:
         limit_sql = f" LIMIT {max(0, int(selected_limit))}" if selected_limit is not None else ""
         offset_sql = f" OFFSET {max(0, int(skip))}" if skip else ""
         lock = " FOR UPDATE" if for_update else ""
-        sql = f"SELECT row_id, data FROM {self.table_name} WHERE ({where}){order}{limit_sql}{offset_sql}{lock}"
+        selected_data = _projection_expression(projection)
+        sql = f"SELECT row_id, {selected_data} AS data FROM {self.table_name} WHERE ({where}){order}{limit_sql}{offset_sql}{lock}"
         executor = connection or self.pool
         return list(await executor.fetch(sql, *compiler.parameters))
 
@@ -575,16 +614,23 @@ class PostgresCollection:
         sort_fields: Optional[List[Tuple[str, int]]] = None,
         skip: int = 0,
         limit: Optional[int] = None,
+        projection: Optional[Dict[str, int]] = None,
     ) -> List[Dict[str, Any]]:
-        rows = await self._rows(query, sort_fields=sort_fields, skip=skip, limit=limit)
+        rows = await self._rows(
+            query,
+            sort_fields=sort_fields,
+            skip=skip,
+            limit=limit,
+            projection=projection,
+        )
         return [_decode_document(row["data"]) for row in rows]
 
     def find(self, query: Optional[Dict[str, Any]] = None, projection: Optional[Dict[str, int]] = None) -> PostgresCursor:
         return PostgresCursor(self, query or {}, projection)
 
     async def find_one(self, query: Optional[Dict[str, Any]] = None, projection: Optional[Dict[str, int]] = None) -> Optional[Dict[str, Any]]:
-        rows = await self._rows(query or {}, one=True)
-        return _project(_decode_document(rows[0]["data"]), projection) if rows else None
+        rows = await self._rows(query or {}, one=True, projection=projection)
+        return _decode_document(rows[0]["data"]) if rows else None
 
     async def insert_one(self, document: Dict[str, Any]) -> WriteResult:
         await self._ensure_table()
@@ -827,7 +873,10 @@ class PostgresDatabase:
         if self._pool is not None:
             return
         min_size = max(1, int(os.environ.get("DB_POOL_MIN_SIZE", "1")))
-        max_size = max(min_size, int(os.environ.get("DB_POOL_MAX_SIZE", "10")))
+        # A single 1 GB application host should not reserve ten database
+        # connections for a lightweight JSONB API. Deployments can still
+        # override this for larger hosts with DB_POOL_MAX_SIZE.
+        max_size = max(min_size, int(os.environ.get("DB_POOL_MAX_SIZE", "3")))
         self._pool = await asyncpg.create_pool(
             self.url,
             min_size=min_size,

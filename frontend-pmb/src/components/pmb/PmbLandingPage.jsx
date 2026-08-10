@@ -105,10 +105,13 @@ export function PmbLandingPage({ onOpenRegister, onOpenLogin, onAuth, branding, 
           setPrograms(data.programs || []);
           setSettings(data.settings || {});
           if (data.branding) {
+            const publicBranding = Object.fromEntries(
+              Object.entries(data.branding).filter(([, value]) => value !== "" && value !== null && value !== undefined)
+            );
             setBrandingState((prev) => ({
               ...prev,
-              ...data.branding,
-              campus_logo_url: data.branding.campus_logo_url || prev.campus_logo_url || "",
+              ...publicBranding,
+              campus_logo_url: publicBranding.campus_logo_url || prev.campus_logo_url || "",
             }));
           }
         }
@@ -162,6 +165,10 @@ export function PmbLandingPage({ onOpenRegister, onOpenLogin, onAuth, branding, 
 
   const campusLogoUrl = brandingState?.campus_logo_url || brandingState?.logo_url;
   const campusDisplayName = brandingState?.campus_name || brandingState?.name || "POLITEKNIK SCI";
+  const campusDescription = brandingState?.campus_motto || "Pusat Penerimaan Mahasiswa Baru & Sistem Informasi Akademik Terpadu.";
+  const campusAddress = brandingState?.campus_address || settings?.landing_contact_address || "";
+  const campusPhone = brandingState?.campus_whatsapp || brandingState?.campus_phone || settings?.landing_contact_phone || "";
+  const campusEmail = brandingState?.campus_email || settings?.landing_contact_email || "";
 
   return (
     <div className="min-h-screen sci-landing-bg text-slate-100 font-sans selection:bg-sky-500 selection:text-white relative">
@@ -633,24 +640,24 @@ export function PmbLandingPage({ onOpenRegister, onOpenLogin, onAuth, branding, 
                 )}
                 <h4 className="font-bold text-white text-sm">{campusDisplayName}</h4>
               </div>
-              <p className="text-xs text-slate-400">Pusat Penerimaan Mahasiswa Baru & Sistem Informasi Akademik Terpadu.</p>
-              {settings?.landing_contact_address && (
+              <p className="text-xs text-slate-400">{campusDescription}</p>
+              {campusAddress && (
                 <p className="text-xs text-slate-300 flex items-center gap-2 pt-1">
-                  <MapPin className="w-3.5 h-3.5 text-cyan-400 shrink-0" /> {settings.landing_contact_address}
+                  <MapPin className="w-3.5 h-3.5 text-cyan-400 shrink-0" /> {campusAddress}
                 </p>
               )}
             </div>
 
             <div className="space-y-2">
               <h5 className="font-bold text-slate-200">Kontak & Layanan PMB</h5>
-              {settings?.landing_contact_phone && (
+              {campusPhone && (
                 <p className="flex items-center gap-2 text-xs">
-                  <Phone className="w-3.5 h-3.5 text-emerald-400 shrink-0" /> {settings.landing_contact_phone}
+                  <Phone className="w-3.5 h-3.5 text-emerald-400 shrink-0" /> {campusPhone}
                 </p>
               )}
-              {settings?.landing_contact_email && (
+              {campusEmail && (
                 <p className="flex items-center gap-2 text-xs">
-                  <Mail className="w-3.5 h-3.5 text-cyan-400 shrink-0" /> {settings.landing_contact_email}
+                  <Mail className="w-3.5 h-3.5 text-cyan-400 shrink-0" /> {campusEmail}
                 </p>
               )}
             </div>
@@ -668,7 +675,7 @@ export function PmbLandingPage({ onOpenRegister, onOpenLogin, onAuth, branding, 
             </div>
           </div>
           <div className="border-t border-slate-800/80 pt-4 text-center text-[11px] text-slate-500">
-            © {new Date().getFullYear()} {branding?.name || "Politeknik SCI"}. Hak Cipta Dilindungi.
+            © {new Date().getFullYear()} {campusDisplayName}. Hak Cipta Dilindungi.
           </div>
         </footer>
       )}

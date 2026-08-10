@@ -127,6 +127,15 @@ _user_activity_cleanup_lock = asyncio.Lock()
 _settings_cache: Dict[str, Any] = {}
 _settings_cache_times: Dict[str, float] = {}
 _SETTINGS_CACHE_TTL = 30.0
+_auth_cache: Dict[str, Any] = {}
+_AUTH_CACHE_TTL = max(1.0, float(os.environ.get("AUTH_CACHE_TTL", "5")))
+_AUTH_CACHE_MAX_ENTRIES = max(128, int(os.environ.get("AUTH_CACHE_MAX_ENTRIES", "2048")))
+_auth_cache_lock = asyncio.Lock()
+_class_scope_cache: Dict[str, Any] = {}
+_CLASS_SCOPE_CACHE_TTL = max(1.0, float(os.environ.get("CLASS_SCOPE_CACHE_TTL", "5")))
+_CLASS_SCOPE_CACHE_MAX_ENTRIES = max(128, int(os.environ.get("CLASS_SCOPE_CACHE_MAX_ENTRIES", "2048")))
+_class_scope_cache_lock = asyncio.Lock()
+_user_activity_tasks: set[asyncio.Task] = set()
 _oidc_discovery_cache: Dict[str, Any] = {}
 _oidc_discovery_cached_at = 0.0
 _OIDC_DISCOVERY_CACHE_TTL = 300.0
@@ -200,6 +209,22 @@ def _get_cached_settings(key: str) -> Optional[Dict[str, Any]]:
 def _set_cached_settings(key: str, value: Dict[str, Any]) -> None:
     _settings_cache[key] = value
     _settings_cache_times[key] = time.time()
+
+
+def cache_authenticated_user(token: str, session: Dict[str, Any], user: Dict[str, Any]) -> None:
+    now = time.monotonic()
+    if len(_auth_cache) >= _AUTH_CACHE_MAX_ENTRIES:
+        expired = [
+            key
+            for key, value in _auth_cache.items()
+            if now - value[0] >= _AUTH_CACHE_TTL
+        ]
+        for key in expired:
+            _auth_cache.pop(key, None)
+        while len(_auth_cache) >= _AUTH_CACHE_MAX_ENTRIES:
+            oldest = min(_auth_cache, key=lambda key: _auth_cache[key][0])
+            _auth_cache.pop(oldest, None)
+    _auth_cache[token] = (now, session, user)
 
 
 def _invalidate_settings_cache(key: str = "") -> None:
@@ -308,6 +333,18 @@ async def safe_record_user_activity(*args: Any, **kwargs: Any) -> None:
         await record_user_activity(*args, **kwargs)
     except Exception as exc:
         logger.warning("Aktivitas pengguna gagal dicatat: %s", exc)
+
+
+def queue_user_activity(*args: Any, **kwargs: Any) -> None:
+    """Persist analytics after the HTTP response has been handed off.
+
+    Activity analytics are useful but never part of the response contract. On
+    a small host, waiting for an extra JSONB INSERT after every API call made
+    the login fan-out noticeably slower and occupied the limited DB pool.
+    """
+    task = asyncio.create_task(safe_record_user_activity(*args, **kwargs))
+    _user_activity_tasks.add(task)
+    task.add_done_callback(_user_activity_tasks.discard)
 
 
 def base64url_decode(value: str) -> bytes:
@@ -1607,8 +1644,11 @@ def verify_password(password: str, password_hash: str) -> bool:
     return bcrypt.checkpw(password.encode("utf-8"), password_hash.encode("utf-8"))
 
 
-async def find_user(user_id: str) -> Dict[str, Any]:
-    user = await db.users.find_one({"id": user_id}, {"_id": 0})
+async def find_user(user_id: str, include_password: bool = True) -> Dict[str, Any]:
+    projection: Dict[str, int] = {"_id": 0}
+    if not include_password:
+        projection["password_hash"] = 0
+    user = await db.users.find_one({"id": user_id}, projection)
     if not user:
         raise HTTPException(status_code=401, detail="Sesi tidak valid")
     if user.get("status", "active") != "active":
@@ -1623,10 +1663,20 @@ async def get_current_user(
     if not authorization or not authorization.startswith("Bearer "):
         raise HTTPException(status_code=401, detail="Token diperlukan")
     token = authorization.replace("Bearer ", "", 1).strip()
-    session = await db.sessions.find_one({"token": token}, {"_id": 0})
-    if not session:
-        raise HTTPException(status_code=401, detail="Sesi tidak ditemukan")
-    user = await find_user(session["user_id"])
+    cached = _auth_cache.get(token)
+    if cached and (time.monotonic() - cached[0]) < _AUTH_CACHE_TTL:
+        session, user = cached[1], cached[2]
+    else:
+        async with _auth_cache_lock:
+            cached = _auth_cache.get(token)
+            if cached and (time.monotonic() - cached[0]) < _AUTH_CACHE_TTL:
+                session, user = cached[1], cached[2]
+            else:
+                session = await db.sessions.find_one({"token": token}, {"_id": 0})
+                if not session:
+                    raise HTTPException(status_code=401, detail="Sesi tidak ditemukan")
+                user = await find_user(session["user_id"], include_password=False)
+                cache_authenticated_user(token, session, user)
     request.state.current_user = user
     request.state.current_session = session
     return user
@@ -1651,23 +1701,51 @@ def is_campus_admin(user: Dict[str, Any]) -> bool:
 async def lecturer_class_ids(user: Dict[str, Any], include_deleted: bool = False) -> List[str]:
     if user.get("role") == "student":
         return list(user.get("class_ids", []))
-    if is_campus_admin(user):
-        query = {} if include_deleted else {"status": {"$ne": "deleted"}}
-        docs = await db.classes.find(query, {"_id": 0, "id": 1}).to_list(5000)
-        return [item["id"] for item in docs]
 
-    target_ids = list({user.get("id", ""), user.get("username", ""), user.get("nidn", ""), user.get("employee_id", "")} - {""})
-    class_ids = set()
-    for tid in target_ids:
-        docs = await db.classes.find({"lecturer_id": tid}, {"_id": 0, "id": 1, "status": 1}).to_list(5000)
-        for d in docs:
-            if include_deleted or d.get("status") != "deleted":
-                class_ids.add(d["id"])
-        docs_nidn = await db.classes.find({"lecturer_nidn": tid}, {"_id": 0, "id": 1, "status": 1}).to_list(5000)
-        for d in docs_nidn:
-            if include_deleted or d.get("status") != "deleted":
-                class_ids.add(d["id"])
-    return list(class_ids)
+    cache_key = f"{user.get('id', '')}:{int(include_deleted)}"
+    cached = _class_scope_cache.get(cache_key)
+    if cached and (time.monotonic() - cached[0]) < _CLASS_SCOPE_CACHE_TTL:
+        return list(cached[1])
+
+    # Several startup endpoints need the same lecturer scope concurrently.
+    # Serialize only the cache fill so the first request does the query and
+    # the other requests reuse its result instead of hitting PostgreSQL again.
+    async with _class_scope_cache_lock:
+        cached = _class_scope_cache.get(cache_key)
+        if cached and (time.monotonic() - cached[0]) < _CLASS_SCOPE_CACHE_TTL:
+            return list(cached[1])
+
+        result: List[str]
+        if is_campus_admin(user):
+            query = {} if include_deleted else {"status": {"$ne": "deleted"}}
+            docs = await db.classes.find(query, {"_id": 0, "id": 1}).to_list(5000)
+            result = [item["id"] for item in docs]
+        else:
+            target_ids = list({user.get("id", ""), user.get("username", ""), user.get("nidn", ""), user.get("employee_id", "")} - {""})
+            class_ids = set()
+            for tid in target_ids:
+                docs = await db.classes.find({"lecturer_id": tid}, {"_id": 0, "id": 1, "status": 1}).to_list(5000)
+                for d in docs:
+                    if include_deleted or d.get("status") != "deleted":
+                        class_ids.add(d["id"])
+                docs_nidn = await db.classes.find({"lecturer_nidn": tid}, {"_id": 0, "id": 1, "status": 1}).to_list(5000)
+                for d in docs_nidn:
+                    if include_deleted or d.get("status") != "deleted":
+                        class_ids.add(d["id"])
+            result = list(class_ids)
+        if len(_class_scope_cache) >= _CLASS_SCOPE_CACHE_MAX_ENTRIES:
+            expired = [
+                key
+                for key, value in _class_scope_cache.items()
+                if time.monotonic() - value[0] >= _CLASS_SCOPE_CACHE_TTL
+            ]
+            for key in expired:
+                _class_scope_cache.pop(key, None)
+            while len(_class_scope_cache) >= _CLASS_SCOPE_CACHE_MAX_ENTRIES:
+                oldest = min(_class_scope_cache, key=lambda key: _class_scope_cache[key][0])
+                _class_scope_cache.pop(oldest, None)
+        _class_scope_cache[cache_key] = (time.monotonic(), result)
+        return list(result)
 
 
 async def require_class_access(class_id: str, user: Dict[str, Any], active_only: bool = False) -> Dict[str, Any]:
@@ -4050,7 +4128,7 @@ async def sso_exchange(payload: SsoExchangeInput):
             "created_at": now_iso(),
         }
     )
-    await safe_record_user_activity(
+    queue_user_activity(
         user,
         "POST",
         "/api/auth/sso/exchange",
@@ -4128,7 +4206,7 @@ async def login(payload: LoginInput):
     token = new_id() + new_id()
     await db.sessions.insert_one({"token": token, "user_id": user["id"], "created_at": now_iso()})
     await db.users.update_one({"id": user["id"]}, {"$set": {"last_login_at": now_iso()}})
-    await safe_record_user_activity(
+    queue_user_activity(
         user,
         "POST",
         "/api/auth/login",
@@ -4535,6 +4613,7 @@ async def logout(authorization: Optional[str] = Header(None)):
     logout_url = ""
     if authorization and authorization.startswith("Bearer "):
         token = authorization.replace("Bearer ", "", 1).strip()
+        _auth_cache.pop(token, None)
         session = await db.sessions.find_one_and_delete({"token": token}, {"_id": 0})
         if session:
             logout_user = await db.users.find_one(
@@ -4542,7 +4621,7 @@ async def logout(authorization: Optional[str] = Header(None)):
                 {"_id": 0, "password_hash": 0},
             )
             if logout_user:
-                await safe_record_user_activity(
+                queue_user_activity(
                     logout_user,
                     "POST",
                     "/api/auth/logout",
@@ -5341,7 +5420,10 @@ async def get_user_activity(
 
 
 @api_router.get("/dashboard")
-async def dashboard(user: Dict[str, Any] = Depends(require_admin)):
+async def dashboard(
+    include_activity: bool = True,
+    user: Dict[str, Any] = Depends(require_admin),
+):
     class_ids = await lecturer_class_ids(user)
     class_query = {"id": {"$in": class_ids}}
     active_classes = await db.classes.find({**class_query, "status": "active"}, {"_id": 0}).to_list(500)
@@ -5380,7 +5462,7 @@ async def dashboard(user: Dict[str, Any] = Depends(require_admin)):
     risk_high = sum(1 for p in progress_map.values() if p.get("risk_label") == "Risiko Tinggi")
     user_activity = (
         await user_activity_dashboard_payload(14)
-        if is_campus_admin(user)
+        if include_activity and is_campus_admin(user)
         else None
     )
     return {
@@ -9095,11 +9177,25 @@ async def get_settings(_: Dict[str, Any] = Depends(get_current_user)):
 
 @api_router.get("/settings/public")
 async def get_public_settings():
-    settings = await db.app_settings.find_one({"id": "main"}, {"_id": 0}) or default_app_settings()
+    defaults = default_app_settings()
+    settings = await db.app_settings.find_one({"id": "main"}, {"_id": 0}) or defaults
     return {
-        "app_name": settings.get("app_name") or default_app_settings()["app_name"],
-        "campus_name": settings.get("campus_name", ""),
-        "campus_logo_url": settings.get("campus_logo_url", ""),
+        # Hanya expose identitas dan kontak kampus yang memang ditampilkan
+        # pada halaman publik. Field admin, integrasi, dan konfigurasi internal
+        # tetap tidak ikut dikirim ke browser.
+        "app_name": settings.get("app_name") or defaults["app_name"],
+        "campus_name": settings.get("campus_name", defaults["campus_name"]),
+        "campus_code": settings.get("campus_code", defaults["campus_code"]),
+        "institution_type": settings.get("institution_type", defaults["institution_type"]),
+        "accreditation": settings.get("accreditation", defaults["accreditation"]),
+        "accreditation_sk": settings.get("accreditation_sk", defaults["accreditation_sk"]),
+        "campus_motto": settings.get("campus_motto", defaults["campus_motto"]),
+        "campus_phone": settings.get("campus_phone", defaults["campus_phone"]),
+        "campus_whatsapp": settings.get("campus_whatsapp", defaults["campus_whatsapp"]),
+        "campus_email": settings.get("campus_email", defaults["campus_email"]),
+        "campus_website": settings.get("campus_website", defaults["campus_website"]),
+        "campus_address": settings.get("campus_address", defaults["campus_address"]),
+        "campus_logo_url": settings.get("campus_logo_url", defaults["campus_logo_url"]),
     }
 
 
@@ -9169,7 +9265,7 @@ async def user_activity_logging_middleware(request: Request, call_next):
             and request.url.path.startswith("/api/")
             and should_log_user_activity(request.method, request.url.path)
         ):
-            await safe_record_user_activity(
+            queue_user_activity(
                 user,
                 request.method,
                 request.url.path,
@@ -9184,7 +9280,7 @@ async def user_activity_logging_middleware(request: Request, call_next):
         and request.url.path.startswith("/api/")
         and should_log_user_activity(request.method, request.url.path)
     ):
-        await safe_record_user_activity(
+        queue_user_activity(
             user,
             request.method,
             request.url.path,

@@ -41,6 +41,16 @@ export default function App() {
         if (data) {
           setBranding((prev) => ({
             ...prev,
+            campus_code: data.campus_code || prev.campus_code || "",
+            institution_type: data.institution_type || prev.institution_type || "",
+            accreditation: data.accreditation || prev.accreditation || "",
+            accreditation_sk: data.accreditation_sk || prev.accreditation_sk || "",
+            campus_motto: data.campus_motto || prev.campus_motto || "",
+            campus_phone: data.campus_phone || prev.campus_phone || "",
+            campus_whatsapp: data.campus_whatsapp || prev.campus_whatsapp || "",
+            campus_email: data.campus_email || prev.campus_email || "",
+            campus_website: data.campus_website || prev.campus_website || "",
+            campus_address: data.campus_address || prev.campus_address || "",
             campus_name: data.campus_name || prev.campus_name || "POLITEKNIK SCI",
             name: data.campus_name || data.app_name || prev.name || "POLITEKNIK SCI",
             app_name: data.app_name || prev.app_name || "POLITEKNIK SCI",
@@ -56,10 +66,13 @@ export default function App() {
         if (data.ok) {
           setPrograms(data.programs || []);
           if (data.branding) {
+            const publicBranding = Object.fromEntries(
+              Object.entries(data.branding).filter(([, value]) => value !== "" && value !== null && value !== undefined)
+            );
             setBranding((prev) => ({
               ...prev,
-              ...data.branding,
-              campus_logo_url: data.branding.campus_logo_url || prev.campus_logo_url || "",
+              ...publicBranding,
+              campus_logo_url: publicBranding.campus_logo_url || prev.campus_logo_url || "",
             }));
           }
         }
