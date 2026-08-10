@@ -23,8 +23,6 @@ backend/.drive_config.key
 credentials*.json
 *.dump
 *.backup
-*.sql
-*.sql.gz
 backups/
 dump_feeder/
 db siakad old siap*.json
