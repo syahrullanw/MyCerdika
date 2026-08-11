@@ -33,19 +33,29 @@ Jangan mengaktifkan auto-sync selama proses rekonsiliasi awal.
 
 1. Pada bagian **Migrasi Incremental OLD-SIAKAD**, pilih file ekspor JSON terbaru.
 2. Tekan **Buat Preview Migrasi**.
-3. Periksa lima kelompok hasil:
+3. Periksa enam kelompok hasil:
 
    - **Record baru**: belum ada di SIAKAD baru.
    - **Update aman**: data lokal belum berubah setelah baseline dan dapat diperbarui.
    - **Tidak berubah**: nilai OLD dan SIAKAD baru sudah sama.
    - **Lokal lebih baru**: SIAKAD baru berubah setelah baseline; jangan ditimpa otomatis.
    - **Konflik**: OLD dan SIAKAD baru sama-sama berubah; perlu pemeriksaan manual.
+   - **Pembiayaan ditahan**: item BIPOT, tagihan, atau pembayaran tidak diterapkan otomatis karena hasil rekonsiliasi keuangan masih memiliki selisih.
 
 4. Terapkan hanya perubahan berstatus aman.
 5. Jika terdapat **lokal lebih baru** atau **konflik**, catat NIM/ID record dan periksa sumbernya sebelum melanjutkan.
 6. Buat kembali preview migrasi sampai tidak ada update aman yang tertinggal.
 
-Migrasi incremental tidak menghapus record Feeder dan tidak menulis ke Feeder.
+Migrasi incremental tidak menghapus record Feeder dan tidak menulis ke Feeder. Master Fakultas selalu dipertahankan sebagai data referensi walaupun hierarki Fakultas sedang dinonaktifkan pada UI; saklar hanya mengubah cara struktur tersebut digunakan.
+
+### Rekonsiliasi pembiayaan
+
+Preview juga memeriksa komponen BIPOT, skema tarif, tagihan mahasiswa, dan detail pembayaran OLD-SIAKAD. Jika jumlah `Dibayar` pada BIPOT mahasiswa tidak dapat dipasangkan dengan detail pembayaran, operasi pembiayaan diberi status **Pembiayaan ditahan**. Dalam kondisi ini:
+
+1. Perubahan master dan akademik yang berstatus aman masih boleh diterapkan.
+2. Jangan memaksa impor keuangan; catat nominal dan identitas transaksi dari preview.
+3. Perbaiki atau validasi sumber OLD-SIAKAD, lalu unggah ekspor terbaru untuk membuat preview baru.
+4. Pembiayaan hanya akan masuk ke jalur incremental ketika tidak ada pengecualian rekonsiliasi.
 
 ## Tahap 2 — Audit tiga arah semester
 

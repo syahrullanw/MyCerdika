@@ -502,6 +502,11 @@ def build_plan(
         for row in current["khs"]
     }
 
+    old_faculties = {
+        normalized(row.get("FakultasID")): row
+        for row in tables.get("fakultas", [])
+        if meaningful(row.get("FakultasID"))
+    }
     old_programs = {normalized(row.get("ProdiID")): row for row in tables.get("prodi", [])}
     old_courses = {normalized(row.get("MKID")): row for row in tables.get("mk", [])}
     old_classes = {normalized(row.get("JadwalID")): row for row in tables.get("jadwal", [])}
@@ -628,6 +633,24 @@ def build_plan(
         email_owners[candidate] = normalized(identity)
         return candidate
 
+    # Fakultas tetap diproses sebagai master terpisah. Ketika hierarki
+    # fakultas dimatikan, record ini tidak dihapus; migrator hanya menjaga
+    # snapshot sumber agar dapat dipakai kembali bila organisasi diaktifkan.
+    for faculty_id, source in old_faculties.items():
+        local_id = clean(source.get("FakultasID"))
+        values = {
+            "id": local_id,
+            "kode": clean(source.get("KodePTI") or source.get("KodeID")) or local_id,
+            "nama": clean(source.get("Nama") or source.get("NamaIns")) or local_id,
+            "status": "inactive" if normalized(source.get("NA")) == "Y" else "active",
+            "migration_source": source_name,
+            "migration_verified_at": generated_at,
+            "created_at": generated_at,
+        }
+        updates.append(
+            PlannedUpdate("fakultas", {"id": local_id}, values, upsert=True)
+        )
+
     # Semester lama berisi satu baris per prodi. Satu kode menjadi satu periode baru.
     old_periods: dict[str, dict[str, Any]] = {}
     for row in tables.get("tahun", []):
@@ -672,6 +695,7 @@ def build_plan(
                 "accreditation": source.get("Akreditasi"),
                 "decree_number": source.get("NoSKDikti"),
                 "decree_date": source.get("TglSKDikti"),
+                "fakultas_id": source.get("FakultasID"),
             }
         )
         values.update({"migration_source": source_name, "migration_verified_at": generated_at})

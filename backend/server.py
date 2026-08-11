@@ -101,7 +101,7 @@ from routers.master_data import router as master_data_router
 from routers.master_data import _active_pejabat
 from routers.kurikulum import router as kurikulum_router
 from routers.feeder import router as feeder_router
-from routers.user_access import router as user_access_router
+from routers.user_access import rebuild_user_position_access, router as user_access_router
 from routers.sk_mengajar import router as sk_mengajar_router
 from routers.sk_jabatan import router as sk_jabatan_router
 from routers.pmb import router as pmb_router
@@ -1698,6 +1698,114 @@ def is_campus_admin(user: Dict[str, Any]) -> bool:
     return user.get("role") == "admin"
 
 
+CALENDAR_EVENT_CATEGORIES = {
+    "academic",
+    "registration",
+    "krs",
+    "exam",
+    "graduation",
+    "holiday",
+    "finance",
+    "campus",
+}
+CALENDAR_EVENT_AUDIENCES = {"all", "student", "lecturer"}
+CALENDAR_EVENT_STATUSES = {"draft", "published", "archived"}
+
+
+def can_manage_academic_calendar(user: Dict[str, Any]) -> bool:
+    """Administrasi kalender berada pada Admin Kampus dan operator akademik."""
+    return is_campus_admin(user) or "academic_operator" in (user.get("access_roles") or [])
+
+
+def user_calendar_prodi_ids(user: Dict[str, Any]) -> set[str]:
+    values = {
+        str(user.get(key) or "").strip()
+        for key in ("prodi_id", "program_id", "kaprodi_prodi_id")
+    }
+    values.update(
+        str(item or "").strip()
+        for item in (user.get("access_scope_prodi_ids") or [])
+    )
+    return values - {""}
+
+
+def calendar_event_visible_to_user(event: Dict[str, Any], user: Dict[str, Any]) -> bool:
+    """Filter publikasi kalender berdasarkan sasaran peran dan prodi."""
+    if event.get("status") != "published":
+        return False
+    if is_campus_admin(user) or can_manage_academic_calendar(user):
+        return True
+
+    audience = str(event.get("audience") or "all")
+    role = str(user.get("role") or "")
+    if audience == "student" and role != "student":
+        return False
+    if audience == "lecturer" and role not in {"lecturer", "admin"}:
+        return False
+
+    target_prodi_ids = {
+        str(item or "").strip()
+        for item in (event.get("target_prodi_ids") or [])
+    } - {""}
+    return not target_prodi_ids or bool(target_prodi_ids & user_calendar_prodi_ids(user))
+
+
+def calendar_event_payload(event: Dict[str, Any]) -> Dict[str, Any]:
+    """Bentuk event institusi yang konsisten dengan endpoint kalender lama."""
+    return {
+        "id": f"academic-{event['id']}",
+        "event_id": event["id"],
+        "source": "academic_calendar",
+        "type": "academic",
+        "category": event.get("category", "academic"),
+        "title": event.get("title", "Kegiatan akademik"),
+        "date": event.get("start_at", ""),
+        "end_at": event.get("end_at", ""),
+        "all_day": bool(event.get("all_day", True)),
+        "academic_year_id": event.get("academic_year_id", ""),
+        "audience": event.get("audience", "all"),
+        "target_prodi_ids": event.get("target_prodi_ids", []),
+        "description": event.get("description", ""),
+        "location": event.get("location", ""),
+        "link": event.get("link", ""),
+    }
+
+
+def validate_academic_calendar_event(payload: AcademicCalendarEventInput) -> Dict[str, Any]:
+    category = str(payload.category or "academic").strip().lower()
+    audience = str(payload.audience or "all").strip().lower()
+    status = str(payload.status or "published").strip().lower()
+    if category not in CALENDAR_EVENT_CATEGORIES:
+        raise HTTPException(status_code=400, detail="Kategori kegiatan kalender tidak valid")
+    if audience not in CALENDAR_EVENT_AUDIENCES:
+        raise HTTPException(status_code=400, detail="Sasaran publikasi kalender tidak valid")
+    if status not in CALENDAR_EVENT_STATUSES:
+        raise HTTPException(status_code=400, detail="Status kalender harus draft, published, atau archived")
+
+    start_at = normalize_optional_datetime(payload.start_at, "Tanggal mulai")
+    end_at = normalize_optional_datetime(payload.end_at, "Tanggal selesai")
+    if end_at and parse_iso_datetime(end_at) < parse_iso_datetime(start_at):
+        raise HTTPException(status_code=400, detail="Tanggal selesai tidak boleh sebelum tanggal mulai")
+
+    return {
+        "title": payload.title.strip(),
+        "category": category,
+        "start_at": start_at,
+        "end_at": end_at,
+        "all_day": bool(payload.all_day),
+        "academic_year_id": str(payload.academic_year_id or "").strip(),
+        "audience": audience,
+        "target_prodi_ids": sorted({
+            str(item or "").strip()
+            for item in payload.target_prodi_ids
+        } - {""}),
+        "description": payload.description.strip(),
+        "location": payload.location.strip(),
+        "link": payload.link.strip(),
+        "status": status,
+    }
+
+
 async def lecturer_class_ids(user: Dict[str, Any], include_deleted: bool = False) -> List[str]:
     if user.get("role") == "student":
         return list(user.get("class_ids", []))
@@ -1983,6 +2091,7 @@ class ProfileInput(BaseModel):
     jabatan: Optional[str] = None
     status_kepegawaian: Optional[str] = None
     nim: Optional[str] = None
+    nisn: Optional[str] = None
     angkatan: Optional[str] = None
     academic_year: Optional[str] = None
     semester: Optional[str] = None
@@ -1990,6 +2099,59 @@ class ProfileInput(BaseModel):
     parent_phone: Optional[str] = None
     parent_job: Optional[str] = None
     parent_address: Optional[str] = None
+    nuptk: Optional[str] = None
+    nrsd: Optional[str] = None
+    nama_panggilan: Optional[str] = None
+    kewarganegaraan: Optional[str] = None
+    rt: Optional[str] = None
+    rw: Optional[str] = None
+    dusun: Optional[str] = None
+    kelurahan: Optional[str] = None
+    kecamatan: Optional[str] = None
+    kode_wilayah: Optional[str] = None
+    jenis_tinggal_id: Optional[str] = None
+    jenis_tinggal: Optional[str] = None
+    transportasi_id: Optional[str] = None
+    transportasi: Optional[str] = None
+    asal_sekolah: Optional[str] = None
+    status_sipil: Optional[str] = None
+    no_kk: Optional[str] = None
+    npwp: Optional[str] = None
+    no_kip: Optional[str] = None
+    no_kps: Optional[str] = None
+    kebutuhan_khusus: Optional[str] = None
+    tinggi_badan: Optional[str] = None
+    berat_badan: Optional[str] = None
+    semester_masuk: Optional[str] = None
+    tanggal_masuk: Optional[str] = None
+    jenis_pendaftaran_id: Optional[str] = None
+    jenis_pendaftaran: Optional[str] = None
+    jalur_masuk_id: Optional[str] = None
+    jalur_masuk: Optional[str] = None
+    jenis_pembiayaan_id: Optional[str] = None
+    jenis_pembiayaan: Optional[str] = None
+    status_mahasiswa_id: Optional[str] = None
+    feeder_student_id: Optional[str] = None
+    feeder_registration_id: Optional[str] = None
+    foto_url: Optional[str] = None
+    jabatan_dikti_id: Optional[str] = None
+    jabatan_kode: Optional[str] = None
+    jenjang_pendidikan: Optional[str] = None
+    ikatan_kerja: Optional[str] = None
+    status_pegawai: Optional[str] = None
+    status_kerja: Optional[str] = None
+    jenis_pegawai: Optional[str] = None
+    pangkat_golongan_id: Optional[str] = None
+    pangkat_golongan: Optional[str] = None
+    no_sk: Optional[str] = None
+    unit_organisasi_id: Optional[str] = None
+    institusi_induk: Optional[str] = None
+    status_dosen: Optional[str] = None
+    status_dosen_id: Optional[str] = None
+    tanggal_mulai_mengajar: Optional[str] = None
+    orang_tua: Optional[Dict[str, Any]] = None
+    registration: Optional[Dict[str, Any]] = None
+    pddikti_ids: Optional[Dict[str, Any]] = None
 
 
 class ResetPasswordOtpInput(BaseModel):
@@ -2042,23 +2204,150 @@ class StudentInput(BaseModel):
     name: str
     email: EmailStr
     whatsapp: str = ""
+    nik: str = ""
+    nisn: str = ""
+    gender: str = "L"
+    agama: str = "Islam"
+    tempat_lahir: str = ""
+    tanggal_lahir: str = ""
+    alamat: str = ""
+    kota: str = ""
+    provinsi: str = ""
+    kode_pos: str = ""
     class_id: Optional[str] = ""
     prodi_id: Optional[str] = None
     angkatan: Optional[str] = "2024"
     dosen_wali_id: Optional[str] = None
+    parent_name: str = ""
+    parent_phone: str = ""
+    parent_job: str = ""
+    parent_address: str = ""
+    parent_email: str = ""
+    parent_rt: str = ""
+    parent_rw: str = ""
+    parent_kota: str = ""
+    parent_provinsi: str = ""
+    parent_kode_pos: str = ""
+    parent_negara: str = ""
+    kewarganegaraan: str = ""
+    rt: str = ""
+    rw: str = ""
+    dusun: str = ""
+    kelurahan: str = ""
+    kecamatan: str = ""
+    kode_wilayah: str = ""
+    jenis_tinggal_id: str = ""
+    jenis_tinggal: str = ""
+    transportasi_id: str = ""
+    transportasi: str = ""
+    asal_sekolah: str = ""
+    status_sipil: str = ""
+    no_kk: str = ""
+    npwp: str = ""
+    no_kip: str = ""
+    no_kps: str = ""
+    kebutuhan_khusus: str = ""
+    tinggi_badan: str = ""
+    berat_badan: str = ""
+    semester_masuk: str = ""
+    tanggal_masuk: str = ""
+    jenis_pendaftaran_id: str = ""
+    jenis_pendaftaran: str = ""
+    jalur_masuk_id: str = ""
+    jalur_masuk: str = ""
+    jenis_pembiayaan_id: str = ""
+    jenis_pembiayaan: str = ""
+    status_mahasiswa_id: str = ""
+    feeder_student_id: str = ""
+    feeder_registration_id: str = ""
+    foto_url: str = ""
+    orang_tua: Dict[str, Any] = Field(default_factory=dict)
+    registration: Dict[str, Any] = Field(default_factory=dict)
+    pddikti_ids: Dict[str, Any] = Field(default_factory=dict)
     status: str = "active"
     password: str = "Mahasiswa123!"
 
 
+class StudentUpdateInput(BaseModel):
+    nim: str
+    name: str
+    email: EmailStr
+    whatsapp: Optional[str] = None
+    nik: Optional[str] = None
+    nisn: Optional[str] = None
+    gender: Optional[str] = None
+    agama: Optional[str] = None
+    tempat_lahir: Optional[str] = None
+    tanggal_lahir: Optional[str] = None
+    alamat: Optional[str] = None
+    kota: Optional[str] = None
+    provinsi: Optional[str] = None
+    kode_pos: Optional[str] = None
+    prodi_id: Optional[str] = None
+    angkatan: Optional[str] = None
+    dosen_wali_id: Optional[str] = None
+    parent_name: Optional[str] = None
+    parent_phone: Optional[str] = None
+    parent_job: Optional[str] = None
+    parent_address: Optional[str] = None
+    parent_email: Optional[str] = None
+    parent_rt: Optional[str] = None
+    parent_rw: Optional[str] = None
+    parent_kota: Optional[str] = None
+    parent_provinsi: Optional[str] = None
+    parent_kode_pos: Optional[str] = None
+    parent_negara: Optional[str] = None
+    kewarganegaraan: Optional[str] = None
+    rt: Optional[str] = None
+    rw: Optional[str] = None
+    dusun: Optional[str] = None
+    kelurahan: Optional[str] = None
+    kecamatan: Optional[str] = None
+    kode_wilayah: Optional[str] = None
+    jenis_tinggal_id: Optional[str] = None
+    jenis_tinggal: Optional[str] = None
+    transportasi_id: Optional[str] = None
+    transportasi: Optional[str] = None
+    asal_sekolah: Optional[str] = None
+    status_sipil: Optional[str] = None
+    no_kk: Optional[str] = None
+    npwp: Optional[str] = None
+    no_kip: Optional[str] = None
+    no_kps: Optional[str] = None
+    kebutuhan_khusus: Optional[str] = None
+    tinggi_badan: Optional[str] = None
+    berat_badan: Optional[str] = None
+    semester_masuk: Optional[str] = None
+    tanggal_masuk: Optional[str] = None
+    jenis_pendaftaran_id: Optional[str] = None
+    jenis_pendaftaran: Optional[str] = None
+    jalur_masuk_id: Optional[str] = None
+    jalur_masuk: Optional[str] = None
+    jenis_pembiayaan_id: Optional[str] = None
+    jenis_pembiayaan: Optional[str] = None
+    status_mahasiswa_id: Optional[str] = None
+    feeder_student_id: Optional[str] = None
+    feeder_registration_id: Optional[str] = None
+    foto_url: Optional[str] = None
+    orang_tua: Optional[Dict[str, Any]] = None
+    registration: Optional[Dict[str, Any]] = None
+    pddikti_ids: Optional[Dict[str, Any]] = None
+    status: Optional[str] = None
+
+
 class LecturerInput(BaseModel):
     employee_id: str = ""
+    nip: str = ""
     nidn: str = ""
+    nuptk: str = ""
+    nrsd: str = ""
     nik: str = ""
     username: str = Field(min_length=3)
     name: str = Field(min_length=1)
     gelar: str = ""
     gelar_depan: str = ""
     gelar_belakang: str = ""
+    nama_panggilan: str = ""
     email: EmailStr
     whatsapp: str = ""
     password: str = Field(default="Dosen123!", min_length=6)
@@ -2073,23 +2362,48 @@ class LecturerInput(BaseModel):
     kota: str = ""
     provinsi: str = ""
     kode_pos: str = ""
+    kewarganegaraan: str = ""
+    rt: str = ""
+    rw: str = ""
+    dusun: str = ""
+    kelurahan: str = ""
+    kecamatan: str = ""
+    kode_wilayah: str = ""
     jabatan_akademik: str = ""
+    jabatan_dikti_id: str = ""
+    jabatan_kode: str = ""
     keilmuan: str = ""
     pendidikan_terakhir: str = ""
+    jenjang_pendidikan: str = ""
+    ikatan_kerja: str = ""
+    status_pegawai: str = ""
+    status_kerja: str = ""
+    jenis_pegawai: str = ""
+    pangkat_golongan_id: str = ""
+    pangkat_golongan: str = ""
+    no_sk: str = ""
+    unit_organisasi_id: str = ""
+    institusi_induk: str = ""
     status_dosen: str = ""
+    status_dosen_id: str = ""
     tanggal_masuk: str = ""
+    tanggal_mulai_mengajar: str = ""
     foto_url: str = ""
 
 
 class LecturerUpdateInput(BaseModel):
     employee_id: str = ""
+    nip: str = ""
     nidn: str = ""
+    nuptk: str = ""
+    nrsd: str = ""
     nik: str = ""
     username: str = Field(min_length=3)
     name: str = Field(min_length=1)
     gelar: str = ""
     gelar_depan: str = ""
     gelar_belakang: str = ""
+    nama_panggilan: str = ""
     email: EmailStr
     whatsapp: str = ""
     status: str = "active"
@@ -2103,11 +2417,32 @@ class LecturerUpdateInput(BaseModel):
     kota: str = ""
     provinsi: str = ""
     kode_pos: str = ""
+    kewarganegaraan: str = ""
+    rt: str = ""
+    rw: str = ""
+    dusun: str = ""
+    kelurahan: str = ""
+    kecamatan: str = ""
+    kode_wilayah: str = ""
     jabatan_akademik: str = ""
+    jabatan_dikti_id: str = ""
+    jabatan_kode: str = ""
     keilmuan: str = ""
     pendidikan_terakhir: str = ""
+    jenjang_pendidikan: str = ""
+    ikatan_kerja: str = ""
+    status_pegawai: str = ""
+    status_kerja: str = ""
+    jenis_pegawai: str = ""
+    pangkat_golongan_id: str = ""
+    pangkat_golongan: str = ""
+    no_sk: str = ""
+    unit_organisasi_id: str = ""
+    institusi_induk: str = ""
     status_dosen: str = ""
+    status_dosen_id: str = ""
     tanggal_masuk: str = ""
+    tanggal_mulai_mengajar: str = ""
     foto_url: str = ""
 
 
@@ -2172,6 +2507,23 @@ class AssignmentInput(BaseModel):
     late_penalty_per_day: float = 0
     close_after_deadline: bool = False
     material_id: str = ""
+
+
+class AcademicCalendarEventInput(BaseModel):
+    """Kegiatan institusi yang menjadi rujukan kalender akademik kampus."""
+
+    title: str = Field(min_length=3, max_length=180)
+    category: str = "academic"
+    start_at: str
+    end_at: str = ""
+    all_day: bool = True
+    academic_year_id: str = ""
+    audience: str = "all"
+    target_prodi_ids: List[str] = Field(default_factory=list)
+    description: str = Field(default="", max_length=2000)
+    location: str = Field(default="", max_length=240)
+    link: str = Field(default="", max_length=1000)
+    status: str = "published"
 
 
 class GradeItem(BaseModel):
@@ -4526,8 +4878,18 @@ async def update_profile(payload: ProfileInput, user: Dict[str, Any] = Depends(g
         "employee_id", "nip", "nidn", "nik", "gelar", "gelar_depan", "gelar_belakang",
         "prodi_id", "prodi_name", "prodi_kode", "homebase", "gender", "agama",
         "tempat_lahir", "tanggal_lahir", "alamat", "kota", "provinsi", "kode_pos",
-        "spesialisasi", "jabatan", "status_kepegawaian", "nim", "angkatan",
-        "academic_year", "semester", "parent_name", "parent_phone", "parent_job", "parent_address"
+        "spesialisasi", "jabatan", "status_kepegawaian", "nim", "nisn", "angkatan",
+        "academic_year", "semester", "parent_name", "parent_phone", "parent_job", "parent_address",
+        "nuptk", "nrsd", "nama_panggilan", "kewarganegaraan", "rt", "rw", "dusun",
+        "kelurahan", "kecamatan", "kode_wilayah", "jenis_tinggal_id", "jenis_tinggal",
+        "transportasi_id", "transportasi", "asal_sekolah", "status_sipil", "no_kk", "npwp",
+        "no_kip", "no_kps", "kebutuhan_khusus", "tinggi_badan", "berat_badan", "semester_masuk",
+        "tanggal_masuk", "jenis_pendaftaran_id", "jenis_pendaftaran", "jalur_masuk_id", "jalur_masuk",
+        "jenis_pembiayaan_id", "jenis_pembiayaan", "status_mahasiswa_id", "feeder_student_id",
+        "feeder_registration_id", "foto_url", "orang_tua", "registration", "pddikti_ids",
+        "jabatan_dikti_id", "jabatan_kode", "jenjang_pendidikan", "ikatan_kerja", "status_pegawai",
+        "status_kerja", "jenis_pegawai", "pangkat_golongan_id", "pangkat_golongan", "no_sk",
+        "unit_organisasi_id", "institusi_induk", "status_dosen", "status_dosen_id", "tanggal_mulai_mengajar"
     ]
     for field in extra_fields:
         val = getattr(payload, field, None)
@@ -5419,14 +5781,47 @@ async def get_user_activity(
     return await user_activity_dashboard_payload(days)
 
 
+def class_matches_tahun_ajaran(
+    class_doc: Dict[str, Any],
+    tahun_ajaran: Dict[str, Any],
+    semester_id: str,
+) -> bool:
+    """Samakan cakupan kelas dengan selector Tahun Ajaran di frontend."""
+    if str(class_doc.get("tahun_ajaran_id") or "") == semester_id:
+        return True
+    target_year = str(tahun_ajaran.get("tahun") or tahun_ajaran.get("academic_year") or "").strip()
+    target_semester = str(tahun_ajaran.get("semester") or "").strip().lower()
+    class_year = str(class_doc.get("academic_year") or class_doc.get("tahun_ajaran") or "").strip()
+    class_semester = str(class_doc.get("semester") or "").strip().lower()
+    return bool(target_year and target_semester and class_year == target_year and class_semester == target_semester)
+
+
 @api_router.get("/dashboard")
 async def dashboard(
     include_activity: bool = True,
+    semester_id: str = "",
     user: Dict[str, Any] = Depends(require_admin),
 ):
-    class_ids = await lecturer_class_ids(user)
-    class_query = {"id": {"$in": class_ids}}
-    active_classes = await db.classes.find({**class_query, "status": "active"}, {"_id": 0}).to_list(500)
+    all_class_ids = await lecturer_class_ids(user)
+    scoped_classes = await db.classes.find(
+        {"id": {"$in": all_class_ids}}, {"_id": 0}
+    ).to_list(5000)
+    selected_tahun_ajaran: Dict[str, Any] = {}
+    clean_semester_id = str(semester_id or "").strip()
+    if clean_semester_id and clean_semester_id != "all":
+        selected_tahun_ajaran = await db.tahun_ajaran.find_one(
+            {"id": clean_semester_id}, {"_id": 0}
+        ) or {}
+        if not selected_tahun_ajaran:
+            raise HTTPException(status_code=404, detail="Tahun ajaran yang dipilih tidak ditemukan")
+        scoped_classes = [
+            class_doc
+            for class_doc in scoped_classes
+            if class_matches_tahun_ajaran(class_doc, selected_tahun_ajaran, clean_semester_id)
+        ]
+
+    class_ids = [item["id"] for item in scoped_classes if item.get("id")]
+    active_classes = [item for item in scoped_classes if item.get("status") == "active"]
     active_courses_count = len({item.get("course_id") for item in active_classes if item.get("course_id")})
     active_classes_count = len(active_classes)
     assignments = await db.assignments.find({"class_id": {"$in": class_ids}, "is_active": True}, {"_id": 0}).to_list(500)
@@ -5460,6 +5855,11 @@ async def dashboard(
     avg_grade = round(sum(avg_grade_values) / len(avg_grade_values), 1) if avg_grade_values else 0
     progress_map = await calculate_student_progress_many([s["id"] for s in students], class_ids)
     risk_high = sum(1 for p in progress_map.values() if p.get("risk_label") == "Risiko Tinggi")
+    student_progress = []
+    for student in students:
+        student_doc = public_doc(student.copy()) or {}
+        student_doc["progress"] = progress_map.get(student.get("id", ""), {})
+        student_progress.append(student_doc)
     user_activity = (
         await user_activity_dashboard_payload(14)
         if include_activity and is_campus_admin(user)
@@ -5467,6 +5867,12 @@ async def dashboard(
     )
     return {
         "summary": {
+            "semester_id": clean_semester_id,
+            "semester_label": (
+                f"{selected_tahun_ajaran.get('tahun', '')} {selected_tahun_ajaran.get('semester', '')}".strip()
+                if selected_tahun_ajaran
+                else "Semua semester"
+            ),
             "active_courses": active_courses_count,
             "active_classes": active_classes_count,
             "active_assignments": len(assignments),
@@ -5479,6 +5885,7 @@ async def dashboard(
             **await storage_status_summary(),
         },
         "latest_comments": comments,
+        "student_progress": student_progress,
         "user_activity": user_activity,
     }
 
@@ -7245,34 +7652,116 @@ async def reset_student_password(
     return {"ok": True, "temporary_password": new_password}
 
 
+def split_program_scope_values(*sources: Any) -> List[str]:
+    """Normalisasi scope prodi lama yang kadang tersimpan sebagai CSV."""
+    values: List[str] = []
+    for source in sources:
+        source_values = source if isinstance(source, (list, tuple, set)) else [source]
+        for value in source_values:
+            for item in re.split(r"[,;|\n]+", str(value or "")):
+                clean_value = item.strip()
+                if clean_value and clean_value not in values:
+                    values.append(clean_value)
+    return values
+
+
+def preferred_program_scope_values(
+    user: Dict[str, Any],
+    structural_scope_values: Optional[List[str]] = None,
+) -> List[str]:
+    """Penunjukan jabatan aktif mengalahkan field prodi lama pada profil."""
+    active_structural_scope = split_program_scope_values(structural_scope_values or [])
+    if active_structural_scope:
+        return active_structural_scope
+
+    derived_scope = split_program_scope_values(
+        user.get("access_scope_prodi_ids"),
+        user.get("kaprodi_prodi_id"),
+    )
+    if derived_scope:
+        return derived_scope
+
+    # Profil dari OLD-SIAKAD dapat berisi beberapa kode prodi sekaligus. Nilai
+    # ini hanya dipakai sementara bila akun belum memiliki penunjukan struktural.
+    return split_program_scope_values(user.get("prodi_id"))
+
+
+async def active_program_manager_scope_values(user: Dict[str, Any]) -> List[str]:
+    """Ambil scope Kaprodi/Sekprodi aktif langsung dari penunjukan jabatan."""
+    assignments = await db.jabatan_assignments.find(
+        {"user_id": user.get("id", "")},
+        {"_id": 0, "jabatan_kode": 1, "prodi_id": 1, "status": 1},
+    ).to_list(100)
+    return split_program_scope_values([
+        assignment.get("prodi_id")
+        for assignment in assignments
+        if str(assignment.get("jabatan_kode") or "").upper() in {"KAPRODI", "SEKPRODI"}
+        and str(assignment.get("status") or "active").lower() not in {"inactive", "revoked"}
+    ])
+
+
+async def resolved_program_scope_values(
+    user: Dict[str, Any],
+    structural_scope_values: Optional[List[str]] = None,
+) -> List[str]:
+    """Kembangkan ID/kode prodi scope ke seluruh alias yang dipakai data mahasiswa."""
+    raw_values = preferred_program_scope_values(
+        user,
+        structural_scope_values,
+    )
+    if not raw_values:
+        return []
+    lookup = {value.upper() for value in raw_values}
+    scope_values = set(raw_values)
+    programs = await db.programs.find(
+        {"status": {"$ne": "deleted"}},
+        {"_id": 0, "id": 1, "code": 1, "kode": 1, "name": 1, "nama": 1},
+    ).to_list(1000)
+    for program in programs:
+        aliases = [
+            str(program.get(key) or "").strip()
+            for key in ("id", "code", "kode", "name", "nama")
+        ]
+        if any(alias.upper() in lookup for alias in aliases if alias):
+            scope_values.update(alias for alias in aliases if alias)
+    return sorted(scope_values)
+
+
 @api_router.get("/students")
 async def list_students(user: Dict[str, Any] = Depends(require_admin)):
     query: Dict[str, Any] = {"role": "student"}
     progress_class_ids: Optional[List[str]] = None
+    structural_kaprodi_scope = await active_program_manager_scope_values(user)
 
     is_kaprodi = (
         user.get("is_kaprodi") is True
         or str(user.get("is_kaprodi")).lower() == "true"
         or bool(user.get("kaprodi_prodi_id"))
+        or "kaprodi" in (user.get("access_roles") or [])
+        or "sekprodi" in (user.get("access_roles") or [])
         or "kaprodi" in str(user.get("jabatan_akademik") or "").lower()
         or "ketua prodi" in str(user.get("jabatan_akademik") or "").lower()
+        or bool(structural_kaprodi_scope)
     )
-    kaprodi_prodi = user.get("kaprodi_prodi_id") or user.get("prodi_id")
+    kaprodi_scope_values = await resolved_program_scope_values(
+        user,
+        structural_kaprodi_scope,
+    ) if is_kaprodi else []
 
-    if user.get("role") != "admin" and is_kaprodi and kaprodi_prodi:
+    if user.get("role") != "admin" and is_kaprodi and kaprodi_scope_values:
         query["$or"] = [
-            {"prodi_id": kaprodi_prodi},
-            {"prodi_kode": kaprodi_prodi},
-            {"program_id": kaprodi_prodi}
+            {"prodi_id": {"$in": kaprodi_scope_values}},
+            {"prodi_kode": {"$in": kaprodi_scope_values}},
+            {"program_id": {"$in": kaprodi_scope_values}},
+            {"prodi_name": {"$in": kaprodi_scope_values}},
+            {"program_name": {"$in": kaprodi_scope_values}},
         ]
     elif not is_campus_admin(user):
         class_ids = await lecturer_class_ids(user)
         progress_class_ids = class_ids
-        query["$or"] = [
-            {"status": "active"},
-            {"status": {"$exists": False}},
-            {"class_ids": {"$in": class_ids}},
-        ]
+        # Dosen non-Kaprodi hanya boleh melihat mahasiswa yang benar-benar
+        # terdaftar pada kelas yang ia ampu; jangan membuka seluruh akun aktif.
+        query["class_ids"] = {"$in": class_ids}
     students = await db.users.find(query, {"_id": 0, "password_hash": 0}).sort("name", 1).to_list(2000)
     progress_map = await calculate_student_progress_many(
         [s["id"] for s in students], progress_class_ids
@@ -7282,10 +7771,95 @@ async def list_students(user: Dict[str, Any] = Depends(require_admin)):
     return students
 
 
+STUDENT_PROFILE_TEXT_FIELDS = (
+    "parent_email", "parent_rt", "parent_rw", "parent_kota", "parent_provinsi",
+    "parent_kode_pos", "parent_negara", "kewarganegaraan", "rt", "rw", "dusun",
+    "kelurahan", "kecamatan", "kode_wilayah", "jenis_tinggal_id", "jenis_tinggal",
+    "transportasi_id", "transportasi", "asal_sekolah", "status_sipil", "no_kk",
+    "npwp", "no_kip", "no_kps", "kebutuhan_khusus", "tinggi_badan", "berat_badan",
+    "semester_masuk", "tanggal_masuk", "jenis_pendaftaran_id", "jenis_pendaftaran",
+    "jalur_masuk_id", "jalur_masuk", "jenis_pembiayaan_id", "jenis_pembiayaan",
+    "status_mahasiswa_id", "feeder_student_id", "feeder_registration_id", "foto_url",
+)
+STUDENT_REGISTRATION_FIELDS = (
+    "semester_masuk", "tanggal_masuk", "jenis_pendaftaran_id", "jenis_pendaftaran",
+    "jalur_masuk_id", "jalur_masuk", "jenis_pembiayaan_id", "jenis_pembiayaan",
+    "status_mahasiswa_id",
+)
+
+
+def _student_text(value: Any) -> str:
+    return str(value or "").strip()
+
+
+def _student_profile_fields(
+    payload: StudentInput | StudentUpdateInput,
+    existing: Optional[Dict[str, Any]] = None,
+) -> Dict[str, Any]:
+    """Keep flat admin fields and the richer Old SIAKAD-shaped structures together."""
+    result: Dict[str, Any] = {}
+    for field in STUDENT_PROFILE_TEXT_FIELDS:
+        value = getattr(payload, field, None)
+        if value is not None:
+            result[field] = _student_text(value)
+
+    existing = existing or {}
+    raw_parents = getattr(payload, "orang_tua", None)
+    if raw_parents is not None:
+        result["orang_tua"] = raw_parents or {}
+    elif existing.get("orang_tua") is not None:
+        result["orang_tua"] = existing.get("orang_tua")
+
+    # The generic fields remain useful for the existing UI, while `orang_tua`
+    # gives imports and future integrations the same shape as Old SIAKAD.
+    generic_parent_fields = (
+        "parent_name", "parent_phone", "parent_email", "parent_job", "parent_address",
+        "parent_rt", "parent_rw", "parent_kota", "parent_provinsi", "parent_kode_pos",
+        "parent_negara",
+    )
+    if any(getattr(payload, field, None) is not None for field in generic_parent_fields):
+        parent_source = result.get("orang_tua", existing.get("orang_tua") or {})
+        parents = dict(parent_source or {})
+        wali = dict(parents.get("wali") or {})
+        parent_map = {
+            "parent_name": "nama", "parent_phone": "telepon", "parent_email": "email",
+            "parent_job": "pekerjaan", "parent_address": "alamat", "parent_rt": "rt",
+            "parent_rw": "rw", "parent_kota": "kota", "parent_provinsi": "provinsi",
+            "parent_kode_pos": "kode_pos", "parent_negara": "negara",
+        }
+        for source, target in parent_map.items():
+            value = getattr(payload, source, None)
+            if value is not None:
+                wali[target] = _student_text(value)
+        parents["wali"] = wali
+        result["orang_tua"] = parents
+
+    raw_registration = getattr(payload, "registration", None)
+    if raw_registration is not None:
+        registration = dict(raw_registration or {})
+    else:
+        registration = dict(existing.get("registration") or {})
+    for field in STUDENT_REGISTRATION_FIELDS:
+        value = getattr(payload, field, None)
+        if value is not None:
+            registration[field] = _student_text(value)
+    if registration or raw_registration is not None:
+        result["registration"] = registration
+
+    raw_pddikti = getattr(payload, "pddikti_ids", None)
+    if raw_pddikti is not None:
+        result["pddikti_ids"] = raw_pddikti or {}
+    elif existing.get("pddikti_ids") is not None:
+        result["pddikti_ids"] = existing.get("pddikti_ids")
+    return result
+
+
 @api_router.post("/students")
 async def create_student(payload: StudentInput, user: Dict[str, Any] = Depends(require_campus_admin)):
     if payload.class_id:
         await require_class_mutation_access(payload.class_id, user)
+    if payload.status not in {"active", "inactive", "lulus", "cuti", "do"}:
+        raise HTTPException(status_code=400, detail="Status mahasiswa tidak valid")
     identity = student_identity_values(payload.email, payload.nim, payload.nim, payload.whatsapp)
     existing = await db.users.find_one(
         student_identity_conflict_query(
@@ -7322,6 +7896,16 @@ async def create_student(payload: StudentInput, user: Dict[str, Any] = Depends(r
         "name": payload.name,
         "email": identity["email"],
         "whatsapp": identity["whatsapp"],
+        "nik": _student_text(payload.nik),
+        "nisn": _student_text(payload.nisn),
+        "gender": _student_text(payload.gender) or "L",
+        "agama": _student_text(payload.agama) or "Islam",
+        "tempat_lahir": _student_text(payload.tempat_lahir),
+        "tanggal_lahir": _student_text(payload.tanggal_lahir),
+        "alamat": _student_text(payload.alamat),
+        "kota": _student_text(payload.kota),
+        "provinsi": _student_text(payload.provinsi),
+        "kode_pos": _student_text(payload.kode_pos),
         "password_hash": hash_password(payload.password),
         "status": payload.status,
         "class_ids": [payload.class_id] if payload.class_id else [],
@@ -7331,13 +7915,118 @@ async def create_student(payload: StudentInput, user: Dict[str, Any] = Depends(r
         "angkatan": payload.angkatan or "2024",
         "dosen_wali_id": payload.dosen_wali_id or "",
         "dosen_wali_name": dosen_wali_name,
+        "parent_name": _student_text(payload.parent_name),
+        "parent_phone": _student_text(payload.parent_phone),
+        "parent_job": _student_text(payload.parent_job),
+        "parent_address": _student_text(payload.parent_address),
         "created_at": now_iso(),
         "last_login_at": "",
     }
+    doc.update(_student_profile_fields(payload))
     await db.users.insert_one(doc)
     if payload.class_id:
         await db.classes.update_one({"id": payload.class_id}, {"$addToSet": {"student_ids": student_id}})
     return public_doc(doc)
+
+
+@api_router.put("/students/{student_id}")
+@api_router.post("/students/{student_id}")
+async def update_student(
+    student_id: str,
+    payload: StudentUpdateInput,
+    _: Dict[str, Any] = Depends(require_campus_admin),
+):
+    existing = await db.users.find_one(
+        {"id": student_id, "role": "student"},
+        {"_id": 0},
+    )
+    if not existing:
+        raise HTTPException(status_code=404, detail="Mahasiswa tidak ditemukan")
+    status = payload.status if payload.status is not None else existing.get("status") or "active"
+    if status not in {"active", "inactive", "lulus", "cuti", "do"}:
+        raise HTTPException(status_code=400, detail="Status mahasiswa tidak valid")
+
+    current_whatsapp = existing.get("whatsapp", "")
+    identity = student_identity_values(
+        payload.email,
+        payload.nim,
+        payload.nim,
+        payload.whatsapp if payload.whatsapp is not None else current_whatsapp,
+    )
+    duplicate = await db.users.find_one(
+        student_identity_conflict_query(
+            identity["email"],
+            identity["nim"],
+            identity["username"],
+            identity["whatsapp"],
+            exclude_user_id=student_id,
+        ),
+        {"_id": 0, "id": 1},
+    )
+    if duplicate:
+        raise HTTPException(status_code=409, detail="Email, username, NIM, atau WhatsApp mahasiswa sudah digunakan")
+
+    target_prodi_id = payload.prodi_id if payload.prodi_id is not None else existing.get("prodi_id", "")
+    prodi_name = existing.get("prodi_name", "")
+    prodi_kode = existing.get("prodi_kode", "")
+    if target_prodi_id:
+        program = await db.programs.find_one(
+            {"id": target_prodi_id},
+            {"_id": 0, "nama": 1, "name": 1, "kode": 1, "code": 1},
+        )
+        if not program:
+            raise HTTPException(status_code=400, detail="Program studi tidak ditemukan")
+        prodi_name = program.get("nama") or program.get("name", "")
+        prodi_kode = program.get("kode") or program.get("code", "")
+
+    target_dosen_wali_id = payload.dosen_wali_id if payload.dosen_wali_id is not None else existing.get("dosen_wali_id", "")
+    dosen_wali_name = existing.get("dosen_wali_name", "")
+    if target_dosen_wali_id:
+        dosen_wali = await db.users.find_one(
+            {"id": target_dosen_wali_id, "role": "lecturer"},
+            {"_id": 0, "name": 1},
+        )
+        if not dosen_wali:
+            raise HTTPException(status_code=400, detail="Dosen wali tidak ditemukan")
+        dosen_wali_name = dosen_wali.get("name", "")
+
+    update = {
+        "username": identity["username"],
+        "nim": identity["nim"],
+        "name": payload.name.strip(),
+        "email": identity["email"],
+        "whatsapp": identity["whatsapp"],
+        "status": status,
+        "prodi_id": target_prodi_id or "",
+        "prodi_name": prodi_name,
+        "prodi_kode": prodi_kode,
+        "dosen_wali_id": target_dosen_wali_id or "",
+        "dosen_wali_name": dosen_wali_name,
+        "updated_at": now_iso(),
+    }
+    for field in (
+        "whatsapp", "nik", "nisn", "gender", "agama", "tempat_lahir", "tanggal_lahir",
+        "alamat", "kota", "provinsi", "kode_pos", "angkatan", "parent_name", "parent_phone",
+        "parent_job", "parent_address",
+    ):
+        value = getattr(payload, field, None)
+        if value is not None:
+            update[field] = _student_text(value)
+    if not update.get("gender"):
+        update["gender"] = existing.get("gender", "L")
+    if not update.get("agama"):
+        update["agama"] = existing.get("agama", "Islam")
+    update.update(_student_profile_fields(payload, existing))
+    await db.users.update_one({"id": student_id}, {"$set": update})
+
+    # Keep denormalized enrollment/request labels in sync with the account.
+    if existing.get("name") != update["name"] or existing.get("nim") != update["nim"]:
+        await db.enrollment_requests.update_many(
+            {"student_id": student_id},
+            {"$set": {"student_name": update["name"], "student_nim": update["nim"]}},
+        )
+
+    return public_doc(await db.users.find_one({"id": student_id}, {"_id": 0}))
 
 
 @api_router.post("/classes/{class_id}/students/import")
@@ -8828,33 +9517,122 @@ async def calendar(user: Dict[str, Any] = Depends(get_current_user)):
     if user["role"] == "student":
         assignments = [assignment for assignment in assignments if assignment_is_published(assignment)]
     materials = await db.materials.find(class_filter, {"_id": 0}).to_list(1000)
-    events = []
+    published_calendar_events = await db.academic_calendar_events.find(
+        {"status": "published"}, {"_id": 0}
+    ).to_list(2000)
+    events = [
+        calendar_event_payload(event)
+        for event in published_calendar_events
+        if calendar_event_visible_to_user(event, user)
+    ]
     for assignment in assignments:
         if user["role"] in {"admin", "lecturer"} and assignment.get("published_at") and not assignment_is_published(assignment):
             events.append(
                 {
                     "id": f"{assignment['id']}-publish",
+                    "source": "assignment",
                     "type": "tayang",
                     "title": f"Tayang: {assignment['title']}",
                     "date": assignment["published_at"],
                     "class_name": assignment.get("class_name", ""),
+                    "class_id": assignment.get("class_id", ""),
                 }
             )
         events.append(
             {
                 "id": assignment["id"],
+                "source": "assignment",
                 "type": "deadline",
                 "title": assignment["title"],
                 "date": assignment["deadline"],
                 "class_name": assignment.get("class_name", ""),
+                "class_id": assignment.get("class_id", ""),
             }
         )
     for material in materials:
         if material.get("locked_until"):
             events.append(
-                {"id": material["id"], "type": "materi", "title": material["title"], "date": material["locked_until"]}
+                {
+                    "id": material["id"],
+                    "source": "material",
+                    "type": "materi",
+                    "title": material["title"],
+                    "date": material["locked_until"],
+                    "class_id": material.get("class_id", ""),
+                }
             )
     return sorted(events, key=lambda item: item.get("date", ""))
+
+
+@api_router.get("/calendar/academic")
+async def list_academic_calendar_events(
+    academic_year_id: str = "",
+    include_archived: bool = False,
+    user: Dict[str, Any] = Depends(get_current_user),
+):
+    """Daftar penuh kalender institusi untuk halaman kontrol akademik."""
+    if not can_manage_academic_calendar(user):
+        raise HTTPException(status_code=403, detail="Hanya Admin Kampus atau Operator Akademik yang dapat mengelola kalender")
+    query: Dict[str, Any] = {}
+    if academic_year_id:
+        query["academic_year_id"] = academic_year_id
+    if not include_archived:
+        query["status"] = {"$ne": "archived"}
+    return await db.academic_calendar_events.find(query, {"_id": 0}).sort("start_at", 1).to_list(2000)
+
+
+@api_router.post("/calendar/academic")
+async def create_academic_calendar_event(
+    payload: AcademicCalendarEventInput,
+    user: Dict[str, Any] = Depends(get_current_user),
+):
+    if not can_manage_academic_calendar(user):
+        raise HTTPException(status_code=403, detail="Hanya Admin Kampus atau Operator Akademik yang dapat mengelola kalender")
+    doc = {
+        "id": new_id(),
+        **validate_academic_calendar_event(payload),
+        "created_by": user["id"],
+        "created_at": now_iso(),
+        "updated_at": now_iso(),
+    }
+    await db.academic_calendar_events.insert_one(doc)
+    return public_doc(doc.copy())
+
+
+@api_router.put("/calendar/academic/{event_id}")
+async def update_academic_calendar_event(
+    event_id: str,
+    payload: AcademicCalendarEventInput,
+    user: Dict[str, Any] = Depends(get_current_user),
+):
+    if not can_manage_academic_calendar(user):
+        raise HTTPException(status_code=403, detail="Hanya Admin Kampus atau Operator Akademik yang dapat mengelola kalender")
+    existing = await db.academic_calendar_events.find_one({"id": event_id}, {"_id": 0})
+    if not existing:
+        raise HTTPException(status_code=404, detail="Kegiatan kalender tidak ditemukan")
+    updates = {
+        **validate_academic_calendar_event(payload),
+        "updated_by": user["id"],
+        "updated_at": now_iso(),
+    }
+    await db.academic_calendar_events.update_one({"id": event_id}, {"$set": updates})
+    return {**existing, **updates}
+
+
+@api_router.delete("/calendar/academic/{event_id}")
+async def archive_academic_calendar_event(
+    event_id: str,
+    user: Dict[str, Any] = Depends(get_current_user),
+):
+    """Arsipkan kegiatan agar riwayat tetap dapat diaudit tanpa tampil ke pengguna."""
+    if not can_manage_academic_calendar(user):
+        raise HTTPException(status_code=403, detail="Hanya Admin Kampus atau Operator Akademik yang dapat mengelola kalender")
+    existing = await db.academic_calendar_events.find_one({"id": event_id}, {"_id": 0})
+    if not existing:
+        raise HTTPException(status_code=404, detail="Kegiatan kalender tidak ditemukan")
+    updates = {"status": "archived", "archived_by": user["id"], "archived_at": now_iso(), "updated_at": now_iso()}
+    await db.academic_calendar_events.update_one({"id": event_id}, {"$set": updates})
+    return {"ok": True, "event": {**existing, **updates}}
 
 
 @api_router.post("/reminders/send")
@@ -10720,6 +11498,17 @@ async def on_startup():
     await db.connect()
     app.state.db = db
     await seed_data()
+    # Penugasan yang telah ada sebelum modul Hak Akses diperbarui juga harus
+    # menurunkan scope terbaru saat server menyala atau setelah migrasi data.
+    assignment_users = await db.jabatan_assignments.find(
+        {"user_id": {"$nin": ["", None]}},
+        {"_id": 0, "user_id": 1},
+    ).to_list(5000)
+    for user_id in {item.get("user_id") for item in assignment_users if item.get("user_id")}:
+        try:
+            await rebuild_user_position_access(db, str(user_id))
+        except Exception as error:
+            logger.warning("Gagal menyinkronkan hak akses jabatan %s: %s", user_id, error)
     await load_oidc_runtime_settings()
     await ensure_program_course_links()
     await ensure_multi_lecturer_schema()
@@ -10768,6 +11557,9 @@ async def on_startup():
     await db.assignments.create_index("class_id")
     await db.assignments.create_index([("is_active", 1), ("published_at", 1)])
     await db.assignments.create_index("deadline")
+    await db.academic_calendar_events.create_index("id", unique=True)
+    await db.academic_calendar_events.create_index([("status", 1), ("start_at", 1)])
+    await db.academic_calendar_events.create_index("academic_year_id")
     await db.submissions.create_index([("assignment_id", 1), ("student_id", 1)])
     await db.submissions.create_index("student_id")
     await db.submissions.create_index("submitted_at")
@@ -10812,7 +11604,13 @@ async def on_startup():
     await db.khs.create_index([("student_id", 1), ("academic_period_id", 1)], unique=True)
     await db.tuition_bills.create_index([("student_id", 1), ("academic_period_id", 1)])
     await db.tuition_bills.create_index("status")
+    await db.tuition_bills.create_index("scheme_id")
+    await db.finance_components.create_index("code", unique=True, sparse=True)
+    await db.finance_schemes.create_index("code", unique=True, sparse=True)
+    await db.finance_scheme_rules.create_index([("scheme_id", 1), ("component_id", 1)])
     await db.tuition_payments.create_index("bill_id")
+    await db.tuition_payments.create_index("status")
+    await db.payment_accounts.create_index("payment_method")
 
     active_period = await db.academic_periods.find_one({"is_active": True}, {"_id": 0})
     if not active_period:

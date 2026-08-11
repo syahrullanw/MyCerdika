@@ -28,8 +28,17 @@ import {
   UserCog,
 } from "lucide-react";
 
+const resolveUserAccessBackendUrl = () => {
+  const configuredUrl = (process.env.REACT_APP_BACKEND_URL || "").replace(/\/+$/, "");
+  if (configuredUrl) return configuredUrl;
+  if (typeof window !== "undefined" && window.location?.port === "3000") {
+    return `${window.location.protocol}//${window.location.hostname}:8000`;
+  }
+  return window.location.origin;
+};
+
 const API = async (path, opt = {}) => {
-  const base = (process.env.REACT_APP_BACKEND_URL || "").replace(/\/+$/, "") || window.location.origin;
+  const base = resolveUserAccessBackendUrl();
   const token = localStorage.getItem("elearn_token");
   const res = await fetch(`${base}${path}`, {
     headers: {
@@ -48,20 +57,35 @@ const API = async (path, opt = {}) => {
 // ─── DEFAULT CONSTANTS (FALLBACK SAFETY) ───────────────────────────────────
 
 const DEFAULT_SYSTEM_MODULES = [
-  { key: "dashboard", name: "Dashboard & Ringkasan", category: "Utama", description: "Akses statistik dashboard & overview sistem" },
-  { key: "materials", name: "Materi & Diskusi Pembelajaran", category: "Pembelajaran", description: "Kelola materi perkuliahan, file modul, & forum diskusi" },
-  { key: "assignments", name: "Tugas & Kuis", category: "Pembelajaran", description: "Kelola tugas kuliah, pengumpulan mahasiswa, & kuis online" },
-  { key: "rps", name: "RPS (Rencana Pembelajaran)", category: "Pembelajaran", description: "Kelola RPS 16 Sesi perkuliahan" },
-  { key: "attendance", name: "Presensi & Kehadiran", category: "Pembelajaran", description: "Kelola absensi mahasiswa & rekap kehadiran" },
-  { key: "grading", name: "Penilaian & Bobot Nilai", category: "Evaluasi", description: "Input nilai mahasiswa, bobot komponen, & predikat" },
-  { key: "rekap_nilai", name: "Rekap Nilai & Laporan BKD", category: "Evaluasi", description: "Cetak rekapitulasi nilai & laporan kinerja dosen" },
-  { key: "krs_khs", name: "Perwalian KRS & KHS", category: "SIAKAD", description: "Persetujuan KRS mahasiswa, cetak KHS, & transkrip nilai" },
-  { key: "keuangan", name: "Keuangan Kampus", category: "SIAKAD", description: "Kelola tagihan, pembayaran perkuliahan, & dispensasi" },
-  { key: "data_master", name: "Data Master Akademik", category: "Data Master", description: "Kelola Data Fakultas, Prodi, Kurikulum, Mata Kuliah, Gedung & Ruangan" },
-  { key: "user_management", name: "Manajemen Pengguna", category: "Data Master", description: "Kelola data Dosen, Mahasiswa, & Assign Dosen Wali" },
-  { key: "konfigurasi", name: "Setup & Konfigurasi Akademik", category: "Data Master", description: "Setup Semester Baru, Tahun Ajaran, & Konfigurasi Kampus" },
-  { key: "feeder", name: "PDDikti Feeder", category: "Sistem & Integrasi", description: "Sinkronisasi data kampus dengan PDDikti Kemdikbud" },
-  { key: "system_settings", name: "Pengaturan Sistem & Log", category: "Sistem & Integrasi", description: "Pengaturan aplikasi, SSO, backup database, & log akses" }
+  { key: "dashboard", name: "Dashboard & Ringkasan", category: "Utama", description: "Statistik, aktivitas, dan ringkasan pekerjaan akademik." },
+  { key: "materials", name: "Materi & Diskusi Pembelajaran", category: "Pembelajaran", description: "Materi kuliah, file modul, dan forum diskusi kelas." },
+  { key: "assignments", name: "Tugas & Kuis", category: "Pembelajaran", description: "Tugas, kuis, pengumpulan, dan penilaian aktivitas kelas." },
+  { key: "rps", name: "RPS & Pertemuan", category: "Pembelajaran", description: "RPS 16 pertemuan, capaian pembelajaran, dan rencana sesi." },
+  { key: "attendance", name: "Presensi & Kehadiran", category: "Pembelajaran", description: "Presensi mahasiswa dan rekap kehadiran perkuliahan." },
+  { key: "grading", name: "Penilaian, Bobot & Predikat", category: "Evaluasi", description: "Input nilai, komponen bobot, serta predikat nilai." },
+  { key: "rekap_nilai", name: "Rekap Nilai, Laporan & BKD", category: "Evaluasi", description: "Rekap nilai, laporan akademik, BKD, dan portofolio dosen." },
+  { key: "krs_khs", name: "KRS, Perwalian & KHS", category: "SIAKAD", description: "Pengisian dan persetujuan KRS, KHS, serta transkrip mahasiswa." },
+  { key: "keuangan", name: "Keuangan, UKT & BIPOT", category: "SIAKAD", description: "Komponen BIPOT, skema UKT, tagihan, pembayaran, dan verifikasi." },
+  { key: "pmb", name: "PMB (Penerimaan Mahasiswa Baru)", category: "SIAKAD", description: "Pendaftaran, seleksi, registrasi ulang, dan konversi calon mahasiswa." },
+  { key: "academic_setup", name: "Konfigurasi & Periode Akademik", category: "Data Master Akademik", description: "Konfigurasi akademik, setup semester, dan tahun ajaran." },
+  { key: "academic_structure", name: "Struktur Akademik", category: "Data Master Akademik", description: "Data fakultas dan program studi beserta status aktifnya." },
+  { key: "curriculum_schedule", name: "Kurikulum, Mata Kuliah & Jadwal", category: "Data Master Akademik", description: "Kurikulum, dosen pengampu mata kuliah, dan jadwal mengajar." },
+  { key: "facilities", name: "Gedung & Ruangan", category: "Data Master Akademik", description: "Master gedung, ruangan, dan kapasitas sarana perkuliahan." },
+  { key: "academic_documents", name: "Dokumen SK Akademik", category: "Data Master Akademik", description: "SK mengajar dan SK jabatan akademik dosen." },
+  { key: "student_records", name: "Data Mahasiswa", category: "Data Sivitas", description: "Biodata, status studi, detail akademik, dan dokumen mahasiswa." },
+  { key: "lecturer_records", name: "Data Dosen & Jabatan Akademik", category: "Data Sivitas", description: "Biodata dosen, NIDN/NUPTK, dan jabatan akademik." },
+  { key: "academic_advising", name: "Penempatan & Dosen Wali", category: "Data Sivitas", description: "Penempatan mahasiswa ke prodi/kelas dan penugasan dosen wali." },
+  { key: "access_control", name: "Hak Akses User", category: "Sistem & Integrasi", description: "Role, templat, dan pengecualian hak akses per pengguna." },
+  { key: "campus_settings", name: "Pengaturan Kampus", category: "Sistem & Integrasi", description: "Identitas kampus, pengaturan aplikasi, dan preferensi operasional." },
+  { key: "integration_api", name: "Integrasi API", category: "Sistem & Integrasi", description: "Konfigurasi koneksi dan layanan API eksternal kampus." },
+  { key: "feeder", name: "PDDikti Feeder", category: "Sistem & Integrasi", description: "Koneksi, sinkronisasi, dan migrasi data ke PDDikti Neo Feeder." },
+  { key: "sso", name: "Login SSO", category: "Sistem & Integrasi", description: "Single Sign-On dan pengaturan autentikasi institusi." },
+  { key: "cloud_storage", name: "Google Drive", category: "Sistem & Integrasi", description: "Koneksi penyimpanan dokumen Google Drive." },
+  { key: "whatsapp", name: "WhatsApp", category: "Sistem & Integrasi", description: "Konfigurasi notifikasi dan pesan WhatsApp kampus." },
+  { key: "email", name: "Email", category: "Sistem & Integrasi", description: "Konfigurasi pengiriman email dan notifikasi sistem." },
+  { key: "old_siakad_migration", name: "Migrasi OLD-SIAKAD", category: "Pemeliharaan", description: "Preview dan impor inkremental data dari sistem SIAKAD lama." },
+  { key: "database_backup", name: "Backup Database", category: "Pemeliharaan", description: "Pembuatan, pemulihan, dan pemantauan cadangan data sistem." },
+  { key: "data_maintenance", name: "Pemeliharaan & Bersihkan Data", category: "Pemeliharaan", description: "Audit, pembersihan data, dan pemeliharaan operasional sistem." }
 ];
 
 const DEFAULT_ACTIONS = [
@@ -81,10 +105,10 @@ const createRoleMatrixFallback = (rCode) => {
       const isAcademic = ["dashboard", "materials", "assignments", "rps", "attendance", "grading", "rekap_nilai", "krs_khs"].includes(mod.key);
       matrix[mod.key] = {
         view: isAcademic,
-        create: isAcademic && mod.key !== "krs_khs" && mod.key !== "rekap_nilai",
-        edit: isAcademic,
+        create: ["materials", "assignments", "rps", "attendance", "grading"].includes(mod.key),
+        edit: ["materials", "assignments", "rps", "attendance", "grading", "krs_khs"].includes(mod.key),
         delete: isAcademic && ["materials", "assignments"].includes(mod.key),
-        export: isAcademic,
+        export: ["materials", "assignments", "rps", "attendance", "grading", "rekap_nilai", "krs_khs"].includes(mod.key),
       };
     } else {
       const isStudentMod = ["dashboard", "materials", "assignments", "rps", "attendance", "grading", "krs_khs", "keuangan"].includes(mod.key);
@@ -101,11 +125,13 @@ const createRoleMatrixFallback = (rCode) => {
 };
 
 export function UserAccessPage() {
-  const [activeTab, setActiveTab] = useState("role_matrix"); // "role_matrix" | "users" | "templates"
+  const [activeTab, setActiveTab] = useState("role_matrix"); // "role_matrix" | "users" | "templates" | "positions"
   const [loading, setLoading] = useState(true);
   const [modules, setModules] = useState(DEFAULT_SYSTEM_MODULES);
   const [actions, setActions] = useState(DEFAULT_ACTIONS);
   const [templates, setTemplates] = useState([]);
+  const [positionMappings, setPositionMappings] = useState([]);
+  const [savingPositionMappingId, setSavingPositionMappingId] = useState(null);
 
   // State Role Permissions Matrix
   const [rolePermissionsList, setRolePermissionsList] = useState([
@@ -156,15 +182,17 @@ export function UserAccessPage() {
   // Fetch Metadata & Roles API
   const loadMetadata = useCallback(async () => {
     try {
-      const [modRes, tplRes, rolesRes] = await Promise.all([
+      const [modRes, tplRes, rolesRes, positionsRes] = await Promise.all([
         API("/api/v1/user-access/modules").catch(() => null),
         API("/api/v1/user-access/templates").catch(() => null),
         API("/api/v1/user-access/roles").catch(() => null),
+        API("/api/v1/user-access/position-mappings").catch(() => null),
       ]);
 
       if (modRes?.modules && modRes.modules.length > 0) setModules(modRes.modules);
       if (modRes?.actions && modRes.actions.length > 0) setActions(modRes.actions);
       if (Array.isArray(tplRes)) setTemplates(tplRes);
+      if (Array.isArray(positionsRes?.data)) setPositionMappings(positionsRes.data);
 
       if (Array.isArray(rolesRes) && rolesRes.length > 0) {
         setRolePermissionsList(rolesRes);
@@ -411,6 +439,36 @@ export function UserAccessPage() {
     );
   };
 
+  // Start applying a template directly from its card. The user selection still
+  // happens in the user tab, so admins can review the exact recipients first.
+  const handleStartTemplateApplication = (tpl) => {
+    setSelectedBulkTemplate(tpl.id);
+    setActiveTab("users");
+    setSelectedUserIds([]);
+    setSearchQuery("");
+    setRoleFilter(tpl.role_target === "all" ? "all" : tpl.role_target);
+    showToast(`Templat '${tpl.name}' siap diterapkan. Pilih pengguna penerima.`);
+  };
+
+  const handleSavePositionMapping = async (mapping, templateId) => {
+    setSavingPositionMappingId(mapping.jabatan_id);
+    try {
+      await API(`/api/v1/user-access/position-mappings/${mapping.jabatan_id}`, {
+        method: "PUT",
+        body: JSON.stringify({
+          enabled: Boolean(templateId),
+          template_id: templateId || null,
+        }),
+      });
+      showToast(`Pemetaan akses untuk ${mapping.jabatan_nama} berhasil disimpan`);
+      await Promise.all([loadMetadata(), loadUsers()]);
+    } catch (err) {
+      showToast(err.message, "error");
+    } finally {
+      setSavingPositionMappingId(null);
+    }
+  };
+
   // Bulk Apply Template
   const handleBulkAssign = async () => {
     if (!selectedBulkTemplate) {
@@ -429,6 +487,7 @@ export function UserAccessPage() {
       showToast(`Templat berhasil diterapkan ke ${selectedUserIds.length} pengguna`);
       setShowBulkModal(false);
       setSelectedUserIds([]);
+      setSelectedBulkTemplate("");
       loadUsers();
       loadMetadata();
     } catch (err) {
@@ -439,6 +498,8 @@ export function UserAccessPage() {
   };
 
   const categories = Array.from(new Set(modules.map((m) => m.category || "Lainnya")));
+  const pendingBulkTemplate = templates.find((tpl) => tpl.id === selectedBulkTemplate) || null;
+  const activePositionMappingCount = positionMappings.filter((mapping) => mapping.enabled && mapping.template_id).length;
   const selectedRoleObj = rolePermissionsList.find((r) => r.role === selectedRoleCode) || {
     name: selectedRoleCode === "lecturer" ? "Dosen Pengampu" : selectedRoleCode === "student" ? "Mahasiswa" : "Administrator",
     user_count: 0
@@ -473,7 +534,7 @@ export function UserAccessPage() {
           <div>
             <h1 className="text-2xl font-bold text-slate-900 tracking-tight">Hak Akses User & Modul</h1>
             <p className="text-slate-500 text-sm">
-              Kelola izin modul berdasarkan <strong>Role (Dosen, Mahasiswa, Admin)</strong>, Templat Akses, maupun Kustomisasi per User.
+              Kelola izin modul berdasarkan <strong>Role utama</strong>, tugas tambahan/jabatan struktural, templat akses, maupun kustomisasi per user.
             </p>
           </div>
         </div>
@@ -534,6 +595,18 @@ export function UserAccessPage() {
         >
           <Layers className="w-4 h-4" />
           Templat Hak Akses ({templates.length})
+        </button>
+
+        <button
+          onClick={() => setActiveTab("positions")}
+          className={`flex items-center gap-2 px-4 py-2 text-sm font-semibold rounded-lg transition-all ${
+            activeTab === "positions"
+              ? "bg-indigo-600 text-white shadow-2xs"
+              : "text-slate-600 hover:text-slate-900 hover:bg-slate-50"
+          }`}
+        >
+          <Briefcase className="w-4 h-4" />
+          Jabatan → Akses ({activePositionMappingCount})
         </button>
       </div>
 
@@ -693,6 +766,24 @@ export function UserAccessPage() {
       {/* ── TAB 2: MATRIKS AKSES USER ────────────────────────────────────────── */}
       {activeTab === "users" && (
         <div className="space-y-4">
+          {pendingBulkTemplate && (
+            <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3 rounded-xl border border-indigo-200 bg-indigo-50 px-4 py-3">
+              <div className="flex items-start gap-2 text-sm text-indigo-900">
+                <Layers className="mt-0.5 h-4 w-4 shrink-0 text-indigo-600" />
+                <div>
+                  <div className="font-bold">Siap menerapkan: {pendingBulkTemplate.name}</div>
+                  <div className="text-xs text-indigo-700">Pilih pengguna di bawah, lalu klik tombol Terapkan Templat.</div>
+                </div>
+              </div>
+              <button
+                type="button"
+                onClick={() => setSelectedBulkTemplate("")}
+                className="self-start sm:self-auto text-xs font-semibold text-indigo-700 hover:text-indigo-900"
+              >
+                Batalkan
+              </button>
+            </div>
+          )}
           <div className="bg-white p-4 rounded-xl border border-slate-200 shadow-2xs flex flex-col md:flex-row items-center justify-between gap-4">
             <div className="flex flex-wrap items-center gap-3 w-full md:w-auto">
               <div className="relative flex-1 md:w-72">
@@ -724,7 +815,7 @@ export function UserAccessPage() {
                 className="inline-flex items-center gap-2 px-4 py-2 bg-indigo-600 hover:bg-indigo-700 text-white rounded-lg text-sm font-semibold shadow-2xs transition"
               >
                 <Sliders className="w-4 h-4" />
-                Terapkan Templat ({selectedUserIds.length} User)
+                {pendingBulkTemplate ? `Terapkan ${pendingBulkTemplate.name}` : "Terapkan Templat"} ({selectedUserIds.length} User)
               </button>
             )}
           </div>
@@ -799,17 +890,28 @@ export function UserAccessPage() {
                             </span>
                           </td>
                           <td className="p-4">
-                            {u.has_custom ? (
-                              <div className="inline-flex items-center gap-1.5 px-3 py-1 rounded-full text-xs font-semibold bg-amber-50 text-amber-800 border border-amber-200">
-                                <Sparkles className="w-3.5 h-3.5 text-amber-600" />
-                                <span>Custom Override ({u.template_name})</span>
-                              </div>
-                            ) : (
-                              <div className="inline-flex items-center gap-1.5 px-3 py-1 rounded-full text-xs font-semibold bg-indigo-50 text-indigo-700 border border-indigo-200">
-                                <Layers className="w-3.5 h-3.5 text-indigo-600" />
-                                <span>Templat: {u.template_name}</span>
-                              </div>
-                            )}
+                            <div className="space-y-1.5">
+                              {u.has_custom ? (
+                                <div className="inline-flex items-center gap-1.5 px-3 py-1 rounded-full text-xs font-semibold bg-amber-50 text-amber-800 border border-amber-200">
+                                  <Sparkles className="w-3.5 h-3.5 text-amber-600" />
+                                  <span>Custom Override ({u.template_name})</span>
+                                </div>
+                              ) : (
+                                <div className="inline-flex items-center gap-1.5 px-3 py-1 rounded-full text-xs font-semibold bg-indigo-50 text-indigo-700 border border-indigo-200">
+                                  <Layers className="w-3.5 h-3.5 text-indigo-600" />
+                                  <span>Templat: {u.template_name}</span>
+                                </div>
+                              )}
+                              {(u.position_accesses || []).map((access) => (
+                                <div key={`${access.jabatan_nama}-${access.template_id}-${access.prodi_id || "inst"}`} className="flex items-center gap-1.5 text-xs text-emerald-800">
+                                  <Briefcase className="w-3.5 h-3.5 shrink-0 text-emerald-600" />
+                                  <span>
+                                    Jabatan: <strong>{access.jabatan_nama}</strong> → {access.template_name}
+                                    {access.prodi_id ? " (scope prodi)" : ""}
+                                  </span>
+                                </div>
+                              ))}
+                            </div>
                           </td>
                           <td className="p-4 text-right">
                             <button
@@ -883,6 +985,12 @@ export function UserAccessPage() {
 
                 <div className="mt-5 pt-3 border-t border-slate-100 flex items-center justify-end gap-2">
                   <button
+                    onClick={() => handleStartTemplateApplication(tpl)}
+                    className="inline-flex items-center gap-1 px-3 py-1.5 rounded-lg bg-indigo-600 text-white hover:bg-indigo-700 text-xs font-semibold transition"
+                  >
+                    <Users className="w-3.5 h-3.5" /> Terapkan
+                  </button>
+                  <button
                     onClick={() => handleOpenTemplateModal(tpl)}
                     className="inline-flex items-center gap-1 px-3 py-1.5 rounded-lg border border-slate-300 text-slate-700 hover:bg-slate-50 text-xs font-semibold transition"
                   >
@@ -899,6 +1007,83 @@ export function UserAccessPage() {
                 </div>
               </div>
             ))}
+          </div>
+        </div>
+      )}
+
+      {/* ── TAB 4: PEMETAAN JABATAN KE AKSES ───────────────────────────────── */}
+      {activeTab === "positions" && (
+        <div className="space-y-4">
+          <div className="rounded-xl border border-indigo-200 bg-indigo-50 p-4 flex items-start gap-3">
+            <Briefcase className="w-5 h-5 shrink-0 text-indigo-600 mt-0.5" />
+            <div className="text-sm text-indigo-950 space-y-1">
+              <div className="font-bold">Akses otomatis dari penugasan jabatan</div>
+              <p className="text-xs text-indigo-800">
+                Role utama akun tetap Dosen, Admin, atau Mahasiswa. Hanya tugas tambahan/struktural yang aktif di halaman Jabatan Akademik yang menambahkan akses dan scope prodi. Jenjang fungsional seperti Asisten Ahli atau Lektor tidak membuka privilese sistem.
+              </p>
+            </div>
+          </div>
+
+          <div className="bg-white rounded-xl border border-slate-200 shadow-2xs overflow-hidden">
+            {positionMappings.length === 0 ? (
+              <div className="py-12 text-center text-slate-500">
+                <Loader2 className="w-7 h-7 animate-spin mx-auto text-indigo-600 mb-2" />
+                <span>Memuat pemetaan jabatan...</span>
+              </div>
+            ) : (
+              <div className="overflow-x-auto">
+                <table className="w-full text-left text-sm border-collapse">
+                  <thead>
+                    <tr className="bg-slate-50 border-b border-slate-200 text-slate-600 font-semibold text-xs uppercase tracking-wider">
+                      <th className="p-4">Jabatan Struktural</th>
+                      <th className="p-4">Cakupan</th>
+                      <th className="p-4 min-w-72">Templat yang Ditambahkan Otomatis</th>
+                      <th className="p-4">Status</th>
+                    </tr>
+                  </thead>
+                  <tbody className="divide-y divide-slate-100">
+                    {positionMappings.map((mapping) => (
+                      <tr key={mapping.jabatan_id} className="hover:bg-slate-50/80 transition">
+                        <td className="p-4">
+                          <div className="font-semibold text-slate-900">{mapping.jabatan_nama}</div>
+                          <div className="text-xs font-mono text-slate-500">{mapping.jabatan_kode || "-"}</div>
+                        </td>
+                        <td className="p-4 text-xs text-slate-600">
+                          {mapping.scope === "prodi" ? "Per program studi" : "Tingkat institusi"}
+                        </td>
+                        <td className="p-4">
+                          <select
+                            value={mapping.enabled ? mapping.template_id || "" : ""}
+                            disabled={savingPositionMappingId === mapping.jabatan_id}
+                            onChange={(event) => handleSavePositionMapping(mapping, event.target.value)}
+                            className="w-full px-3 py-2 text-sm border border-slate-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-indigo-500 bg-white disabled:opacity-60"
+                          >
+                            <option value="">Tidak menambahkan akses</option>
+                            {templates.map((template) => (
+                              <option key={template.id} value={template.id}>
+                                {template.name} ({template.role_target === "all" ? "semua role" : template.role_target})
+                              </option>
+                            ))}
+                          </select>
+                          {mapping.access_role && (
+                            <div className="mt-1 text-[11px] text-slate-500">Role turunan: {mapping.access_role}</div>
+                          )}
+                        </td>
+                        <td className="p-4">
+                          {savingPositionMappingId === mapping.jabatan_id ? (
+                            <span className="inline-flex items-center gap-1.5 text-xs font-semibold text-indigo-700"><Loader2 className="w-3.5 h-3.5 animate-spin" /> Menyimpan</span>
+                          ) : mapping.enabled && mapping.template_id ? (
+                            <span className="inline-flex items-center gap-1.5 px-2.5 py-1 rounded-full text-xs font-semibold bg-emerald-50 text-emerald-800 border border-emerald-200"><Check className="w-3.5 h-3.5" /> Aktif</span>
+                          ) : (
+                            <span className="inline-flex items-center gap-1.5 px-2.5 py-1 rounded-full text-xs font-semibold bg-slate-100 text-slate-600 border border-slate-200"><X className="w-3.5 h-3.5" /> Tidak dipetakan</span>
+                          )}
+                        </td>
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+              </div>
+            )}
           </div>
         </div>
       )}
@@ -989,7 +1174,7 @@ export function UserAccessPage() {
                         <div>
                           <div className="font-bold text-sm text-slate-900">Kustomisasi Akses (Custom)</div>
                           <div className="text-xs text-slate-500">
-                            Bebas mengatur izin spesifik per modul untuk user ini.
+                            Mengatur izin spesifik per modul untuk user ini, tanpa mencabut akses dari jabatan aktif.
                           </div>
                         </div>
                       </label>
@@ -1010,7 +1195,7 @@ export function UserAccessPage() {
                           }
                           className="w-full px-3 py-2 text-sm border border-slate-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-indigo-500 bg-white"
                         >
-                          {templates.map((t) => (
+                          {templates.filter((t) => t.role_target === "all" || t.role_target === userAccessDetail.user.role).map((t) => (
                             <option key={t.id} value={t.id}>
                               {t.name} ({t.role_target === "all" ? "Semua Role" : t.role_target})
                             </option>
@@ -1019,6 +1204,23 @@ export function UserAccessPage() {
                       </div>
                     )}
                   </div>
+
+                  {(userAccessDetail.position_accesses || []).length > 0 && (
+                    <div className="rounded-xl border border-emerald-200 bg-emerald-50 p-4">
+                      <div className="text-sm font-bold text-emerald-950 flex items-center gap-2">
+                        <Briefcase className="w-4 h-4 text-emerald-700" /> Akses otomatis dari jabatan aktif
+                      </div>
+                      <div className="mt-2 space-y-1.5 text-xs text-emerald-900">
+                        {userAccessDetail.position_accesses.map((access) => (
+                          <div key={`${access.assignment_id}-${access.template_id}`}>
+                            <strong>{access.jabatan_nama}</strong> → {access.template_name}
+                            {access.prodi_nama ? ` · scope ${access.prodi_nama}` : " · scope institusi"}
+                          </div>
+                        ))}
+                      </div>
+                      <p className="mt-2 text-[11px] text-emerald-800">Ubah penugasan di Jabatan Akademik atau pemetaannya pada tab Jabatan → Akses. Akses ini tidak dapat dicabut dari form per-user.</p>
+                    </div>
+                  )}
 
                   <div className="border border-slate-200 rounded-xl overflow-hidden shadow-2xs">
                     <table className="w-full text-left text-xs border-collapse">
@@ -1046,7 +1248,7 @@ export function UserAccessPage() {
                                 const isCustom = userAccessDetail.access_mode === "custom";
                                 const activeMatrix = isCustom
                                   ? userAccessDetail.custom_permissions
-                                  : userAccessDetail.base_permissions;
+                                  : userAccessDetail.effective_permissions;
 
                                 return (
                                   <tr key={mod.key} className="hover:bg-slate-50 transition">

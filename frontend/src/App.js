@@ -60,6 +60,8 @@ import {
   CalendarClock,
   CheckCircle2,
   ChevronDown,
+  ChevronLeft,
+  ChevronRight,
   HelpCircle,
   Moon,
   ClipboardList,
@@ -335,12 +337,129 @@ function fmtDate(value) {
   }
 }
 
+const ACADEMIC_CALENDAR_CATEGORY_LABELS = {
+  academic: "Akademik",
+  registration: "Registrasi",
+  krs: "KRS",
+  exam: "Ujian",
+  graduation: "Wisuda",
+  holiday: "Libur",
+  finance: "Keuangan",
+  campus: "Kampus",
+};
+
+const CALENDAR_EVENT_TYPE_LABELS = {
+  academic: "Agenda kampus",
+  deadline: "Deadline tugas",
+  tayang: "Tayang tugas",
+  materi: "Materi dibuka",
+};
+
+function calendarDateInputValue(value) {
+  return String(value || "").slice(0, 10);
+}
+
+function calendarDayKey(value) {
+  const raw = calendarDateInputValue(value);
+  if (/^\d{4}-\d{2}-\d{2}$/.test(raw)) return raw;
+  const date = new Date(value);
+  if (Number.isNaN(date.getTime())) return "";
+  const year = date.getFullYear();
+  const month = String(date.getMonth() + 1).padStart(2, "0");
+  const day = String(date.getDate()).padStart(2, "0");
+  return `${year}-${month}-${day}`;
+}
+
+function calendarEventsForSemester(events, selectedSemester, classes = []) {
+  if (!selectedSemester || selectedSemester === "all") return events || [];
+  const classIds = new Set((classes || []).map((item) => String(item.id || "")));
+  return (events || []).filter((event) => {
+    if (event.academic_year_id) {
+      return String(event.academic_year_id) === String(selectedSemester);
+    }
+    if (event.class_id) return classIds.has(String(event.class_id));
+    // Agenda institusi tanpa periode adalah pengumuman umum dan tetap terlihat.
+    return true;
+  });
+}
+
 function userRoleLabel(role) {
   return {
     admin: "Admin",
     lecturer: "Dosen",
     student: "Mahasiswa",
   }[role] || "Pengguna";
+}
+
+const ADDITIONAL_ACCESS_ROLE_LABELS = {
+  kaprodi: "Kaprodi",
+  sekprodi: "Sekprodi",
+  academic_operator: "Staf Akademik / BAAK",
+  finance_officer: "Staf Keuangan",
+  pmb_officer: "Staf PMB",
+  campus_leader: "Pimpinan Institusi",
+  faculty_leader: "Pimpinan Fakultas / Jurusan",
+};
+
+function dashboardRoleDetails(user = {}, programs = []) {
+  const baseRole = {
+    admin: "Administrator Kampus",
+    lecturer: "Dosen Pengampu",
+    dosen: "Dosen Pengampu",
+    student: "Mahasiswa",
+  }[user.role] || "Pengguna";
+  const syncedRoles = Array.isArray(user.access_roles);
+  const activeCodes = new Set(syncedRoles ? user.access_roles : []);
+
+  // Kompatibilitas untuk akun lama yang belum pernah tersinkronisasi dari
+  // penugasan struktural. Setelah sinkronisasi, access_roles tetap sumber data.
+  if (!syncedRoles) {
+    const positionText = `${user.jabatan_akademik || ""} ${user.tugas_tambahan || ""} ${user.jabatan || ""}`.toLowerCase();
+    if (positionText.includes("kaprodi") || positionText.includes("ketua prodi")) activeCodes.add("kaprodi");
+    if (positionText.includes("sekprodi") || positionText.includes("sekretaris prodi")) activeCodes.add("sekprodi");
+    if (positionText.includes("wadil 1") || positionText.includes("wadir 1") || positionText.includes("akademik")) activeCodes.add("academic_operator");
+    if (positionText.includes("bendahara") || positionText.includes("keuangan")) activeCodes.add("finance_officer");
+    if (positionText.includes("pmb")) activeCodes.add("pmb_officer");
+    if (positionText.includes("direktur")) activeCodes.add("campus_leader");
+    if (positionText.includes("dekan")) activeCodes.add("faculty_leader");
+  }
+  if (user.is_kaprodi || user.kaprodi_prodi_id) activeCodes.add("kaprodi");
+
+  const additional = Object.keys(ADDITIONAL_ACCESS_ROLE_LABELS)
+    .filter((code) => activeCodes.has(code))
+    .map((code) => ({ code, label: ADDITIONAL_ACCESS_ROLE_LABELS[code] }));
+  const scopeIds = Array.from(new Set([
+    ...(user.access_scope_prodi_ids || []),
+    user.kaprodi_prodi_id,
+  ].filter(Boolean).map(String)));
+  const programNames = scopeIds.map((id) => {
+    const program = (programs || []).find((item) => String(item.id) === id);
+    return program?.name || program?.nama || id;
+  });
+
+  return { baseRole, additional, programNames, scopeCount: scopeIds.length };
+}
+
+function normalizeProgramScopeTokens(sources = []) {
+  const tokens = new Set();
+  (Array.isArray(sources) ? sources : [sources]).forEach((source) => {
+    const values = Array.isArray(source) ? source : [source];
+    values.forEach((value) => String(value || "").split(/[,;|\n]+/).forEach((item) => {
+      const token = item.trim().toUpperCase();
+      if (token) tokens.add(token);
+    }));
+  });
+  return tokens;
+}
+
+function programScopeAliases(program = {}) {
+  return normalizeProgramScopeTokens([
+    program.id,
+    program.code,
+    program.kode,
+    program.name,
+    program.nama,
+  ]);
 }
 
 function formatApiError(error, fallback) {
@@ -2215,6 +2334,7 @@ function ProfilePage({ token, user, onUserUpdate, enrollments = [] }) {
     jabatan: user.jabatan || user.jabatan_fungsional || "",
     status_kepegawaian: user.status_kepegawaian || "",
     nim: user.nim || "",
+    nisn: user.nisn || "",
     angkatan: user.angkatan || user.academic_year || "",
     semester: user.semester || "",
     parent_name: user.parent_name || "",
@@ -2252,6 +2372,7 @@ function ProfilePage({ token, user, onUserUpdate, enrollments = [] }) {
       jabatan: user.jabatan || user.jabatan_fungsional || "",
       status_kepegawaian: user.status_kepegawaian || "",
       nim: user.nim || "",
+      nisn: user.nisn || "",
       angkatan: user.angkatan || user.academic_year || "",
       semester: user.semester || "",
       parent_name: user.parent_name || "",
@@ -2651,6 +2772,9 @@ function ProfilePage({ token, user, onUserUpdate, enrollments = [] }) {
                     <div className="grid gap-4 sm:grid-cols-2 lg:grid-cols-4">
                       <Field id="profile-nim" label="NIM (Nomor Induk Mahasiswa)">
                         <Input id="profile-nim" value={user.nim || form.username || ""} disabled data-testid="profile-nim-input" />
+                      </Field>
+                      <Field id="profile-nisn" label="NISN">
+                        <Input id="profile-nisn" value={user.nisn || form.nisn || "-"} disabled />
                       </Field>
                       <Field id="profile-student-prodi" label="Program Studi">
                         <Input id="profile-student-prodi" value={user.prodi_name || user.program_name || "-"} disabled />
@@ -4254,22 +4378,42 @@ function AdminApp({
 }) {
   const [page, setPage] = useState("dashboard");
   const [selectedSemester, setSelectedSemester] = useState("all");
+  const [collapsedNavGroups, setCollapsedNavGroups] = useState(
+    () => new Set([
+      "Struktur, Periode & Sarana",
+      "Kurikulum & Penugasan",
+      "Integrasi & Notifikasi",
+      "Pemeliharaan Data",
+    ]),
+  );
   const isCampusAdmin = user.role === "admin";
   const isDosen = user.role === "lecturer" || user.role === "dosen";
+  const derivedAccessRoles = Array.isArray(user?.access_roles) ? user.access_roles : [];
+  const canManageFinance = isCampusAdmin || derivedAccessRoles.includes("finance_officer");
+  const canManagePmb = isCampusAdmin || derivedAccessRoles.includes("pmb_officer");
+  const canManageAcademicCalendar = isCampusAdmin || derivedAccessRoles.includes("academic_operator");
   const isKaprodi = Boolean(
     user?.is_kaprodi ||
     user?.kaprodi_prodi_id ||
+    derivedAccessRoles.includes("kaprodi") ||
+    derivedAccessRoles.includes("sekprodi") ||
     (user?.jabatan_akademik || user?.tugas_tambahan || user?.jabatan || "").toLowerCase().includes("kaprodi") ||
     (user?.jabatan_akademik || user?.tugas_tambahan || user?.jabatan || "").toLowerCase().includes("ketua prodi")
   );
 
   const emptyLecturerForm = {
     employee_id: "",
+    nip: "",
     nidn: "",
+    nuptk: "",
+    nrsd: "",
     nik: "",
     username: "",
     name: "",
     gelar: "",
+    gelar_depan: "",
+    gelar_belakang: "",
+    nama_panggilan: "",
     email: "",
     whatsapp: "",
     password: "Dosen123!",
@@ -4284,11 +4428,33 @@ function AdminApp({
     kota: "",
     provinsi: "",
     kode_pos: "",
+    kewarganegaraan: "",
+    rt: "",
+    rw: "",
+    dusun: "",
+    kelurahan: "",
+    kecamatan: "",
+    kode_wilayah: "",
     jabatan_akademik: "",
+    jabatan_dikti_id: "",
+    jabatan_kode: "",
     keilmuan: "",
     pendidikan_terakhir: "",
+    jenjang_pendidikan: "",
+    ikatan_kerja: "",
+    status_pegawai: "",
+    status_kerja: "",
+    jenis_pegawai: "",
+    pangkat_golongan_id: "",
+    pangkat_golongan: "",
+    no_sk: "",
+    unit_organisasi_id: "",
+    institusi_induk: "",
     status_dosen: "",
+    status_dosen_id: "",
     tanggal_masuk: "",
+    tanggal_mulai_mengajar: "",
+    foto_url: "",
   };
   const [data, setData] = useState({
     lecturers: [],
@@ -4347,8 +4513,10 @@ function AdminApp({
       assignments: (data.assignments || []).filter((a) => activeClassIds.has(a.class_id)),
       materials: (data.materials || []).filter((m) => activeClassIds.has(m.class_id)),
       submissions: (data.submissions || []).filter((s) => activeClassIds.has(s.class_id)),
+      enrollments: (data.enrollments || []).filter((item) => activeClassIds.has(item.class_id)),
       progress: (data.progress || []).filter((p) => !p.class_id || activeClassIds.has(p.class_id)),
       gradeRecap: (data.gradeRecap || []).filter((g) => activeClassIds.has(g.class_id)),
+      calendar: calendarEventsForSemester(data.calendar, selectedSemester, filteredClasses),
     };
   }, [data, selectedSemester]);
   const [forms, setForms] = useState({
@@ -4367,9 +4535,69 @@ function AdminApp({
       name: "Nama Mahasiswa",
       email: "student99@demo.id",
       whatsapp: "628123",
+      nik: "",
+      nisn: "",
+      gender: "L",
+      agama: "Islam",
+      tempat_lahir: "",
+      tanggal_lahir: "",
+      alamat: "",
+      kota: "",
+      provinsi: "",
+      kode_pos: "",
       class_id: "",
       password: "Mahasiswa123!",
       import_password: "Mahasiswa123!",
+      prodi_id: "",
+      angkatan: "2024",
+      dosen_wali_id: "",
+      parent_name: "",
+      parent_phone: "",
+      parent_job: "",
+      parent_address: "",
+      parent_email: "",
+      parent_rt: "",
+      parent_rw: "",
+      parent_kota: "",
+      parent_provinsi: "",
+      parent_kode_pos: "",
+      parent_negara: "",
+      kewarganegaraan: "",
+      rt: "",
+      rw: "",
+      dusun: "",
+      kelurahan: "",
+      kecamatan: "",
+      kode_wilayah: "",
+      jenis_tinggal_id: "",
+      jenis_tinggal: "",
+      transportasi_id: "",
+      transportasi: "",
+      asal_sekolah: "",
+      status_sipil: "",
+      no_kk: "",
+      npwp: "",
+      no_kip: "",
+      no_kps: "",
+      kebutuhan_khusus: "",
+      tinggi_badan: "",
+      berat_badan: "",
+      semester_masuk: "",
+      tanggal_masuk: "",
+      jenis_pendaftaran_id: "",
+      jenis_pendaftaran: "",
+      jalur_masuk_id: "",
+      jalur_masuk: "",
+      jenis_pembiayaan_id: "",
+      jenis_pembiayaan: "",
+      status_mahasiswa_id: "",
+      feeder_student_id: "",
+      feeder_registration_id: "",
+      foto_url: "",
+      orang_tua: { ayah: {}, ibu: {}, wali: {} },
+      registration: {},
+      pddikti_ids: {},
+      status: "active",
     },
     material: {
       class_id: "",
@@ -4454,6 +4682,7 @@ function AdminApp({
     markAllNotificationsRead,
   } = useUserNotifications(token);
   const progress = useActionProgress();
+  const dashboardSemesterLoadedRef = useRef("");
 
   async function loadAll(event) {
     const isRefresh = event?.type === "click";
@@ -4473,12 +4702,8 @@ function AdminApp({
       // Only data needed to paint the authenticated dashboard is fetched in
       // the critical path. Large management tables and integration settings
       // load after the shell is already usable.
-      const [dashboard, classes, assignments, submissions, studentProgress, tahunAjaranRes] =
+      const [classes, assignments, submissions, studentProgress, tahunAjaranRes] =
         await Promise.all([
-          axios.get(`${API}/dashboard`, {
-            ...auth,
-            params: { include_activity: false },
-          }),
           axios.get(`${API}/classes`, auth),
           axios.get(`${API}/assignments`, auth),
           axios.get(`${API}/submissions`, auth),
@@ -4490,6 +4715,17 @@ function AdminApp({
         ? tahunAjaranRes.data
         : [];
       const activeTa = tahunAjaranData.find((ta) => ta.is_active) || tahunAjaranData[0];
+      const dashboardSemesterId = selectedSemester !== "all"
+        ? selectedSemester
+        : activeTa?.id || "";
+      const dashboard = await axios.get(`${API}/dashboard`, {
+        ...auth,
+        params: {
+          include_activity: false,
+          semester_id: dashboardSemesterId || undefined,
+        },
+      });
+      dashboardSemesterLoadedRef.current = dashboardSemesterId || "all";
       if (activeTa?.id) {
         setSelectedSemester((prev) => (prev === "all" ? activeTa.id : prev));
       }
@@ -4657,6 +4893,32 @@ function AdminApp({
     // larger management datasets without blocking the first paint.
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
+  useEffect(() => {
+    if (!(data.tahunAjaran || []).length) return undefined;
+    const dashboardSemesterId = selectedSemester && selectedSemester !== "all"
+      ? selectedSemester
+      : "";
+    const dashboardScope = dashboardSemesterId || "all";
+    if (dashboardSemesterLoadedRef.current === dashboardScope) return undefined;
+    let cancelled = false;
+    axios.get(`${API}/dashboard`, {
+      ...auth,
+      params: { include_activity: false, semester_id: dashboardSemesterId || undefined },
+    }).then((response) => {
+      if (cancelled) return;
+      dashboardSemesterLoadedRef.current = dashboardScope;
+      setData((current) => ({
+        ...current,
+        dashboard: {
+          ...(response.data || {}),
+          user_activity: current.dashboard?.user_activity || response.data?.user_activity || null,
+        },
+      }));
+    }).catch((error) => {
+      if (!cancelled) console.warn("Gagal menyelaraskan dashboard semester", error);
+    });
+    return () => { cancelled = true; };
+  }, [auth, data.tahunAjaran?.length, selectedSemester]);
   async function postJson(path, payload, success) {
     const operation = progress.begin(
       success,
@@ -4672,6 +4934,25 @@ function AdminApp({
       const detail = formatApiError(error, "Aksi gagal");
       progress.fail(operation, detail);
       toast.error(detail);
+    }
+  }
+  async function putJson(path, payload, success) {
+    const operation = progress.begin(
+      success,
+      "Mengirim perubahan ke server...",
+    );
+    try {
+      await axios.put(`${API}${path}`, payload, auth);
+      progress.update(operation, 92, success, "Memperbarui tampilan...");
+      await loadAll();
+      progress.finish(operation, success);
+      toast.success(success);
+      return true;
+    } catch (error) {
+      const detail = formatApiError(error, "Aksi gagal");
+      progress.fail(operation, detail);
+      toast.error(detail);
+      return false;
     }
   }
   async function saveMaterial(event) {
@@ -5641,16 +5922,13 @@ function AdminApp({
     );
     return saved;
   }
-  // ============================================================
-  // KONFIGURASI MENU NAVIGASI — mudah tambah/kurangi per role
+  // Susunan mengikuti urutan kerja admin: layanan harian terlebih dahulu,
+  // dilanjutkan pengelolaan akademik, kemudian konfigurasi dan pemeliharaan.
   // Format item: ["page_key", IconComponent, "Label Tampil", kondisi?]
-  // kondisi = true (selalu tampil), false (sembunyikan)
-  // ============================================================
 
   const navGroups = [
-    // ----- MENU BERSAMA: Admin & Dosen -----
     {
-      label: "Utama",
+      label: "Ringkasan",
       items: [
         ["dashboard", LayoutDashboard, "Dashboard"],
       ],
@@ -5662,11 +5940,10 @@ function AdminApp({
         ["assignments", ClipboardList, "Tugas"],
         ["rps", FileText, "RPS (16 Sesi)"],
         ["attendance", CheckCircle2, "Presensi Kehadiran"],
-        ["calendar", CalendarDays, "Kalender"],
       ],
     },
     {
-      label: "Evaluasi",
+      label: "Penilaian & Laporan",
       items: [
         ["grading", CheckCircle2, "Penilaian"],
         ["weights", BarChart3, "Bobot Nilai"],
@@ -5676,68 +5953,69 @@ function AdminApp({
         ["lecturer_reports", FileSpreadsheet, "Laporan BKD & Portofolio"],
       ],
     },
-    // ----- SIAKAD: Admin & Dosen -----
     {
-      label: "SIAKAD",
+      label: "Layanan Akademik",
       items: [
+        ["calendar", CalendarDays, "Kalender Akademik"],
         ["perwalian", ShieldCheck, "Perwalian KRS"],
-        ["keuangan_admin", FileText, "Keuangan Kampus", isCampusAdmin],
-        ["pmb", GraduationCap, "PMB (Penerimaan Mhs)", isCampusAdmin],
+        ["keuangan_admin", FileText, "Keuangan Kampus", canManageFinance],
+        ["pmb", GraduationCap, "PMB (Penerimaan Mhs)", canManagePmb],
       ],
     },
-    // ----- DATA MASTER: Admin & Dosen -----
     {
-      label: "Data Master",
+      label: "Struktur, Periode & Sarana",
       items: [
-        // Konfigurasi & Setup
         ["master_config", Settings, "Konfigurasi Akademik", isCampusAdmin],
         ["wizard_semester", Wand2, "Setup Semester Baru", isCampusAdmin],
         ["master_tahun_ajaran", CalendarDays, "Tahun Ajaran", isCampusAdmin],
-        // Struktur Akademik
         ["master_fakultas", BookOpen, "Fakultas", isCampusAdmin],
         ["master_prodi", BookOpen, "Program Studi (Prodi)", isCampusAdmin],
-        ["master_kurikulum", BookOpen, "Kurikulum & Dosen MK", isCampusAdmin || isKaprodi],
-        // Sarana & Prasarana
         ["master_gedung", Building2, "Gedung", isCampusAdmin],
         ["master_ruangan", Building2, "Ruangan", isCampusAdmin],
+      ],
+    },
+    {
+      label: "Kurikulum & Penugasan",
+      items: [
+        ["master_kurikulum", BookOpen, "Kurikulum & Dosen MK", isCampusAdmin || isKaprodi],
         ["master_jadwal_mengajar", CalendarClock, "Jadwal Mengajar", isCampusAdmin || isKaprodi],
         ["sk_mengajar", FileText, "SK Mengajar Dosen", isCampusAdmin || isKaprodi],
         ["sk_jabatan", BadgeCheck, "SK Jabatan Akademik Dosen", isCampusAdmin || isKaprodi],
-        // Data Pengguna
+      ],
+    },
+    {
+      label: "Sivitas & Perwalian",
+      items: [
+        ["students", Users, "Data Mahasiswa"],
         ["lecturers", Users, "Data Dosen", isCampusAdmin],
         ["master_jabatan_akademik", ShieldCheck, "Jabatan Akademik Dosen", isCampusAdmin],
-        ["students", Users, "Data Mahasiswa"],
-        // Wizard & Penempatan Mahasiswa
         ["enroll_wizard", Wand2, "Wizard Prodi + Kelas", isCampusAdmin],
         ["master_assign_prodi", UserCheck, "Penempatan Mhs > Prodi", isCampusAdmin],
         ["master_dosen_wali", Users, "Assign Dosen Wali", isCampusAdmin || isKaprodi],
       ],
     },
-    {
-      label: "Akun",
-      items: [
-        ["profile", Users, "Profil"],
-        ["guide", BookOpen, "Panduan LMS"],
-      ],
-    },
-    // ----- SISTEM: Hanya Admin -----
     ...(isCampusAdmin
       ? [
           {
-            label: "Sistem & Integrasi",
+            label: "Administrasi Sistem",
             items: [
-              ["user_access", ShieldCheck, "Hak Akses User"],
               ["settings", Settings, "Pengaturan Kampus"],
+              ["user_access", ShieldCheck, "Hak Akses User"],
+              ["sso", ShieldCheck, "Login SSO"],
+            ],
+          },
+          {
+            label: "Integrasi & Notifikasi",
+            items: [
               ["integrasi", Plug, "Integrasi API"],
               ["feeder", Database, "PDDikti Feeder"],
-              ["sso", ShieldCheck, "Login SSO"],
               ["drive", Upload, "Google Drive"],
               ["whatsapp", Bell, "WhatsApp"],
               ["email", Mail, "Email"],
             ],
           },
           {
-            label: "Pemeliharaan",
+            label: "Pemeliharaan Data",
             items: [
               ["migration_old_siap", Wand2, "Migrasi OLD-SIAP"],
               ["backups", Database, "Backup Database"],
@@ -5746,6 +6024,13 @@ function AdminApp({
           },
         ]
       : []),
+    {
+      label: "Akun Saya",
+      items: [
+        ["profile", Users, "Profil"],
+        ["guide", BookOpen, "Panduan & Wewenang"],
+      ],
+    },
   ];
 
   // Filter item dengan kondisi false (kolom ke-4 = false → sembunyikan)
@@ -5756,6 +6041,14 @@ function AdminApp({
     }))
     .filter((g) => g.items.length > 0);
   const nav = filteredNavGroups.flatMap((group) => group.items);
+  const toggleNavGroup = (label) => {
+    setCollapsedNavGroups((current) => {
+      const next = new Set(current);
+      if (next.has(label)) next.delete(label);
+      else next.add(label);
+      return next;
+    });
+  };
   return (
     <div
       className="min-h-screen bg-slate-50 text-slate-900"
@@ -5791,35 +6084,49 @@ function AdminApp({
         </div>
         <nav className="admin-sidebar-nav" data-testid="admin-navigation">
           {/* Menu dirender dari filteredNavGroups — edit navGroups di atas untuk konfigurasi */}
-          {filteredNavGroups.map((group) => (
-            <section className="admin-nav-group" key={group.label}>
-              <p className="admin-nav-group-label">{group.label}</p>
-              <div className="space-y-1">
-                {group.items.map(([key, Icon, label]) => {
-                  const count = adminBadges[key] || 0;
-                  const isActive = page === key;
-                  return (
-                    <Button
-                      key={key}
-                      variant="ghost"
-                      className="admin-nav-item w-full justify-start"
-                      data-active={isActive}
-                      aria-current={isActive ? "page" : undefined}
-                      data-testid={`admin-nav-${key}-button`}
-                      onClick={() => openAdminPage(key)}
-                    >
-                      <Icon className="admin-nav-icon" />
-                      <span className="flex-1 truncate text-left">{label}</span>
-                      <NotificationBadge
-                        count={count}
-                        testid={`admin-nav-${key}-badge`}
-                      />
-                    </Button>
-                  );
-                })}
-              </div>
-            </section>
-          ))}
+          {filteredNavGroups.map((group) => {
+            const hasActiveItem = group.items.some(([key]) => key === page);
+            const isExpanded = hasActiveItem || !collapsedNavGroups.has(group.label);
+            return (
+              <section className="admin-nav-group" key={group.label}>
+                <button
+                  type="button"
+                  className="admin-nav-group-toggle"
+                  onClick={() => toggleNavGroup(group.label)}
+                  aria-expanded={isExpanded}
+                >
+                  <span className="admin-nav-group-label">{group.label}</span>
+                  <ChevronDown className={`h-3.5 w-3.5 transition-transform ${isExpanded ? "" : "-rotate-90"}`} />
+                </button>
+                {isExpanded && (
+                  <div className="space-y-1">
+                    {group.items.map(([key, Icon, label]) => {
+                      const count = adminBadges[key] || 0;
+                      const isActive = page === key;
+                      return (
+                        <Button
+                          key={key}
+                          variant="ghost"
+                          className="admin-nav-item w-full justify-start"
+                          data-active={isActive}
+                          aria-current={isActive ? "page" : undefined}
+                          data-testid={`admin-nav-${key}-button`}
+                          onClick={() => openAdminPage(key)}
+                        >
+                          <Icon className="admin-nav-icon" />
+                          <span className="flex-1 truncate text-left">{label}</span>
+                          <NotificationBadge
+                            count={count}
+                            testid={`admin-nav-${key}-badge`}
+                          />
+                        </Button>
+                      );
+                    })}
+                  </div>
+                )}
+              </section>
+            );
+          })}
         </nav>
         {/* User Profile Card in Sidebar */}
         <div className="mt-auto px-5 py-3 border-t border-slate-800 flex items-center gap-3">
@@ -6015,6 +6322,7 @@ function AdminApp({
               forms={forms}
               setForms={setForms}
               postJson={postJson}
+              putJson={putJson}
               importStudents={importStudents}
               setImportFile={setImportFile}
               isCampusAdmin={isCampusAdmin}
@@ -6116,7 +6424,17 @@ function AdminApp({
               exportGradeRecap={exportGradeRecap}
             />
           )}
-          {page === "calendar" && <CalendarPage events={filteredData.calendar} />}
+          {page === "calendar" && (
+            <CalendarPage
+              events={filteredData.calendar}
+              token={token}
+              canManage={canManageAcademicCalendar}
+              tahunAjaran={data.tahunAjaran}
+              programs={data.programs}
+              selectedSemester={selectedSemester}
+              onCalendarChange={loadAll}
+            />
+          )}
           {page === "reports" && (
             <ReportsPage
               data={filteredData}
@@ -6132,7 +6450,7 @@ function AdminApp({
             />
           )}
           {page === "guide" && (
-            <GuidePage role={isCampusAdmin ? "admin" : "lecturer"} classes={data.classes} onNavigate={openAdminPage} />
+            <GuidePage role={isCampusAdmin ? "admin" : "lecturer"} user={user} classes={data.classes} onNavigate={openAdminPage} />
           )}
           {page === "settings" && isCampusAdmin && (
             <SettingsPage
@@ -6231,13 +6549,17 @@ function LecturersPage({
       lecturer: {
         id: item.id,
         employee_id: item.employee_id || item.nidn || "",
+        nip: item.nip || "",
         nidn: item.nidn || item.employee_id || "",
+        nuptk: item.nuptk || "",
+        nrsd: item.nrsd || "",
         nik: item.nik || "",
         username: item.username || "",
         name: item.name || "",
         gelar: item.gelar || "",
         gelar_depan: item.gelar_depan || "",
         gelar_belakang: item.gelar_belakang || "",
+        nama_panggilan: item.nama_panggilan || "",
         email: item.email || "",
         whatsapp: item.whatsapp || "",
         password: "",
@@ -6252,11 +6574,33 @@ function LecturersPage({
         kota: item.kota || "",
         provinsi: item.provinsi || "",
         kode_pos: item.kode_pos || "",
+        kewarganegaraan: item.kewarganegaraan || "",
+        rt: item.rt || "",
+        rw: item.rw || "",
+        dusun: item.dusun || "",
+        kelurahan: item.kelurahan || "",
+        kecamatan: item.kecamatan || "",
+        kode_wilayah: item.kode_wilayah || "",
         jabatan_akademik: item.jabatan_akademik || "",
+        jabatan_dikti_id: item.jabatan_dikti_id || "",
+        jabatan_kode: item.jabatan_kode || "",
         keilmuan: item.keilmuan || "",
         pendidikan_terakhir: item.pendidikan_terakhir || "",
+        jenjang_pendidikan: item.jenjang_pendidikan || "",
+        ikatan_kerja: item.ikatan_kerja || item.kepegawaian?.ikatan_kerja || "",
+        status_pegawai: item.status_pegawai || item.kepegawaian?.status_pegawai || "",
+        status_kerja: item.status_kerja || "",
+        jenis_pegawai: item.jenis_pegawai || "",
+        pangkat_golongan_id: item.pangkat_golongan_id || "",
+        pangkat_golongan: item.pangkat_golongan || item.kepegawaian?.pangkat_golongan || "",
+        no_sk: item.no_sk || item.kepegawaian?.no_surat_tugas || item.kepegawaian?.sk_pengangkatan || "",
+        unit_organisasi_id: item.unit_organisasi_id || "",
+        institusi_induk: item.institusi_induk || "",
         status_dosen: item.status_dosen || "",
+        status_dosen_id: item.status_dosen_id || "",
         tanggal_masuk: item.tanggal_masuk || "",
+        tanggal_mulai_mengajar: item.tanggal_mulai_mengajar || "",
+        foto_url: item.foto_url || "",
       },
     });
     setShowModal(true);
@@ -6267,13 +6611,17 @@ function LecturersPage({
       ...forms,
       lecturer: {
         employee_id: "",
+        nip: "",
         nidn: "",
+        nuptk: "",
+        nrsd: "",
         nik: "",
         username: "",
         name: "",
         gelar: "",
         gelar_depan: "",
         gelar_belakang: "",
+        nama_panggilan: "",
         email: "",
         whatsapp: "",
         password: "Dosen123!",
@@ -6288,11 +6636,33 @@ function LecturersPage({
         kota: "",
         provinsi: "",
         kode_pos: "",
+        kewarganegaraan: "",
+        rt: "",
+        rw: "",
+        dusun: "",
+        kelurahan: "",
+        kecamatan: "",
+        kode_wilayah: "",
         jabatan_akademik: "",
+        jabatan_dikti_id: "",
+        jabatan_kode: "",
         keilmuan: "",
         pendidikan_terakhir: "",
+        jenjang_pendidikan: "",
+        ikatan_kerja: "",
+        status_pegawai: "",
+        status_kerja: "",
+        jenis_pegawai: "",
+        pangkat_golongan_id: "",
+        pangkat_golongan: "",
+        no_sk: "",
+        unit_organisasi_id: "",
+        institusi_induk: "",
         status_dosen: "",
+        status_dosen_id: "",
         tanggal_masuk: "",
+        tanggal_mulai_mengajar: "",
+        foto_url: "",
       },
     });
   }
@@ -6554,6 +6924,30 @@ function LecturersPage({
                         })
                       }
                       placeholder="Contoh: 3275080404830025"
+                    />
+                  </Field>
+                </div>
+                <div className="grid gap-4 sm:grid-cols-3">
+                  <Field id="lecturer-nip" label="NIP / NIP PNS">
+                    <Input
+                      id="lecturer-nip"
+                      value={lecturer.nip || ""}
+                      onChange={(event) => setForms({ ...forms, lecturer: { ...lecturer, nip: event.target.value } })}
+                      placeholder="Nomor induk pegawai"
+                    />
+                  </Field>
+                  <Field id="lecturer-nuptk" label="NUPTK">
+                    <Input
+                      id="lecturer-nuptk"
+                      value={lecturer.nuptk || ""}
+                      onChange={(event) => setForms({ ...forms, lecturer: { ...lecturer, nuptk: event.target.value } })}
+                    />
+                  </Field>
+                  <Field id="lecturer-nrsd" label="NRSD">
+                    <Input
+                      id="lecturer-nrsd"
+                      value={lecturer.nrsd || ""}
+                      onChange={(event) => setForms({ ...forms, lecturer: { ...lecturer, nrsd: event.target.value } })}
                     />
                   </Field>
                 </div>
@@ -6835,6 +7229,17 @@ function LecturersPage({
                     </select>
                   </Field>
                 </div>
+                <div className="grid gap-4 sm:grid-cols-3">
+                  <Field id="lecturer-agama" label="Agama">
+                    <Input id="lecturer-agama" value={lecturer.agama || ""} onChange={(e) => setForms({ ...forms, lecturer: { ...lecturer, agama: e.target.value } })} />
+                  </Field>
+                  <Field id="lecturer-kewarganegaraan" label="Kewarganegaraan">
+                    <Input id="lecturer-kewarganegaraan" value={lecturer.kewarganegaraan || ""} onChange={(e) => setForms({ ...forms, lecturer: { ...lecturer, kewarganegaraan: e.target.value } })} placeholder="Indonesia" />
+                  </Field>
+                  <Field id="lecturer-nama-panggilan" label="Nama Panggilan">
+                    <Input id="lecturer-nama-panggilan" value={lecturer.nama_panggilan || ""} onChange={(e) => setForms({ ...forms, lecturer: { ...lecturer, nama_panggilan: e.target.value } })} />
+                  </Field>
+                </div>
                 <Field id="lecturer-alamat" label="Alamat Rumah">
                   <Input
                     id="lecturer-alamat"
@@ -6848,6 +7253,31 @@ function LecturersPage({
                     placeholder="Jl. Raya Utama No. 25"
                   />
                 </Field>
+                <div className="grid gap-4 sm:grid-cols-3">
+                  <Field id="lecturer-kota" label="Kota / Kabupaten">
+                    <Input id="lecturer-kota" value={lecturer.kota || ""} onChange={(e) => setForms({ ...forms, lecturer: { ...lecturer, kota: e.target.value } })} />
+                  </Field>
+                  <Field id="lecturer-provinsi" label="Provinsi">
+                    <Input id="lecturer-provinsi" value={lecturer.provinsi || ""} onChange={(e) => setForms({ ...forms, lecturer: { ...lecturer, provinsi: e.target.value } })} />
+                  </Field>
+                  <Field id="lecturer-kode-pos" label="Kode Pos">
+                    <Input id="lecturer-kode-pos" value={lecturer.kode_pos || ""} onChange={(e) => setForms({ ...forms, lecturer: { ...lecturer, kode_pos: e.target.value } })} />
+                  </Field>
+                </div>
+                <div className="grid gap-4 sm:grid-cols-3">
+                  {[["rt", "RT"], ["rw", "RW"], ["dusun", "Dusun"]].map(([field, label]) => (
+                    <Field key={field} id={`lecturer-${field}`} label={label}>
+                      <Input id={`lecturer-${field}`} value={lecturer[field] || ""} onChange={(e) => setForms({ ...forms, lecturer: { ...lecturer, [field]: e.target.value } })} />
+                    </Field>
+                  ))}
+                </div>
+                <div className="grid gap-4 sm:grid-cols-3">
+                  {[["kelurahan", "Kelurahan"], ["kecamatan", "Kecamatan"], ["kode_wilayah", "Kode Wilayah"]].map(([field, label]) => (
+                    <Field key={field} id={`lecturer-${field}`} label={label}>
+                      <Input id={`lecturer-${field}`} value={lecturer[field] || ""} onChange={(e) => setForms({ ...forms, lecturer: { ...lecturer, [field]: e.target.value } })} />
+                    </Field>
+                  ))}
+                </div>
               </div>
 
               {/* Section 5: Detail Kepegawaian & Feeder PDDIKTI */}
@@ -6879,6 +7309,50 @@ function LecturersPage({
                       onChange={(e) => setForms({ ...forms, lecturer: { ...lecturer, pangkat_golongan: e.target.value } })}
                       placeholder="III/a - Penata Muda"
                     />
+                  </Field>
+                </div>
+                <div className="grid gap-4 sm:grid-cols-3">
+                  <Field id="lecturer-status-kerja" label="Status Kerja">
+                    <Input id="lecturer-status-kerja" value={lecturer.status_kerja || ""} onChange={(e) => setForms({ ...forms, lecturer: { ...lecturer, status_kerja: e.target.value } })} />
+                  </Field>
+                  <Field id="lecturer-jenis-pegawai" label="Jenis Pegawai">
+                    <Input id="lecturer-jenis-pegawai" value={lecturer.jenis_pegawai || ""} onChange={(e) => setForms({ ...forms, lecturer: { ...lecturer, jenis_pegawai: e.target.value } })} />
+                  </Field>
+                  <Field id="lecturer-jenjang" label="Jenjang Pendidikan">
+                    <Input id="lecturer-jenjang" value={lecturer.jenjang_pendidikan || ""} onChange={(e) => setForms({ ...forms, lecturer: { ...lecturer, jenjang_pendidikan: e.target.value } })} placeholder="S1 / S2 / S3" />
+                  </Field>
+                </div>
+                <div className="grid gap-4 sm:grid-cols-3">
+                  <Field id="lecturer-pangkat-id" label="ID Pangkat/Golongan">
+                    <Input id="lecturer-pangkat-id" value={lecturer.pangkat_golongan_id || ""} onChange={(e) => setForms({ ...forms, lecturer: { ...lecturer, pangkat_golongan_id: e.target.value } })} />
+                  </Field>
+                  <Field id="lecturer-status-dosen" label="Status Dosen">
+                    <Input id="lecturer-status-dosen" value={lecturer.status_dosen || ""} onChange={(e) => setForms({ ...forms, lecturer: { ...lecturer, status_dosen: e.target.value } })} placeholder="Tetap / Tidak Tetap" />
+                  </Field>
+                  <Field id="lecturer-status-dosen-id" label="ID Status Dosen">
+                    <Input id="lecturer-status-dosen-id" value={lecturer.status_dosen_id || ""} onChange={(e) => setForms({ ...forms, lecturer: { ...lecturer, status_dosen_id: e.target.value } })} />
+                  </Field>
+                </div>
+                <div className="grid gap-4 sm:grid-cols-3">
+                  <Field id="lecturer-jabatan-dikti-id" label="ID Jabatan Dikti">
+                    <Input id="lecturer-jabatan-dikti-id" value={lecturer.jabatan_dikti_id || ""} onChange={(e) => setForms({ ...forms, lecturer: { ...lecturer, jabatan_dikti_id: e.target.value } })} />
+                  </Field>
+                  <Field id="lecturer-jabatan-kode" label="Kode Jabatan Dikti">
+                    <Input id="lecturer-jabatan-kode" value={lecturer.jabatan_kode || ""} onChange={(e) => setForms({ ...forms, lecturer: { ...lecturer, jabatan_kode: e.target.value } })} />
+                  </Field>
+                  <Field id="lecturer-no-sk" label="No. SK / Surat Tugas">
+                    <Input id="lecturer-no-sk" value={lecturer.no_sk || ""} onChange={(e) => setForms({ ...forms, lecturer: { ...lecturer, no_sk: e.target.value } })} />
+                  </Field>
+                </div>
+                <div className="grid gap-4 sm:grid-cols-3">
+                  <Field id="lecturer-unit-organisasi" label="ID Unit Organisasi">
+                    <Input id="lecturer-unit-organisasi" value={lecturer.unit_organisasi_id || ""} onChange={(e) => setForms({ ...forms, lecturer: { ...lecturer, unit_organisasi_id: e.target.value } })} />
+                  </Field>
+                  <Field id="lecturer-institusi-induk" label="Institusi Induk">
+                    <Input id="lecturer-institusi-induk" value={lecturer.institusi_induk || ""} onChange={(e) => setForms({ ...forms, lecturer: { ...lecturer, institusi_induk: e.target.value } })} />
+                  </Field>
+                  <Field id="lecturer-tanggal-mengajar" label="Mulai Mengajar">
+                    <Input id="lecturer-tanggal-mengajar" type="date" value={lecturer.tanggal_mulai_mengajar || ""} onChange={(e) => setForms({ ...forms, lecturer: { ...lecturer, tanggal_mulai_mengajar: e.target.value } })} />
                   </Field>
                 </div>
                 <div className="grid gap-4 sm:grid-cols-2">
@@ -7423,7 +7897,7 @@ const DashboardPage = memo(function DashboardPage({
     "Risiko Rendah": 2,
     Aman: 1,
   };
-  const progressRows = [...(data.progress || [])].sort(
+  const progressRows = [...(data.dashboard?.student_progress || data.progress || [])].sort(
     (left, right) =>
       (riskOrder[right.progress?.risk_label] || 0) -
         (riskOrder[left.progress?.risk_label] || 0) ||
@@ -7486,10 +7960,17 @@ const DashboardPage = memo(function DashboardPage({
   const activitySummary = userActivity?.summary || {};
   const activityTrend = userActivity?.trend || [];
   const recentUserActivity = userActivity?.recent || [];
-  const activeLecturers = (data.lecturers || []).filter(
-    (lecturer) => lecturer.status === "active",
-  ).length;
+  const activeLecturers = new Set(
+    (data.classes || [])
+      .filter((item) => item.status === "active")
+      .map((item) => item.lecturer_id || item.lecturer_nidn || item.lecturer_name)
+      .filter(Boolean),
+  ).size;
+  const selectedAcademicPeriod = (data.tahunAjaran || []).find(
+    (item) => String(item.id) === String(s.semester_id || ""),
+  ) || (data.tahunAjaran || []).find((item) => item.is_active) || {};
   const greetingName = user?.name?.split(" ")?.[0] || "Pengguna";
+  const activeRoleDetails = dashboardRoleDetails(user, data.programs);
   const dashboardMessage =
     Number(s.ungraded_submissions || 0) +
     Number(s.missing_submissions || 0) +
@@ -7535,6 +8016,27 @@ const DashboardPage = memo(function DashboardPage({
               ? `${dashboardMessage} hal perlu perhatian agar kegiatan belajar tetap berjalan lancar.`
               : "Tidak ada antrean mendesak. Seluruh aktivitas pembelajaran dalam kondisi terkendali."}
           </p>
+          <div className="dashboard-active-roles" data-testid="dashboard-active-roles">
+            <span className="dashboard-active-roles-label">Peran aktif akun</span>
+            <div className="dashboard-active-role-list">
+              <span className="dashboard-active-role-pill primary" data-testid="dashboard-role-primary">
+                <ShieldCheck /> {activeRoleDetails.baseRole}
+              </span>
+              {activeRoleDetails.additional.map((role) => (
+                <span key={role.code} className="dashboard-active-role-pill" data-testid={`dashboard-role-${role.code}`}>
+                  <BadgeCheck /> {role.label}
+                </span>
+              ))}
+              {activeRoleDetails.scopeCount > 0 && (
+                <span className="dashboard-active-role-scope" data-testid="dashboard-role-scope">
+                  Scope prodi: {activeRoleDetails.programNames.slice(0, 2).join(", ")}{activeRoleDetails.scopeCount > 2 ? ` +${activeRoleDetails.scopeCount - 2}` : ""}
+                </span>
+              )}
+            </div>
+            {activeRoleDetails.additional.length === 0 && (
+              <p className="dashboard-active-roles-note">Belum ada jabatan struktural atau akses tambahan yang aktif.</p>
+            )}
+          </div>
           <div className="dashboard-command-actions">
             <Button type="button" onClick={() => onNavigate("grading")}>
               <CheckCircle2 /> Buka penilaian
@@ -7598,9 +8100,9 @@ const DashboardPage = memo(function DashboardPage({
         {isCampusAdmin ? (
           <StatCard
             icon={Users}
-            label="Dosen aktif"
+            label="Dosen mengajar"
             value={activeLecturers}
-            hint="Akun pengajar kampus"
+            hint="Aktif pada semester terpilih"
             testid="stat-active-lecturers"
           />
         ) : (
@@ -7649,7 +8151,7 @@ const DashboardPage = memo(function DashboardPage({
               <p>Jadwal perkuliahan</p>
               <h3>Jadwal mengajar minggu ini</h3>
             </div>
-            <span>{lecturerSchedule.total} kelas terjadwal · periode {data.tahunAjaran?.find?.((t) => t.is_active)?.semester || s?.active_semester || ""} {data.tahunAjaran?.find?.((t) => t.is_active)?.tahun || s?.active_academic_year || ""}</span>
+            <span>{lecturerSchedule.total} kelas terjadwal · periode {selectedAcademicPeriod.semester || ""} {selectedAcademicPeriod.tahun || ""}</span>
           </div>
           {lecturerSchedule.days.length === 0 ? (
             <Card className="dashboard-panel-card">
@@ -8395,12 +8897,511 @@ function ClassesPage({
   );
 }
 
+function StudentAdminFields({
+  idPrefix,
+  value = {},
+  onChange,
+  programs = [],
+  lecturers = [],
+  includePassword = false,
+  requireProgram = false,
+}) {
+  const set = (field, nextValue) => onChange({ ...value, [field]: nextValue });
+  const parentValue = (role, field) => value.orang_tua?.[role]?.[field] || "";
+  const setParent = (role, field, nextValue) => onChange({
+    ...value,
+    orang_tua: {
+      ...(value.orang_tua || {}),
+      [role]: { ...(value.orang_tua?.[role] || {}), [field]: nextValue },
+    },
+  });
+
+  return (
+    <div className="space-y-5">
+      <div className="space-y-3">
+        <h3 className="text-xs font-bold uppercase tracking-wider text-indigo-600 border-b border-slate-100 pb-1">
+          1. Identitas & Akses Akun
+        </h3>
+        <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+          <Field id={`${idPrefix}-nim`} label="NIM">
+            <Input
+              id={`${idPrefix}-nim`}
+              value={value.nim || ""}
+              onChange={(e) => set("nim", e.target.value)}
+              placeholder="Contoh: 230001099"
+              required
+            />
+          </Field>
+          <Field id={`${idPrefix}-name`} label="Nama Lengkap">
+            <Input
+              id={`${idPrefix}-name`}
+              value={value.name || value.nama || ""}
+              onChange={(e) => set("name", e.target.value)}
+              placeholder="Nama Mahasiswa"
+              required
+            />
+          </Field>
+          <Field id={`${idPrefix}-email`} label="Email">
+            <Input
+              id={`${idPrefix}-email`}
+              type="email"
+              value={value.email || ""}
+              onChange={(e) => set("email", e.target.value)}
+              placeholder="mahasiswa@kampus.ac.id"
+              required
+            />
+          </Field>
+          <Field id={`${idPrefix}-whatsapp`} label="No. WhatsApp / HP">
+            <Input
+              id={`${idPrefix}-whatsapp`}
+              value={value.whatsapp || value.wa || ""}
+              onChange={(e) => set("whatsapp", e.target.value)}
+              placeholder="628123456789"
+            />
+          </Field>
+          {includePassword && (
+            <Field id={`${idPrefix}-password`} label="Password Awal">
+              <Input
+                id={`${idPrefix}-password`}
+                type="password"
+                value={value.password || ""}
+                onChange={(e) => set("password", e.target.value)}
+                placeholder="Minimal 3 karakter"
+                minLength={3}
+                required
+              />
+            </Field>
+          )}
+        </div>
+      </div>
+
+      <div className="space-y-3 pt-2 border-t border-slate-100">
+        <h3 className="text-xs font-bold uppercase tracking-wider text-indigo-600 border-b border-slate-100 pb-1">
+          2. Data Akademik
+        </h3>
+        <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+          <Field id={`${idPrefix}-prodi`} label="Program Studi (Prodi)">
+            <select
+              id={`${idPrefix}-prodi`}
+              className="form-select text-xs"
+              value={value.prodi_id || ""}
+              onChange={(e) => set("prodi_id", e.target.value)}
+              required={requireProgram}
+            >
+              <option value="">-- Pilih Program Studi --</option>
+              {programs.map((program) => (
+                <option key={program.id} value={program.id}>
+                  {program.name || program.nama} ({program.code || program.kode})
+                </option>
+              ))}
+            </select>
+          </Field>
+          <Field id={`${idPrefix}-angkatan`} label="Angkatan">
+            <select
+              id={`${idPrefix}-angkatan`}
+              className="form-select text-xs"
+              value={value.angkatan || "2024"}
+              onChange={(e) => set("angkatan", e.target.value)}
+            >
+              {["2021", "2022", "2023", "2024", "2025", "2026"].map((year) => (
+                <option key={year} value={year}>
+                  Angkatan {year}
+                </option>
+              ))}
+            </select>
+          </Field>
+          <Field id={`${idPrefix}-status`} label="Status Akademik">
+            <select
+              id={`${idPrefix}-status`}
+              className="form-select text-xs"
+              value={value.status || "active"}
+              onChange={(e) => set("status", e.target.value)}
+            >
+              <option value="active">Aktif</option>
+              <option value="inactive">Non-Aktif</option>
+              <option value="lulus">Lulus</option>
+              <option value="cuti">Cuti</option>
+              <option value="do">Drop Out (DO)</option>
+            </select>
+          </Field>
+          <Field id={`${idPrefix}-dosen-wali`} label="Dosen Wali / Pembimbing Akademik">
+            <select
+              id={`${idPrefix}-dosen-wali`}
+              className="form-select text-xs"
+              value={value.dosen_wali_id || ""}
+              onChange={(e) => set("dosen_wali_id", e.target.value)}
+            >
+              <option value="">-- Pilih Dosen Wali --</option>
+              {lecturers.map((lecturer) => (
+                <option key={lecturer.id} value={lecturer.id}>
+                  {lecturer.name}
+                </option>
+              ))}
+            </select>
+          </Field>
+        </div>
+      </div>
+
+      <div className="space-y-3 pt-2 border-t border-slate-100">
+        <h3 className="text-xs font-bold uppercase tracking-wider text-indigo-600 border-b border-slate-100 pb-1">
+          3. Biodata Pribadi
+        </h3>
+        <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+          <Field id={`${idPrefix}-nik`} label="NIK">
+            <Input
+              id={`${idPrefix}-nik`}
+              value={value.nik || ""}
+              onChange={(e) => set("nik", e.target.value)}
+              placeholder="16 digit NIK"
+            />
+          </Field>
+          <Field id={`${idPrefix}-nisn`} label="NISN">
+            <Input
+              id={`${idPrefix}-nisn`}
+              value={value.nisn || ""}
+              onChange={(e) => set("nisn", e.target.value)}
+              placeholder="Nomor Induk Siswa Nasional"
+            />
+          </Field>
+          <Field id={`${idPrefix}-gender`} label="Jenis Kelamin">
+            <select
+              id={`${idPrefix}-gender`}
+              className="form-select text-xs"
+              value={value.gender || "L"}
+              onChange={(e) => set("gender", e.target.value)}
+            >
+              <option value="L">Laki-laki</option>
+              <option value="P">Perempuan</option>
+            </select>
+          </Field>
+          <Field id={`${idPrefix}-agama`} label="Agama">
+            <select
+              id={`${idPrefix}-agama`}
+              className="form-select text-xs"
+              value={value.agama || "Islam"}
+              onChange={(e) => set("agama", e.target.value)}
+            >
+              {["Islam", "Kristen", "Katolik", "Hindu", "Buddha", "Konghucu"].map((religion) => (
+                <option key={religion} value={religion}>
+                  {religion}
+                </option>
+              ))}
+            </select>
+          </Field>
+          <Field id={`${idPrefix}-tempat-lahir`} label="Tempat Lahir">
+            <Input
+              id={`${idPrefix}-tempat-lahir`}
+              value={value.tempat_lahir || ""}
+              onChange={(e) => set("tempat_lahir", e.target.value)}
+              placeholder="Kota tempat lahir"
+            />
+          </Field>
+          <Field id={`${idPrefix}-tanggal-lahir`} label="Tanggal Lahir">
+            <Input
+              id={`${idPrefix}-tanggal-lahir`}
+              type="date"
+              value={value.tanggal_lahir || ""}
+              onChange={(e) => set("tanggal_lahir", e.target.value)}
+            />
+          </Field>
+        </div>
+      </div>
+
+      <div className="space-y-3 pt-2 border-t border-slate-100">
+        <h3 className="text-xs font-bold uppercase tracking-wider text-indigo-600 border-b border-slate-100 pb-1">
+          4. Alamat Domisili
+        </h3>
+        <div className="grid grid-cols-1 sm:grid-cols-3 gap-3">
+          <div className="sm:col-span-3">
+            <Field id={`${idPrefix}-alamat`} label="Alamat Lengkap">
+              <Textarea
+                id={`${idPrefix}-alamat`}
+                rows={2}
+                value={value.alamat || ""}
+                onChange={(e) => set("alamat", e.target.value)}
+                placeholder="Jalan, RT/RW, Kelurahan, Kecamatan..."
+              />
+            </Field>
+          </div>
+          <Field id={`${idPrefix}-kota`} label="Kota / Kabupaten">
+            <Input
+              id={`${idPrefix}-kota`}
+              value={value.kota || ""}
+              onChange={(e) => set("kota", e.target.value)}
+            />
+          </Field>
+          <Field id={`${idPrefix}-provinsi`} label="Provinsi">
+            <Input
+              id={`${idPrefix}-provinsi`}
+              value={value.provinsi || ""}
+              onChange={(e) => set("provinsi", e.target.value)}
+            />
+          </Field>
+          <Field id={`${idPrefix}-kode-pos`} label="Kode Pos">
+            <Input
+              id={`${idPrefix}-kode-pos`}
+              value={value.kode_pos || ""}
+              onChange={(e) => set("kode_pos", e.target.value)}
+            />
+          </Field>
+        </div>
+      </div>
+
+      <div className="space-y-3 pt-2 border-t border-slate-100">
+        <h3 className="text-xs font-bold uppercase tracking-wider text-indigo-600 border-b border-slate-100 pb-1">
+          5. Orang Tua / Wali
+        </h3>
+        <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+          <Field id={`${idPrefix}-parent-name`} label="Nama Orang Tua / Wali">
+            <Input
+              id={`${idPrefix}-parent-name`}
+              value={value.parent_name || ""}
+              onChange={(e) => set("parent_name", e.target.value)}
+            />
+          </Field>
+          <Field id={`${idPrefix}-parent-phone`} label="No. Telp / HP Orang Tua">
+            <Input
+              id={`${idPrefix}-parent-phone`}
+              value={value.parent_phone || ""}
+              onChange={(e) => set("parent_phone", e.target.value)}
+            />
+          </Field>
+          <Field id={`${idPrefix}-parent-job`} label="Pekerjaan Orang Tua">
+            <Input
+              id={`${idPrefix}-parent-job`}
+              value={value.parent_job || ""}
+              onChange={(e) => set("parent_job", e.target.value)}
+            />
+          </Field>
+          <Field id={`${idPrefix}-parent-address`} label="Alamat Orang Tua / Wali">
+            <Input
+              id={`${idPrefix}-parent-address`}
+              value={value.parent_address || ""}
+              onChange={(e) => set("parent_address", e.target.value)}
+            />
+          </Field>
+          <Field id={`${idPrefix}-parent-email`} label="Email Orang Tua / Wali">
+            <Input id={`${idPrefix}-parent-email`} type="email" value={value.parent_email || ""} onChange={(e) => set("parent_email", e.target.value)} />
+          </Field>
+          <Field id={`${idPrefix}-parent-kota`} label="Kota Orang Tua / Wali">
+            <Input id={`${idPrefix}-parent-kota`} value={value.parent_kota || ""} onChange={(e) => set("parent_kota", e.target.value)} />
+          </Field>
+          <Field id={`${idPrefix}-parent-provinsi`} label="Provinsi Orang Tua / Wali">
+            <Input id={`${idPrefix}-parent-provinsi`} value={value.parent_provinsi || ""} onChange={(e) => set("parent_provinsi", e.target.value)} />
+          </Field>
+          <Field id={`${idPrefix}-parent-kode-pos`} label="Kode Pos Orang Tua / Wali">
+            <Input id={`${idPrefix}-parent-kode-pos`} value={value.parent_kode_pos || ""} onChange={(e) => set("parent_kode_pos", e.target.value)} />
+          </Field>
+        </div>
+        <div className="grid grid-cols-1 sm:grid-cols-3 gap-3">
+          {["ayah", "ibu", "wali"].map((role) => (
+            <div key={role} className="rounded-lg border border-slate-200 p-3 space-y-2">
+              <p className="text-xs font-bold text-slate-700 capitalize">Data {role}</p>
+              {[['nama', 'Nama'], ['nik', 'NIK'], ['tgl_lahir', 'Tanggal Lahir'], ['pendidikan_id', 'ID Pendidikan'], ['pekerjaan_id', 'ID Pekerjaan'], ['penghasilan_id', 'ID Penghasilan']].map(([field, label]) => (
+                <Input
+                  key={field}
+                  id={`${idPrefix}-${role}-${field}`}
+                  type={field === "tgl_lahir" ? "date" : "text"}
+                  placeholder={label}
+                  aria-label={`${label} ${role}`}
+                  value={parentValue(role, field)}
+                  onChange={(e) => setParent(role, field, e.target.value)}
+                />
+              ))}
+            </div>
+          ))}
+        </div>
+      </div>
+
+      <div className="space-y-3 pt-2 border-t border-slate-100">
+        <h3 className="text-xs font-bold uppercase tracking-wider text-indigo-600 border-b border-slate-100 pb-1">
+          6. Alamat Detail & Referensi Kependudukan
+        </h3>
+        <div className="grid grid-cols-1 sm:grid-cols-3 gap-3">
+          {[['kewarganegaraan', 'Kewarganegaraan'], ['rt', 'RT'], ['rw', 'RW'], ['dusun', 'Dusun'], ['kelurahan', 'Kelurahan'], ['kecamatan', 'Kecamatan'], ['kode_wilayah', 'Kode Wilayah'], ['jenis_tinggal_id', 'ID Jenis Tinggal'], ['jenis_tinggal', 'Jenis Tinggal'], ['transportasi_id', 'ID Transportasi'], ['transportasi', 'Transportasi'], ['asal_sekolah', 'Asal Sekolah']].map(([field, label]) => (
+            <Field key={field} id={`${idPrefix}-${field}`} label={label}>
+              <Input id={`${idPrefix}-${field}`} value={value[field] || ""} onChange={(e) => set(field, e.target.value)} />
+            </Field>
+          ))}
+        </div>
+      </div>
+
+      <div className="space-y-3 pt-2 border-t border-slate-100">
+        <h3 className="text-xs font-bold uppercase tracking-wider text-indigo-600 border-b border-slate-100 pb-1">
+          7. Registrasi, PDDIKTI & Dokumen
+        </h3>
+        <div className="grid grid-cols-1 sm:grid-cols-3 gap-3">
+          {[['semester_masuk', 'Semester Masuk'], ['tanggal_masuk', 'Tanggal Masuk'], ['jenis_pendaftaran_id', 'ID Jenis Pendaftaran'], ['jenis_pendaftaran', 'Jenis Pendaftaran'], ['jalur_masuk_id', 'ID Jalur Masuk'], ['jalur_masuk', 'Jalur Masuk'], ['jenis_pembiayaan_id', 'ID Jenis Pembiayaan'], ['jenis_pembiayaan', 'Jenis Pembiayaan'], ['status_mahasiswa_id', 'ID Status Mahasiswa'], ['feeder_student_id', 'ID Mahasiswa PDDIKTI'], ['feeder_registration_id', 'ID Registrasi PDDIKTI'], ['status_sipil', 'Status Sipil'], ['no_kk', 'No. KK'], ['npwp', 'NPWP'], ['no_kip', 'No. KIP'], ['no_kps', 'No. KPS'], ['kebutuhan_khusus', 'Kebutuhan Khusus'], ['tinggi_badan', 'Tinggi Badan'], ['berat_badan', 'Berat Badan']].map(([field, label]) => (
+            <Field key={field} id={`${idPrefix}-${field}`} label={label}>
+              <Input id={`${idPrefix}-${field}`} type={field.includes("tanggal") ? "date" : "text"} value={value[field] || ""} onChange={(e) => set(field, e.target.value)} />
+            </Field>
+          ))}
+        </div>
+      </div>
+    </div>
+  );
+}
+
+function StudentDetailModal({ student, onClose }) {
+  if (!student) return null;
+  const statusLabels = {
+    active: "Aktif",
+    inactive: "Non-Aktif",
+    lulus: "Lulus",
+    cuti: "Cuti",
+    do: "Drop Out (DO)",
+  };
+  const valueOrDash = (value) => value || "—";
+  const DetailItem = ({ label, value }) => (
+    <div className="rounded-lg border border-slate-100 bg-slate-50 p-3">
+      <p className="text-[11px] font-semibold uppercase tracking-wide text-slate-500">{label}</p>
+      <p className="mt-1 text-sm font-medium text-slate-800 break-words">{valueOrDash(value)}</p>
+    </div>
+  );
+
+  return (
+    <div className="fixed inset-0 z-50 bg-black/50 backdrop-blur-xs flex items-center justify-center p-4">
+      <div className="bg-white rounded-2xl shadow-xl w-full max-w-4xl max-h-[90vh] overflow-y-auto p-6 space-y-5">
+        <div className="flex items-center justify-between pb-3 border-b border-slate-100">
+          <div>
+            <h2 className="font-bold text-slate-900 text-lg">Detail Data Mahasiswa</h2>
+            <p className="text-xs text-slate-500 mt-0.5">{student.name || student.nama || "Mahasiswa"}</p>
+          </div>
+          <button
+            type="button"
+            onClick={onClose}
+            className="w-8 h-8 rounded-lg hover:bg-slate-100 flex items-center justify-center text-slate-400 hover:text-slate-600"
+            aria-label="Tutup detail mahasiswa"
+          >
+            <X className="w-5 h-5" />
+          </button>
+        </div>
+
+        <div className="space-y-3">
+          <h3 className="text-xs font-bold uppercase tracking-wider text-indigo-600">Identitas & Akademik</h3>
+          <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-3">
+            <DetailItem label="NIM" value={student.nim} />
+            <DetailItem label="Nama Lengkap" value={student.name || student.nama} />
+            <DetailItem label="Email" value={student.email} />
+            <DetailItem label="WhatsApp / HP" value={student.whatsapp || student.wa} />
+            <DetailItem label="Program Studi" value={student.prodi_name || student.program_name || student.prodi_id} />
+            <DetailItem label="Angkatan" value={student.angkatan} />
+            <DetailItem label="Status" value={statusLabels[student.status || "active"] || "Non-Aktif"} />
+            <DetailItem label="Dosen Wali" value={student.dosen_wali_name || student.dosen_wali_nama || student.dosen_wali_id} />
+          </div>
+        </div>
+
+        <div className="space-y-3 pt-2 border-t border-slate-100">
+          <h3 className="text-xs font-bold uppercase tracking-wider text-indigo-600">Biodata Pribadi</h3>
+          <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-3">
+            <DetailItem label="NIK" value={student.nik} />
+            <DetailItem label="NISN" value={student.nisn} />
+            <DetailItem label="Jenis Kelamin" value={student.gender === "P" ? "Perempuan" : student.gender === "L" ? "Laki-laki" : student.gender} />
+            <DetailItem label="Agama" value={student.agama} />
+            <DetailItem label="Tempat Lahir" value={student.tempat_lahir} />
+            <DetailItem label="Tanggal Lahir" value={student.tanggal_lahir} />
+            <DetailItem label="Kota / Kabupaten" value={student.kota} />
+            <DetailItem label="Provinsi" value={student.provinsi} />
+            <div className="sm:col-span-2 lg:col-span-4">
+              <DetailItem label="Alamat Domisili" value={student.alamat} />
+            </div>
+            <DetailItem label="Kode Pos" value={student.kode_pos} />
+          </div>
+        </div>
+
+        <div className="space-y-3 pt-2 border-t border-slate-100">
+          <h3 className="text-xs font-bold uppercase tracking-wider text-indigo-600">Alamat Detail & Kependudukan</h3>
+          <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-3">
+            <DetailItem label="Kewarganegaraan" value={student.kewarganegaraan} />
+            <DetailItem label="RT / RW" value={[student.rt, student.rw].filter(Boolean).join(" / ")} />
+            <DetailItem label="Dusun" value={student.dusun} />
+            <DetailItem label="Kelurahan" value={student.kelurahan} />
+            <DetailItem label="Kecamatan" value={student.kecamatan} />
+            <DetailItem label="Kode Wilayah" value={student.kode_wilayah} />
+            <DetailItem label="Jenis Tinggal" value={student.jenis_tinggal || student.jenis_tinggal_id} />
+            <DetailItem label="Transportasi" value={student.transportasi || student.transportasi_id} />
+            <DetailItem label="Asal Sekolah" value={student.asal_sekolah} />
+            <DetailItem label="Status Sipil" value={student.status_sipil} />
+            <DetailItem label="No. KK" value={student.no_kk} />
+            <DetailItem label="NPWP" value={student.npwp} />
+          </div>
+        </div>
+
+        <div className="space-y-3 pt-2 border-t border-slate-100">
+          <h3 className="text-xs font-bold uppercase tracking-wider text-indigo-600">Orang Tua / Wali</h3>
+          <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-3">
+            <DetailItem label="Nama" value={student.parent_name || student.orang_tua?.wali?.nama} />
+            <DetailItem label="No. Telepon" value={student.parent_phone || student.orang_tua?.wali?.telepon} />
+            <DetailItem label="Email" value={student.parent_email || student.orang_tua?.wali?.email} />
+            <DetailItem label="Pekerjaan" value={student.parent_job || student.orang_tua?.wali?.pekerjaan} />
+            <DetailItem label="Alamat" value={student.parent_address || student.orang_tua?.wali?.alamat} />
+            <DetailItem label="Ayah" value={student.orang_tua?.ayah?.nama} />
+            <DetailItem label="Ibu" value={student.orang_tua?.ibu?.nama} />
+            <DetailItem label="Wali" value={student.orang_tua?.wali?.nama} />
+          </div>
+        </div>
+
+        <div className="space-y-3 pt-2 border-t border-slate-100">
+          <h3 className="text-xs font-bold uppercase tracking-wider text-indigo-600">Registrasi & PDDIKTI</h3>
+          <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-3">
+            <DetailItem label="Semester Masuk" value={student.semester_masuk || student.registration?.semester_masuk} />
+            <DetailItem label="Jalur Masuk" value={student.jalur_masuk || student.registration?.jalur_masuk || student.jalur_masuk_id} />
+            <DetailItem label="Jenis Pendaftaran" value={student.jenis_pendaftaran || student.registration?.jenis_pendaftaran || student.jenis_pendaftaran_id} />
+            <DetailItem label="Jenis Pembiayaan" value={student.jenis_pembiayaan || student.registration?.jenis_pembiayaan || student.jenis_pembiayaan_id} />
+            <DetailItem label="ID Mahasiswa PDDIKTI" value={student.feeder_student_id} />
+            <DetailItem label="ID Registrasi PDDIKTI" value={student.feeder_registration_id} />
+            <DetailItem label="No. KIP" value={student.no_kip} />
+            <DetailItem label="No. KPS" value={student.no_kps} />
+          </div>
+        </div>
+
+        <div className="flex justify-end pt-3 border-t border-slate-100">
+          <Button type="button" variant="outline" onClick={onClose}>Tutup</Button>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+function normalizeStudentForForm(student = {}) {
+  const parents = student.orang_tua || {};
+  const wali = parents.wali || {};
+  const registration = student.registration || {};
+  return {
+    ...student,
+    parent_name: student.parent_name || wali.nama || "",
+    parent_phone: student.parent_phone || wali.telepon || wali.handphone || "",
+    parent_email: student.parent_email || wali.email || "",
+    parent_job: student.parent_job || wali.pekerjaan || "",
+    parent_address: student.parent_address || wali.alamat || "",
+    parent_rt: student.parent_rt || wali.rt || "",
+    parent_rw: student.parent_rw || wali.rw || "",
+    parent_kota: student.parent_kota || wali.kota || "",
+    parent_provinsi: student.parent_provinsi || wali.provinsi || "",
+    parent_kode_pos: student.parent_kode_pos || wali.kode_pos || "",
+    parent_negara: student.parent_negara || wali.negara || "",
+    semester_masuk: student.semester_masuk || registration.semester_masuk || "",
+    tanggal_masuk: student.tanggal_masuk || registration.tanggal_masuk || "",
+    jenis_pendaftaran_id: student.jenis_pendaftaran_id || registration.jenis_pendaftaran_id || "",
+    jenis_pendaftaran: student.jenis_pendaftaran || registration.jenis_pendaftaran || "",
+    jalur_masuk_id: student.jalur_masuk_id || registration.jalur_masuk_id || "",
+    jalur_masuk: student.jalur_masuk || registration.jalur_masuk || "",
+    jenis_pembiayaan_id: student.jenis_pembiayaan_id || registration.jenis_pembiayaan_id || "",
+    jenis_pembiayaan: student.jenis_pembiayaan || registration.jenis_pembiayaan || "",
+    status_mahasiswa_id: student.status_mahasiswa_id || registration.status_mahasiswa_id || "",
+    orang_tua: { ayah: {}, ibu: {}, wali: {}, ...parents },
+    registration,
+    pddikti_ids: student.pddikti_ids || {},
+  };
+}
+
 function StudentsPage({
   data,
   user,
   forms,
   setForms,
   postJson,
+  putJson,
   importStudents,
   setImportFile,
   isCampusAdmin,
@@ -8414,19 +9415,39 @@ function StudentsPage({
   const isKaprodi = Boolean(
     user &&
     user.role !== "admin" &&
-    (user.is_kaprodi || user.kaprodi_prodi_id || (user.jabatan_akademik || "").toLowerCase().includes("kaprodi"))
+    (user.is_kaprodi || user.kaprodi_prodi_id || (user.access_roles || []).includes("kaprodi") || (user.access_roles || []).includes("sekprodi") || (user.jabatan_akademik || "").toLowerCase().includes("kaprodi") || (user.tugas_tambahan || "").toLowerCase().includes("kaprodi"))
   );
-  const kaprodiProdiId = user?.kaprodi_prodi_id || user?.prodi_id;
-
-  useEffect(() => {
-    if (isKaprodi && kaprodiProdiId && !studentProdiFilter) {
-      setStudentProdiFilter(kaprodiProdiId);
-    }
-  }, [isKaprodi, kaprodiProdiId, studentProdiFilter]);
+  const kaprodiScopeValues = useMemo(() => {
+    const derivedScope = normalizeProgramScopeTokens([
+      user?.access_scope_prodi_ids || [],
+      user?.kaprodi_prodi_id,
+    ]);
+    const scope = derivedScope.size
+      ? derivedScope
+      : normalizeProgramScopeTokens([user?.prodi_id]);
+    (data.programs || []).forEach((program) => {
+      const aliases = programScopeAliases(program);
+      if ([...aliases].some((alias) => scope.has(alias))) {
+        aliases.forEach((alias) => scope.add(alias));
+      }
+    });
+    return scope;
+  }, [data.programs, user]);
+  const kaprodiScopePrograms = useMemo(
+    () => (data.programs || []).filter((program) =>
+      [...programScopeAliases(program)].some((alias) => kaprodiScopeValues.has(alias)),
+    ),
+    [data.programs, kaprodiScopeValues],
+  );
+  const kaprodiScopeNames = kaprodiScopePrograms.map((program) => program.name || program.nama || program.code || program.kode);
+  const kaprodiScopeLabel = kaprodiScopeNames.length
+    ? `${kaprodiScopeNames.length} Program Studi dalam scope`
+    : "Scope program studi belum ditetapkan";
 
   const [showAddStudentModal, setShowAddStudentModal] = useState(false);
   const [showImportStudentModal, setShowImportStudentModal] = useState(false);
   const [editingStudentModal, setEditingStudentModal] = useState(null);
+  const [selectedStudentDetail, setSelectedStudentDetail] = useState(null);
   const [selectedStudentIds, setSelectedStudentIds] = useState([]);
   const [progressCourseId, setProgressCourseId] = useState("");
   const [studentSection, setStudentSection] = useState(
@@ -8532,9 +9553,18 @@ function StudentsPage({
     const haystack = `${s.name || s.nama || ""} ${s.nim || ""} ${s.email || ""} ${s.whatsapp || s.wa || ""}`.toLowerCase();
     const matchQuery = !q || haystack.includes(q);
 
-    const sProdi = String(s.prodi_id || s.program_id || s.prodi || s.prodi_name || "").toUpperCase();
-    const targetProdi = isKaprodi && kaprodiProdiId ? String(kaprodiProdiId).toUpperCase() : String(studentProdiFilter || "").toUpperCase();
-    const matchProdi = !targetProdi || sProdi === targetProdi || sProdi.includes(targetProdi);
+    const studentProdiValues = normalizeProgramScopeTokens([
+      s.prodi_id,
+      s.program_id,
+      s.prodi_kode,
+      s.prodi,
+      s.prodi_name,
+      s.program_name,
+    ]);
+    const targetProdiValues = isKaprodi
+      ? kaprodiScopeValues
+      : normalizeProgramScopeTokens(studentProdiFilter);
+    const matchProdi = targetProdiValues.size === 0 || [...studentProdiValues].some((value) => targetProdiValues.has(value));
 
     const sStatus = String(s.status || "active").toLowerCase();
     const fStatus = String(studentStatusFilter || "").toLowerCase();
@@ -8554,7 +9584,7 @@ function StudentsPage({
           <div>
             <h1 className="text-xl font-bold text-slate-900">Data Mahasiswa</h1>
             <p className="text-xs text-slate-500 mt-0.5">
-              Total: <strong className="text-indigo-600 font-bold">{filteredStudentsList.length} Mahasiswa Terdaftar{isKaprodi && kaprodiProdiId ? ` (${data.programs?.find(p => p.id === kaprodiProdiId)?.nama || kaprodiProdiId})` : ""}</strong>
+              Total: <strong className="text-indigo-600 font-bold">{filteredStudentsList.length} Mahasiswa Terdaftar{isKaprodi ? ` (${kaprodiScopeLabel})` : ""}</strong>
             </p>
           </div>
         </div>
@@ -8579,12 +9609,66 @@ function StudentsPage({
                     email: "",
                     whatsapp: "",
                     gender: "L",
+                    agama: "Islam",
                     prodi_id: data.programs?.[0]?.id || "",
                     angkatan: "2024",
                     nik: "",
                     nisn: "",
                     tempat_lahir: "",
                     tanggal_lahir: "",
+                    alamat: "",
+                    kota: "",
+                    provinsi: "",
+                    kode_pos: "",
+                    dosen_wali_id: "",
+                    parent_name: "",
+                    parent_phone: "",
+                    parent_job: "",
+                    parent_address: "",
+                    parent_email: "",
+                    parent_rt: "",
+                    parent_rw: "",
+                    parent_kota: "",
+                    parent_provinsi: "",
+                    parent_kode_pos: "",
+                    parent_negara: "",
+                    kewarganegaraan: "",
+                    rt: "",
+                    rw: "",
+                    dusun: "",
+                    kelurahan: "",
+                    kecamatan: "",
+                    kode_wilayah: "",
+                    jenis_tinggal_id: "",
+                    jenis_tinggal: "",
+                    transportasi_id: "",
+                    transportasi: "",
+                    asal_sekolah: "",
+                    status_sipil: "",
+                    no_kk: "",
+                    npwp: "",
+                    no_kip: "",
+                    no_kps: "",
+                    kebutuhan_khusus: "",
+                    tinggi_badan: "",
+                    berat_badan: "",
+                    semester_masuk: "",
+                    tanggal_masuk: "",
+                    jenis_pendaftaran_id: "",
+                    jenis_pendaftaran: "",
+                    jalur_masuk_id: "",
+                    jalur_masuk: "",
+                    jenis_pembiayaan_id: "",
+                    jenis_pembiayaan: "",
+                    status_mahasiswa_id: "",
+                    feeder_student_id: "",
+                    feeder_registration_id: "",
+                    foto_url: "",
+                    orang_tua: { ayah: {}, ibu: {}, wali: {} },
+                    registration: {},
+                    pddikti_ids: {},
+                    status: "active",
+                    password: "Mahasiswa123!",
                   },
                 }));
                 setShowAddStudentModal(true);
@@ -8603,9 +9687,9 @@ function StudentsPage({
             <Award className="w-5 h-5 text-white" />
           </div>
           <div>
-            <p className="font-bold text-sm">Hak Akses Kaprodi: Data Mahasiswa {data.programs?.find(p => p.id === kaprodiProdiId)?.nama || kaprodiProdiId}</p>
+            <p className="font-bold text-sm">Hak Akses Kaprodi: Mahasiswa pada {kaprodiScopeLabel}</p>
             <p className="text-xs text-indigo-700 mt-0.5">
-              Sebagai Ketua Program Studi (Kaprodi), Anda memiliki wewenang untuk memantau dan mengelola data Mahasiswa khusus di Program Studi Anda.
+              Sebagai Ketua Program Studi (Kaprodi), Anda hanya dapat memantau data mahasiswa dalam scope prodi penugasan Anda{kaprodiScopeNames.length ? `: ${kaprodiScopeNames.join(", ")}.` : "."}
             </p>
           </div>
         </div>
@@ -8627,13 +9711,13 @@ function StudentsPage({
         <div>
           <select
             className="w-full px-3 py-1.5 border border-slate-300 rounded-lg text-xs font-medium focus:ring-2 focus:ring-indigo-500 focus:border-indigo-500 bg-white"
-            value={isKaprodi ? kaprodiProdiId : studentProdiFilter}
+            value={isKaprodi ? "" : studentProdiFilter}
             onChange={(e) => !isKaprodi && setStudentProdiFilter(e.target.value)}
             disabled={isKaprodi}
           >
-            {isKaprodi && kaprodiProdiId ? (
-              <option value={kaprodiProdiId}>
-                {data.programs?.find(p => p.id === kaprodiProdiId)?.nama || kaprodiProdiId}
+            {isKaprodi ? (
+              <option value="">
+                {kaprodiScopeLabel}
               </option>
             ) : (
               <>
@@ -8742,11 +9826,19 @@ function StudentsPage({
                       </td>
                       <td className="px-4 py-3.5 text-right">
                         <div className="flex items-center justify-end gap-1.5">
+                          <Button
+                            size="sm"
+                            variant="outline"
+                            onClick={() => setSelectedStudentDetail({ ...s })}
+                            className="text-xs font-semibold text-slate-700 border-slate-200 hover:bg-slate-50"
+                          >
+                            <Eye className="w-3.5 h-3.5 mr-1" /> Detail
+                          </Button>
                           {isCampusAdmin && (
                             <Button
                               size="sm"
                               variant="outline"
-                              onClick={() => setEditingStudentModal({ ...s })}
+                              onClick={() => setEditingStudentModal(normalizeStudentForForm(s))}
                               className="text-xs font-semibold text-indigo-700 border-indigo-200 hover:bg-indigo-50"
                             >
                               Edit
@@ -8778,10 +9870,17 @@ function StudentsPage({
         )}
       </Card>
 
+      {selectedStudentDetail && (
+        <StudentDetailModal
+          student={selectedStudentDetail}
+          onClose={() => setSelectedStudentDetail(null)}
+        />
+      )}
+
       {/* Modal Popup: Tambah Mahasiswa */}
       {showAddStudentModal && (
         <div className="fixed inset-0 z-50 bg-black/50 backdrop-blur-xs flex items-center justify-center p-4">
-          <div className="bg-white rounded-2xl shadow-xl w-full max-w-2xl max-h-[90vh] overflow-y-auto p-6 space-y-5">
+          <div className="bg-white rounded-2xl shadow-xl w-full max-w-4xl max-h-[90vh] overflow-y-auto p-6 space-y-5">
             <div className="flex items-center justify-between pb-3 border-b border-slate-100">
               <div className="flex items-center gap-2">
                 <Plus className="w-5 h-5 text-indigo-600" />
@@ -8804,124 +9903,15 @@ function StudentsPage({
               }}
               className="space-y-4 text-xs"
             >
-              <div className="grid grid-cols-2 gap-3">
-                <Field id="m-add-nim" label="NIM">
-                  <Input
-                    id="m-add-nim"
-                    value={forms.student.nim || ""}
-                    onChange={(e) => setForms({ ...forms, student: { ...forms.student, nim: e.target.value } })}
-                    placeholder="Contoh: 230001099"
-                    required
-                  />
-                </Field>
-
-                <Field id="m-add-nik" label="NIK KTP">
-                  <Input
-                    id="m-add-nik"
-                    value={forms.student.nik || ""}
-                    onChange={(e) => setForms({ ...forms, student: { ...forms.student, nik: e.target.value } })}
-                    placeholder="327508..."
-                  />
-                </Field>
-
-                <Field id="m-add-name" label="Nama Lengkap">
-                  <Input
-                    id="m-add-name"
-                    value={forms.student.name || ""}
-                    onChange={(e) => setForms({ ...forms, student: { ...forms.student, name: e.target.value } })}
-                    placeholder="Nama Mahasiswa"
-                    required
-                  />
-                </Field>
-
-                <Field id="m-add-nisn" label="NISN">
-                  <Input
-                    id="m-add-nisn"
-                    value={forms.student.nisn || ""}
-                    onChange={(e) => setForms({ ...forms, student: { ...forms.student, nisn: e.target.value } })}
-                  />
-                </Field>
-
-                <Field id="m-add-email" label="Email">
-                  <Input
-                    id="m-add-email"
-                    type="email"
-                    value={forms.student.email || ""}
-                    onChange={(e) => setForms({ ...forms, student: { ...forms.student, email: e.target.value } })}
-                    placeholder="student@polteksci.ac.id"
-                    required
-                  />
-                </Field>
-
-                <Field id="m-add-wa" label="No. WhatsApp">
-                  <Input
-                    id="m-add-wa"
-                    value={forms.student.whatsapp || ""}
-                    onChange={(e) => setForms({ ...forms, student: { ...forms.student, whatsapp: e.target.value } })}
-                    placeholder="628123..."
-                  />
-                </Field>
-
-                <Field id="m-add-gender" label="Jenis Kelamin">
-                  <select
-                    id="m-add-gender"
-                    className="form-select text-xs"
-                    value={forms.student.gender || "L"}
-                    onChange={(e) => setForms({ ...forms, student: { ...forms.student, gender: e.target.value } })}
-                  >
-                    <option value="L">Laki-laki</option>
-                    <option value="P">Perempuan</option>
-                  </select>
-                </Field>
-
-                <Field id="m-add-prodi" label="Program Studi (Prodi)">
-                  <select
-                    id="m-add-prodi"
-                    className="form-select text-xs"
-                    value={forms.student.prodi_id || ""}
-                    onChange={(e) => setForms({ ...forms, student: { ...forms.student, prodi_id: e.target.value } })}
-                    required
-                  >
-                    <option value="">-- Pilih Program Studi --</option>
-                    {(data.programs || []).map((p) => (
-                      <option key={p.id} value={p.id}>
-                        {p.name || p.nama} ({p.code || p.kode})
-                      </option>
-                    ))}
-                  </select>
-                </Field>
-
-                <Field id="m-add-angkatan" label="Angkatan">
-                  <select
-                    id="m-add-angkatan"
-                    className="form-select text-xs"
-                    value={forms.student.angkatan || "2024"}
-                    onChange={(e) => setForms({ ...forms, student: { ...forms.student, angkatan: e.target.value } })}
-                  >
-                    {["2021", "2022", "2023", "2024", "2025", "2026"].map((y) => (
-                      <option key={y} value={y}>
-                        Angkatan {y}
-                      </option>
-                    ))}
-                  </select>
-                </Field>
-
-                <Field id="m-add-wali" label="Dosen Pembimbing (Dosen Wali)">
-                  <select
-                    id="m-add-wali"
-                    className="form-select text-xs"
-                    value={forms.student.dosen_wali_id || ""}
-                    onChange={(e) => setForms({ ...forms, student: { ...forms.student, dosen_wali_id: e.target.value } })}
-                  >
-                    <option value="">-- Pilih Dosen Wali --</option>
-                    {(data.lecturers || []).map((d) => (
-                      <option key={d.id} value={d.id}>
-                        {d.name}
-                      </option>
-                    ))}
-                  </select>
-                </Field>
-              </div>
+              <StudentAdminFields
+                idPrefix="m-add"
+                value={forms.student}
+                onChange={(student) => setForms({ ...forms, student })}
+                programs={data.programs || []}
+                lecturers={data.lecturers || []}
+                includePassword
+                requireProgram
+              />
 
               <div className="flex justify-end gap-2 pt-3 border-t border-slate-100">
                 <Button type="button" variant="outline" onClick={() => setShowAddStudentModal(false)}>
@@ -8939,7 +9929,7 @@ function StudentsPage({
       {/* Modal Popup: Edit Mahasiswa */}
       {editingStudentModal && (
         <div className="fixed inset-0 z-50 bg-black/50 backdrop-blur-xs flex items-center justify-center p-4">
-          <div className="bg-white rounded-2xl shadow-xl w-full max-w-2xl max-h-[90vh] overflow-y-auto p-6 space-y-5">
+          <div className="bg-white rounded-2xl shadow-xl w-full max-w-4xl max-h-[90vh] overflow-y-auto p-6 space-y-5">
             <div className="flex items-center justify-between pb-3 border-b border-slate-100">
               <div>
                 <h2 className="font-bold text-slate-900 text-lg">Edit Data Mahasiswa</h2>
@@ -8955,104 +9945,24 @@ function StudentsPage({
             </div>
 
             <form
-              onSubmit={(e) => {
+              onSubmit={async (e) => {
                 e.preventDefault();
-                postJson(`/students/${editingStudentModal.id}`, editingStudentModal, "Data mahasiswa diperbarui");
-                setEditingStudentModal(null);
+                const saved = await putJson(
+                  `/students/${editingStudentModal.id}`,
+                  editingStudentModal,
+                  "Data mahasiswa diperbarui",
+                );
+                if (saved) setEditingStudentModal(null);
               }}
               className="space-y-4 text-xs"
             >
-              <div className="grid grid-cols-2 gap-3">
-                <Field id="m-edit-nim" label="NIM">
-                  <Input
-                    id="m-edit-nim"
-                    value={editingStudentModal.nim || ""}
-                    onChange={(e) => setEditingStudentModal((p) => ({ ...p, nim: e.target.value }))}
-                    required
-                  />
-                </Field>
-
-                <Field id="m-edit-nik" label="NIK KTP">
-                  <Input
-                    id="m-edit-nik"
-                    value={editingStudentModal.nik || ""}
-                    onChange={(e) => setEditingStudentModal((p) => ({ ...p, nik: e.target.value }))}
-                  />
-                </Field>
-
-                <Field id="m-edit-name" label="Nama Lengkap">
-                  <Input
-                    id="m-edit-name"
-                    value={editingStudentModal.name || editingStudentModal.nama || ""}
-                    onChange={(e) => setEditingStudentModal((p) => ({ ...p, name: e.target.value, nama: e.target.value }))}
-                    required
-                  />
-                </Field>
-
-                <Field id="m-edit-email" label="Email Resmi">
-                  <Input
-                    id="m-edit-email"
-                    type="email"
-                    value={editingStudentModal.email || ""}
-                    onChange={(e) => setEditingStudentModal((p) => ({ ...p, email: e.target.value }))}
-                    required
-                  />
-                </Field>
-
-                <Field id="m-edit-wa" label="No. WhatsApp">
-                  <Input
-                    id="m-edit-wa"
-                    value={editingStudentModal.whatsapp || ""}
-                    onChange={(e) => setEditingStudentModal((p) => ({ ...p, whatsapp: e.target.value }))}
-                  />
-                </Field>
-
-                <Field id="m-edit-prodi" label="Program Studi (Prodi)">
-                  <select
-                    id="m-edit-prodi"
-                    className="form-select text-xs"
-                    value={editingStudentModal.prodi_id || ""}
-                    onChange={(e) => setEditingStudentModal((p) => ({ ...p, prodi_id: e.target.value }))}
-                  >
-                    <option value="">-- Pilih Program Studi --</option>
-                    {(data.programs || []).map((pr) => (
-                      <option key={pr.id} value={pr.id}>
-                        {pr.name || pr.nama} ({pr.code || pr.kode})
-                      </option>
-                    ))}
-                  </select>
-                </Field>
-
-                <Field id="m-edit-status" label="Status Akademik">
-                  <select
-                    id="m-edit-status"
-                    className="form-select text-xs font-bold"
-                    value={editingStudentModal.status || "active"}
-                    onChange={(e) => setEditingStudentModal((p) => ({ ...p, status: e.target.value }))}
-                  >
-                    <option value="active">Aktif</option>
-                    <option value="inactive">Non-Aktif</option>
-                    <option value="lulus">Lulus</option>
-                    <option value="cuti">Cuti</option>
-                    <option value="do">Drop Out (DO)</option>
-                  </select>
-                </Field>
-
-                <Field id="m-edit-angkatan" label="Angkatan">
-                  <select
-                    id="m-edit-angkatan"
-                    className="form-select text-xs"
-                    value={editingStudentModal.angkatan || "2024"}
-                    onChange={(e) => setEditingStudentModal((p) => ({ ...p, angkatan: e.target.value }))}
-                  >
-                    {["2021", "2022", "2023", "2024", "2025", "2026"].map((y) => (
-                      <option key={y} value={y}>
-                        Angkatan {y}
-                      </option>
-                    ))}
-                  </select>
-                </Field>
-              </div>
+              <StudentAdminFields
+                idPrefix="m-edit"
+                value={editingStudentModal}
+                onChange={setEditingStudentModal}
+                programs={data.programs || []}
+                lecturers={data.lecturers || []}
+              />
 
               <div className="flex justify-end gap-2 pt-3 border-t border-slate-100">
                 <Button type="button" variant="outline" onClick={() => setEditingStudentModal(null)}>
@@ -14272,56 +15182,333 @@ const GradeRecapPage = memo(function GradeRecapPage({ data, exportGradeRecap }) 
   );
 });
 
-const CalendarPage = memo(function CalendarPage({ events }) {
+function calendarEventTone(event) {
+  if (event.type === "deadline") return "border-rose-200 bg-rose-50 text-rose-700";
+  if (event.type === "tayang") return "border-violet-200 bg-violet-50 text-violet-700";
+  if (event.type === "materi") return "border-sky-200 bg-sky-50 text-sky-700";
+  if (event.category === "holiday") return "border-slate-200 bg-slate-100 text-slate-700";
+  if (event.category === "exam") return "border-amber-200 bg-amber-50 text-amber-700";
+  if (event.category === "krs" || event.category === "registration") return "border-indigo-200 bg-indigo-50 text-indigo-700";
+  if (event.category === "finance") return "border-emerald-200 bg-emerald-50 text-emerald-700";
+  return "border-blue-200 bg-blue-50 text-blue-700";
+}
+
+function calendarEventLabel(event) {
+  if (event.type === "academic") {
+    return ACADEMIC_CALENDAR_CATEGORY_LABELS[event.category] || "Akademik";
+  }
+  return CALENDAR_EVENT_TYPE_LABELS[event.type] || "Agenda";
+}
+
+function calendarEventRange(event) {
+  const start = calendarDayKey(event.date);
+  const end = calendarDayKey(event.end_at || event.date);
+  if (!start) return [];
+  const startDate = new Date(`${start}T12:00:00`);
+  const endDate = new Date(`${end || start}T12:00:00`);
+  const lastDate = Number.isNaN(endDate.getTime()) || endDate < startDate ? startDate : endDate;
+  const keys = [];
+  const cursor = new Date(startDate);
+  // Batasi rentang agar satu agenda tidak memenuhi kalender selama berbulan-bulan.
+  while (cursor <= lastDate && keys.length < 93) {
+    keys.push(calendarDayKey(cursor));
+    cursor.setDate(cursor.getDate() + 1);
+  }
+  return keys;
+}
+
+function CalendarMonthGrid({ events }) {
+  const [cursor, setCursor] = useState(() => new Date());
+  const monthStart = new Date(cursor.getFullYear(), cursor.getMonth(), 1);
+  const firstDay = new Date(monthStart);
+  firstDay.setDate(1 - monthStart.getDay());
+  const dayCells = Array.from({ length: 42 }, (_, index) => {
+    const day = new Date(firstDay);
+    day.setDate(firstDay.getDate() + index);
+    return day;
+  });
+  const eventsByDay = useMemo(() => {
+    const grouped = new Map();
+    (events || []).forEach((event) => {
+      calendarEventRange(event).forEach((key) => {
+        if (!grouped.has(key)) grouped.set(key, []);
+        grouped.get(key).push(event);
+      });
+    });
+    grouped.forEach((items) => items.sort((left, right) => String(left.date).localeCompare(String(right.date))));
+    return grouped;
+  }, [events]);
+  const monthLabel = new Intl.DateTimeFormat("id-ID", {
+    month: "long",
+    year: "numeric",
+  }).format(monthStart);
+  const todayKey = calendarDayKey(new Date());
+
   return (
-    <Card className="rounded-md shadow-none" data-testid="calendar-page">
-      <CardHeader>
-        <CardTitle data-testid="calendar-title">
-          Kalender akademik & deadline
-        </CardTitle>
+    <Card className="overflow-hidden rounded-xl border-slate-200 shadow-none" data-testid="calendar-month-grid">
+      <CardHeader className="flex flex-row items-center justify-between border-b border-slate-100 py-4">
+        <div>
+          <p className="text-xs font-semibold uppercase tracking-[0.16em] text-indigo-600">Tampilan bulanan</p>
+          <CardTitle className="mt-1 text-lg capitalize">{monthLabel}</CardTitle>
+        </div>
+        <div className="flex items-center gap-1">
+          <Button type="button" size="icon" variant="ghost" aria-label="Bulan sebelumnya" onClick={() => setCursor(new Date(cursor.getFullYear(), cursor.getMonth() - 1, 1))}>
+            <ChevronLeft />
+          </Button>
+          <Button type="button" size="sm" variant="outline" onClick={() => setCursor(new Date())}>Hari ini</Button>
+          <Button type="button" size="icon" variant="ghost" aria-label="Bulan berikutnya" onClick={() => setCursor(new Date(cursor.getFullYear(), cursor.getMonth() + 1, 1))}>
+            <ChevronRight />
+          </Button>
+        </div>
       </CardHeader>
-      <CardContent className="space-y-3">
-        {events.length === 0 ? (
-          <EmptyState
-            title="Kalender kosong"
-            description="Deadline dan jadwal materi akan muncul di sini."
-          />
-        ) : (
-          events.map((event) => (
-            <div
-              key={`${event.type}-${event.id}`}
-              className="grid gap-2 border border-slate-200 p-4 md:grid-cols-[160px_1fr_140px]"
-              data-testid={`calendar-event-${event.id}`}
-            >
-              <p
-                className="font-mono text-sm text-slate-600"
-                data-testid={`calendar-event-date-${event.id}`}
-              >
-                {fmtDate(event.date)}
-              </p>
-              <p
-                className="font-semibold"
-                data-testid={`calendar-event-title-${event.id}`}
-              >
-                {event.title}
-              </p>
-              <Badge
-                className={
-                  event.type === "deadline"
-                    ? "bg-red-50 text-red-700"
-                    : "bg-blue-50 text-blue-700"
-                }
-                data-testid={`calendar-event-type-${event.id}`}
-              >
-                {event.type}
-              </Badge>
-            </div>
-          ))
-        )}
+      <CardContent className="p-0">
+        <div className="grid grid-cols-7 border-b border-slate-100 bg-slate-50/70 text-center text-[10px] font-bold uppercase tracking-wide text-slate-500">
+          {["Min", "Sen", "Sel", "Rab", "Kam", "Jum", "Sab"].map((day) => <div key={day} className="py-2">{day}</div>)}
+        </div>
+        <div className="grid grid-cols-7">
+          {dayCells.map((day) => {
+            const key = calendarDayKey(day);
+            const dayEvents = eventsByDay.get(key) || [];
+            const currentMonth = day.getMonth() === monthStart.getMonth();
+            return (
+              <div key={key} className={`min-h-24 border-b border-r border-slate-100 p-1.5 sm:min-h-28 sm:p-2 ${currentMonth ? "bg-white" : "bg-slate-50/60"}`}>
+                <span className={`inline-flex h-5 w-5 items-center justify-center rounded-full text-[11px] font-semibold ${key === todayKey ? "bg-indigo-600 text-white" : currentMonth ? "text-slate-700" : "text-slate-400"}`}>
+                  {day.getDate()}
+                </span>
+                <div className="mt-1 space-y-1">
+                  {dayEvents.slice(0, 2).map((event) => (
+                    <div key={`${event.id}-${key}`} title={event.title} className={`truncate rounded px-1 py-0.5 text-[9px] font-semibold ${calendarEventTone(event)}`}>
+                      {event.title}
+                    </div>
+                  ))}
+                  {dayEvents.length > 2 && <p className="px-1 text-[9px] font-semibold text-slate-500">+{dayEvents.length - 2} agenda</p>}
+                </div>
+              </div>
+            );
+          })}
+        </div>
       </CardContent>
     </Card>
   );
-});
+}
+
+function emptyAcademicCalendarForm(academicYearId = "") {
+  return {
+    id: "",
+    title: "",
+    category: "academic",
+    start_at: "",
+    end_at: "",
+    academic_year_id: academicYearId === "all" ? "" : academicYearId,
+    audience: "all",
+    target_prodi_id: "",
+    description: "",
+    location: "",
+    link: "",
+    status: "published",
+  };
+}
+
+function CalendarPage({
+  events = [],
+  token = "",
+  canManage = false,
+  tahunAjaran = [],
+  programs = [],
+  selectedSemester = "all",
+  onCalendarChange,
+}) {
+  const [monthEvents, setMonthEvents] = useState([]);
+  const [loadingManaged, setLoadingManaged] = useState(false);
+  const [editorOpen, setEditorOpen] = useState(false);
+  const [savingEvent, setSavingEvent] = useState(false);
+  const [eventForm, setEventForm] = useState(() => emptyAcademicCalendarForm(selectedSemester));
+  const auth = useMemo(() => ({ headers: { Authorization: `Bearer ${token}` } }), [token]);
+  const orderedEvents = useMemo(
+    () => [...events].sort((left, right) => String(left.date || "").localeCompare(String(right.date || ""))),
+    [events],
+  );
+  const nowMs = Date.now();
+  const upcomingEvents = orderedEvents.filter((event) => {
+    const time = new Date(event.date).getTime();
+    return Number.isFinite(time) && time >= nowMs - 86400000;
+  });
+  const institutionEvents = orderedEvents.filter((event) => event.source === "academic_calendar");
+  const assignmentDeadlines = orderedEvents.filter((event) => event.type === "deadline");
+
+  const loadManagedEvents = useCallback(async () => {
+    if (!canManage || !token) return;
+    setLoadingManaged(true);
+    try {
+      const params = new URLSearchParams();
+      if (selectedSemester && selectedSemester !== "all") params.set("academic_year_id", selectedSemester);
+      const response = await axios.get(`${API}/calendar/academic?${params.toString()}`, auth);
+      setMonthEvents(response.data || []);
+    } catch (error) {
+      toast.error(formatApiError(error, "Gagal memuat agenda institusi"));
+    } finally {
+      setLoadingManaged(false);
+    }
+  }, [auth, canManage, selectedSemester, token]);
+
+  useEffect(() => {
+    loadManagedEvents();
+  }, [loadManagedEvents]);
+
+  useEffect(() => {
+    setEventForm((current) => (
+      current.id || current.academic_year_id || !selectedSemester || selectedSemester === "all"
+        ? current
+        : { ...current, academic_year_id: selectedSemester }
+    ));
+  }, [selectedSemester]);
+
+  function updateEventForm(patch) {
+    setEventForm((current) => ({ ...current, ...patch }));
+  }
+
+  function openNewEvent() {
+    setEventForm(emptyAcademicCalendarForm(selectedSemester));
+    setEditorOpen(true);
+  }
+
+  function openEditEvent(event) {
+    setEventForm({
+      id: event.id,
+      title: event.title || "",
+      category: event.category || "academic",
+      start_at: calendarDateInputValue(event.start_at),
+      end_at: calendarDateInputValue(event.end_at),
+      academic_year_id: event.academic_year_id || "",
+      audience: event.audience || "all",
+      target_prodi_id: event.target_prodi_ids?.[0] || "",
+      description: event.description || "",
+      location: event.location || "",
+      link: event.link || "",
+      status: event.status || "published",
+    });
+    setEditorOpen(true);
+  }
+
+  async function saveAcademicEvent(event) {
+    event.preventDefault();
+    if (!eventForm.title.trim() || !eventForm.start_at) {
+      toast.error("Judul dan tanggal mulai kegiatan wajib diisi");
+      return;
+    }
+    const payload = {
+      ...eventForm,
+      start_at: eventForm.start_at,
+      end_at: eventForm.end_at || "",
+      target_prodi_ids: eventForm.target_prodi_id ? [eventForm.target_prodi_id] : [],
+      all_day: true,
+    };
+    delete payload.id;
+    delete payload.target_prodi_id;
+    setSavingEvent(true);
+    try {
+      if (eventForm.id) {
+        await axios.put(`${API}/calendar/academic/${eventForm.id}`, payload, auth);
+        toast.success("Agenda kalender diperbarui");
+      } else {
+        await axios.post(`${API}/calendar/academic`, payload, auth);
+        toast.success(payload.status === "published" ? "Agenda dipublikasikan" : "Agenda disimpan sebagai draft");
+      }
+      setEditorOpen(false);
+      setEventForm(emptyAcademicCalendarForm(selectedSemester));
+      await Promise.all([loadManagedEvents(), Promise.resolve(onCalendarChange?.())]);
+    } catch (error) {
+      toast.error(formatApiError(error, "Agenda kalender gagal disimpan"));
+    } finally {
+      setSavingEvent(false);
+    }
+  }
+
+  async function archiveAcademicEvent(event) {
+    if (!window.confirm(`Arsipkan agenda “${event.title}”? Agenda tidak lagi tampil kepada pengguna, tetapi riwayatnya tetap tersimpan.`)) return;
+    try {
+      await axios.delete(`${API}/calendar/academic/${event.id}`, auth);
+      toast.success("Agenda diarsipkan");
+      await Promise.all([loadManagedEvents(), Promise.resolve(onCalendarChange?.())]);
+    } catch (error) {
+      toast.error(formatApiError(error, "Agenda gagal diarsipkan"));
+    }
+  }
+
+  return (
+    <div className="space-y-5" data-testid="calendar-page">
+      <section className="rounded-2xl border border-indigo-100 bg-gradient-to-br from-indigo-50 via-white to-sky-50 px-5 py-6 shadow-sm md:px-7">
+        <div className="flex flex-col justify-between gap-5 lg:flex-row lg:items-end">
+          <div className="max-w-3xl">
+            <div className="mb-2 flex items-center gap-2 text-xs font-bold uppercase tracking-[0.18em] text-indigo-600"><CalendarDays className="h-4 w-4" /> Kontrol Akademik</div>
+            <h2 className="font-display text-2xl font-bold text-slate-900 md:text-3xl" data-testid="calendar-title">Kalender akademik & deadline</h2>
+            <p className="mt-2 text-sm leading-6 text-slate-600">Agenda institusi yang dipublikasikan tampil untuk pengguna sesuai sasaran. Deadline tugas kelas tetap digabungkan otomatis agar seluruh aktivitas akademik terpantau dari satu kalender.</p>
+          </div>
+          {canManage && <Button type="button" onClick={openNewEvent} data-testid="calendar-add-event-button"><Plus /> Tambah agenda kampus</Button>}
+        </div>
+        <div className="mt-5 grid gap-3 sm:grid-cols-3">
+          <div className="rounded-xl border border-white bg-white/80 px-4 py-3"><strong className="block text-2xl text-slate-900">{institutionEvents.length}</strong><span className="text-xs font-medium text-slate-500">Agenda institusi</span></div>
+          <div className="rounded-xl border border-white bg-white/80 px-4 py-3"><strong className="block text-2xl text-slate-900">{upcomingEvents.length}</strong><span className="text-xs font-medium text-slate-500">Agenda mendatang</span></div>
+          <div className="rounded-xl border border-white bg-white/80 px-4 py-3"><strong className="block text-2xl text-slate-900">{assignmentDeadlines.length}</strong><span className="text-xs font-medium text-slate-500">Deadline tugas</span></div>
+        </div>
+      </section>
+
+      {canManage && editorOpen && (
+        <Card className="rounded-xl border-indigo-200 shadow-none" data-testid="calendar-editor">
+          <CardHeader className="flex flex-row items-center justify-between border-b border-indigo-100 bg-indigo-50/50 py-4">
+            <div><CardTitle className="text-lg">{eventForm.id ? "Ubah agenda kampus" : "Tambah agenda kampus"}</CardTitle><p className="mt-1 text-xs text-slate-500">Hanya agenda berstatus Terbit yang tampil di kalender pengguna.</p></div>
+            <Button type="button" size="icon" variant="ghost" onClick={() => setEditorOpen(false)} aria-label="Tutup formulir agenda"><X /></Button>
+          </CardHeader>
+          <CardContent className="pt-5">
+            <form className="space-y-4" onSubmit={saveAcademicEvent}>
+              <div className="grid gap-4 md:grid-cols-2">
+                <Field id="calendar-event-title" label="Nama kegiatan *"><Input id="calendar-event-title" value={eventForm.title} onChange={(e) => updateEventForm({ title: e.target.value })} placeholder="Contoh: Ujian Tengah Semester" /></Field>
+                <Field id="calendar-event-category" label="Kategori"><select id="calendar-event-category" className="h-10 w-full rounded-md border border-slate-200 bg-white px-3 text-sm" value={eventForm.category} onChange={(e) => updateEventForm({ category: e.target.value })}>{Object.entries(ACADEMIC_CALENDAR_CATEGORY_LABELS).map(([key, label]) => <option key={key} value={key}>{label}</option>)}</select></Field>
+                <Field id="calendar-event-start" label="Tanggal mulai *"><Input id="calendar-event-start" type="date" value={eventForm.start_at} onChange={(e) => updateEventForm({ start_at: e.target.value })} /></Field>
+                <Field id="calendar-event-end" label="Tanggal selesai (opsional)"><Input id="calendar-event-end" type="date" min={eventForm.start_at || undefined} value={eventForm.end_at} onChange={(e) => updateEventForm({ end_at: e.target.value })} /></Field>
+                <Field id="calendar-event-semester" label="Tahun ajaran / semester"><select id="calendar-event-semester" className="h-10 w-full rounded-md border border-slate-200 bg-white px-3 text-sm" value={eventForm.academic_year_id} onChange={(e) => updateEventForm({ academic_year_id: e.target.value })}><option value="">Berlaku umum (lintas periode)</option>{(tahunAjaran || []).map((ta) => <option key={ta.id} value={ta.id}>{ta.nama || `${ta.tahun} ${ta.semester}`}</option>)}</select></Field>
+                <Field id="calendar-event-audience" label="Tampil untuk"><select id="calendar-event-audience" className="h-10 w-full rounded-md border border-slate-200 bg-white px-3 text-sm" value={eventForm.audience} onChange={(e) => updateEventForm({ audience: e.target.value })}><option value="all">Semua pengguna</option><option value="student">Mahasiswa</option><option value="lecturer">Dosen & staf akademik</option></select></Field>
+                <Field id="calendar-event-prodi" label="Target program studi (opsional)"><select id="calendar-event-prodi" className="h-10 w-full rounded-md border border-slate-200 bg-white px-3 text-sm" value={eventForm.target_prodi_id} onChange={(e) => updateEventForm({ target_prodi_id: e.target.value })}><option value="">Semua program studi yang sesuai sasaran</option>{(programs || []).filter((program) => program.status !== "inactive").map((program) => <option key={program.id} value={program.id}>{program.name || program.nama || program.kode}</option>)}</select></Field>
+                <Field id="calendar-event-status" label="Status publikasi"><select id="calendar-event-status" className="h-10 w-full rounded-md border border-slate-200 bg-white px-3 text-sm" value={eventForm.status} onChange={(e) => updateEventForm({ status: e.target.value })}><option value="published">Terbit — tampil ke pengguna</option><option value="draft">Draft — hanya operator</option></select></Field>
+              </div>
+              <div className="grid gap-4 md:grid-cols-2">
+                <Field id="calendar-event-location" label="Lokasi (opsional)"><Input id="calendar-event-location" value={eventForm.location} onChange={(e) => updateEventForm({ location: e.target.value })} placeholder="Aula kampus / Daring" /></Field>
+                <Field id="calendar-event-link" label="Tautan informasi (opsional)"><Input id="calendar-event-link" type="url" value={eventForm.link} onChange={(e) => updateEventForm({ link: e.target.value })} placeholder="https://..." /></Field>
+              </div>
+              <Field id="calendar-event-description" label="Keterangan"><Textarea id="calendar-event-description" value={eventForm.description} onChange={(e) => updateEventForm({ description: e.target.value })} placeholder="Informasi singkat yang perlu diketahui pengguna." /></Field>
+              <div className="flex flex-wrap justify-end gap-2"><Button type="button" variant="outline" onClick={() => setEditorOpen(false)}>Batal</Button><Button type="submit" disabled={savingEvent}>{savingEvent ? <Loader2 className="animate-spin" /> : <Save />} {eventForm.id ? "Simpan perubahan" : eventForm.status === "published" ? "Terbitkan agenda" : "Simpan draft"}</Button></div>
+            </form>
+          </CardContent>
+        </Card>
+      )}
+
+      <CalendarMonthGrid events={orderedEvents} />
+
+      <div className="grid gap-5 xl:grid-cols-[minmax(0,1fr)_360px]">
+        <Card className="rounded-xl shadow-none">
+          <CardHeader className="border-b border-slate-100 py-4"><CardTitle className="text-lg">Agenda terjadwal</CardTitle></CardHeader>
+          <CardContent className="space-y-2 pt-4">
+            {orderedEvents.length === 0 ? <EmptyState title="Kalender kosong" description="Agenda institusi, deadline tugas, dan pembukaan materi akan muncul di sini." /> : orderedEvents.map((event) => (
+              <article key={`${event.type}-${event.id}`} className="flex flex-col gap-3 rounded-xl border border-slate-200 p-3.5 sm:flex-row sm:items-start" data-testid={`calendar-event-${event.id}`}>
+                <div className="min-w-32 text-sm"><p className="font-semibold text-slate-800" data-testid={`calendar-event-date-${event.id}`}>{fmtDate(event.date)}</p>{event.end_at && calendarDayKey(event.end_at) !== calendarDayKey(event.date) && <p className="mt-1 text-xs text-slate-500">s.d. {fmtDate(event.end_at)}</p>}</div>
+                <div className="min-w-0 flex-1"><div className="flex flex-wrap items-center gap-2"><p className="font-semibold text-slate-900" data-testid={`calendar-event-title-${event.id}`}>{event.title}</p><Badge className={calendarEventTone(event)} data-testid={`calendar-event-type-${event.id}`}>{calendarEventLabel(event)}</Badge></div>{event.class_name && <p className="mt-1 text-xs text-slate-500">Kelas: {event.class_name}</p>}{event.description && <p className="mt-1 text-sm text-slate-600">{event.description}</p>}{event.location && <p className="mt-1 text-xs text-slate-500">Lokasi: {event.location}</p>}{event.link && <a className="mt-1 inline-block text-xs font-semibold text-indigo-600 hover:underline" href={event.link} target="_blank" rel="noreferrer">Buka informasi</a>}</div>
+              </article>
+            ))}
+          </CardContent>
+        </Card>
+
+        {canManage && (
+          <Card className="h-fit rounded-xl shadow-none" data-testid="calendar-management-list">
+            <CardHeader className="flex flex-row items-center justify-between border-b border-slate-100 py-4"><div><CardTitle className="text-lg">Kelola agenda institusi</CardTitle><p className="mt-1 text-xs text-slate-500">Draft tidak tampil kepada pengguna.</p></div><Button type="button" size="icon" variant="ghost" disabled={loadingManaged} onClick={loadManagedEvents} aria-label="Muat ulang agenda"><RotateCcw className={loadingManaged ? "animate-spin" : ""} /></Button></CardHeader>
+            <CardContent className="space-y-2 pt-4">
+              {loadingManaged ? <div className="flex items-center gap-2 py-5 text-sm text-slate-500"><Loader2 className="animate-spin" /> Memuat agenda...</div> : monthEvents.length === 0 ? <p className="py-4 text-sm text-slate-500">Belum ada agenda institusi untuk periode ini.</p> : monthEvents.map((event) => <div key={event.id} className="rounded-lg border border-slate-200 p-3"><div className="flex items-start justify-between gap-2"><div className="min-w-0"><p className="truncate text-sm font-semibold text-slate-900">{event.title}</p><p className="mt-1 text-xs text-slate-500">{fmtDate(event.start_at)}</p></div><Badge className={event.status === "published" ? "border-emerald-200 bg-emerald-50 text-emerald-700" : "border-amber-200 bg-amber-50 text-amber-700"}>{event.status === "published" ? "Terbit" : "Draft"}</Badge></div><div className="mt-3 flex justify-end gap-1"><Button type="button" size="sm" variant="ghost" onClick={() => openEditEvent(event)}><Pencil /> Ubah</Button><Button type="button" size="sm" variant="ghost" className="text-rose-700 hover:bg-rose-50 hover:text-rose-700" onClick={() => archiveAcademicEvent(event)}><Trash2 /> Arsip</Button></div></div>)}
+            </CardContent>
+          </Card>
+        )}
+      </div>
+    </div>
+  );
+}
 
 const REPORT_STATUS_COLORS = {
   Dinilai: "#10b981",
@@ -15276,62 +16463,187 @@ const SettingsPage = memo(function SettingsPage({
   );
 });
 
-function GuidePage({ role = "student", classes = [], onNavigate }) {
+const GUIDE_AUTHORITY_PROFILES = {
+  admin: {
+    title: "Administrator Kampus",
+    scope: "Seluruh institusi",
+    allowed: ["Mengelola struktur akademik, sivitas, konfigurasi, dan integrasi kampus.", "Menerbitkan kalender akademik institusi untuk seluruh pengguna atau sasaran tertentu.", "Menetapkan templat akses serta menunjuk pejabat struktural."],
+    limits: ["Gunakan akun ini hanya untuk administrasi kampus; pekerjaan operasional sebaiknya didelegasikan melalui jabatan aktif.", "Perubahan pengaturan, migrasi, dan penghapusan data harus melalui konfirmasi."],
+    actions: [["calendar", "Kalender Akademik"], ["settings", "Pengaturan Kampus"], ["user_access", "Hak Akses User"]],
+  },
+  lecturer: {
+    title: "Dosen Pengampu",
+    scope: "Kelas yang diampu",
+    allowed: ["Mengelola materi, tugas, presensi, penilaian, dan rekap pada kelas sendiri.", "Melihat kalender akademik kampus serta deadline tugas dari kelas yang diampu.", "Memproses perwalian serta memberi umpan balik/revisi kepada mahasiswa kelas sendiri."],
+    limits: ["Tidak mengubah struktur kampus, data sivitas, atau konfigurasi institusi tanpa penugasan tambahan.", "Finalisasi nilai dan arsip kelas bersifat permanen sesuai alur semester."],
+    actions: [["calendar", "Kalender Akademik"], ["materials", "Materi & Diskusi"], ["perwalian", "Perwalian KRS"]],
+  },
+  student: {
+    title: "Mahasiswa",
+    scope: "Data dan kelas milik sendiri",
+    allowed: ["Mengisi KRS, melihat KHS/tagihan, belajar, presensi, serta mengumpulkan tugas pada kelas yang telah disetujui.", "Melihat kalender akademik kampus dan deadline tugas dari kelas sendiri.", "Melihat nilai dan umpan balik yang telah dipublikasikan dosen."],
+    limits: ["Tidak dapat mengubah nilai, data mahasiswa lain, materi kelas, atau status tagihan.", "KRS, pengumpulan tugas, dan revisi mengikuti periode serta deadline yang ditetapkan."],
+    actions: [],
+  },
+  kaprodi: {
+    title: "Ketua Program Studi (Kaprodi)",
+    scope: "Program studi yang ditugaskan",
+    allowed: ["Memantau dan mengelola kurikulum, jadwal, penugasan dosen wali, serta dokumen akademik prodi.", "Melihat rekap akademik pada scope program studi penugasan."],
+    limits: ["Tidak otomatis mendapat akses administrasi sistem, pengaturan kampus, atau data prodi lain.", "Penugasan dicabut berarti akses scope prodi ikut dicabut."],
+    actions: [["master_kurikulum", "Kurikulum Prodi"], ["master_dosen_wali", "Dosen Wali"]],
+  },
+  sekprodi: {
+    title: "Sekretaris Program Studi (Sekprodi)",
+    scope: "Program studi yang ditugaskan",
+    allowed: ["Membantu administrasi kurikulum, jadwal, dokumen akademik, dan perwalian pada prodi penugasan.", "Mengakses informasi akademik yang diperlukan untuk operasional prodi."],
+    limits: ["Wewenang tetap terbatas pada scope prodi dan tidak menggantikan akses Administrator Kampus.", "Tidak dapat mengubah pengaturan sistem atau data lintas prodi."],
+    actions: [["master_kurikulum", "Kurikulum Prodi"], ["master_jadwal_mengajar", "Jadwal Mengajar"]],
+  },
+  academic_operator: {
+    title: "Operator Akademik / BAAK",
+    scope: "Institusi sesuai penugasan",
+    allowed: ["Menangani administrasi periode akademik, KRS/KHS, struktur akademik, dan data sivitas sesuai templat akses.", "Menyusun, menyimpan draft, serta menerbitkan kalender akademik institusi.", "Membantu verifikasi proses akademik dan dokumentasi operasional kampus."],
+    limits: ["Tidak mengelola pengaturan keamanan, SSO, atau hak akses kecuali diberi wewenang tambahan.", "Perubahan akademik harus mengikuti kalender dan kebijakan yang ditetapkan kampus."],
+    actions: [["calendar", "Kalender Akademik"], ["perwalian", "Perwalian KRS"]],
+  },
+  finance_officer: {
+    title: "Petugas Keuangan",
+    scope: "Pembiayaan mahasiswa kampus",
+    allowed: ["Mengelola BIPOT/UKT, tagihan, pembayaran, potongan, dan verifikasi keuangan.", "Membuka menu Keuangan Kampus tanpa mengubah role utama akun."],
+    limits: ["Tidak dapat mengubah nilai, kurikulum, atau data akademik di luar kebutuhan verifikasi pembayaran.", "Setiap pembayaran dan penyesuaian nominal harus memiliki jejak audit."],
+    actions: [["keuangan_admin", "Keuangan Kampus"]],
+  },
+  pmb_officer: {
+    title: "Petugas PMB",
+    scope: "Proses penerimaan mahasiswa baru",
+    allowed: ["Mengelola pendaftaran, seleksi, registrasi ulang, dan verifikasi proses PMB.", "Membuka menu PMB tanpa mengubah role utama akun."],
+    limits: ["Tidak dapat mengubah data akademik aktif atau pengaturan sistem di luar proses PMB.", "Konversi calon mahasiswa harus mengikuti prosedur dan status seleksi yang sah."],
+    actions: [["pmb", "PMB"]],
+  },
+  campus_leader: {
+    title: "Pimpinan Institusi",
+    scope: "Institusi",
+    allowed: ["Melihat ringkasan akademik, keuangan, dan laporan institusi sesuai templat pimpinan.", "Memantau indikator operasional untuk pengambilan keputusan."],
+    limits: ["Akses pimpinan bersifat pemantauan dan tidak menggantikan wewenang operator administrasi.", "Perubahan data operasional tetap dilakukan oleh petugas yang ditunjuk."],
+    actions: [["reports", "Laporan Ringkas"]],
+  },
+  faculty_leader: {
+    title: "Pimpinan Fakultas / Jurusan",
+    scope: "Unit akademik yang ditugaskan",
+    allowed: ["Memantau laporan akademik dan pelaksanaan pembelajaran pada unit yang menjadi tanggung jawabnya.", "Menggunakan ringkasan data untuk koordinasi dengan prodi."],
+    limits: ["Tidak otomatis membuka pengaturan kampus atau data di luar unit penugasan.", "Wewenang operasional tetap mengikuti penetapan jabatan dan templat akses."],
+    actions: [["reports", "Laporan Ringkas"]],
+  },
+};
+
+function GuidePage({ role = "student", user = {}, classes = [], onNavigate }) {
   const isAdmin = role === "admin";
   const isLecturer = role === "lecturer";
   const title = isAdmin ? "Panduan Admin Kampus" : isLecturer ? "Panduan Dosen" : "Panduan Mahasiswa";
   const intro = isAdmin
-    ? "Kelola struktur akademik, pengguna, dan penutupan semester secara tertib."
+    ? "Kelola layanan akademik, data kampus, dan konfigurasi sistem sesuai wewenang akun."
     : isLecturer
-      ? "Ikuti urutan kerja kelas dari persiapan hingga finalisasi nilai."
-      : "Ikuti langkah sederhana untuk masuk kelas, belajar, mengumpulkan tugas, dan melihat nilai.";
+      ? "Ikuti urutan kerja kelas dari persiapan hingga finalisasi nilai, serta pahami tugas tambahan yang sedang aktif."
+      : "Pahami layanan yang dapat Anda gunakan, batas wewenang, dan langkah belajar per semester.";
+  const activeRoleCodes = Array.from(new Set([
+    ...(Array.isArray(user?.access_roles) ? user.access_roles : []),
+    ...((user?.is_kaprodi || user?.kaprodi_prodi_id) ? ["kaprodi"] : []),
+  ])).filter((code) => GUIDE_AUTHORITY_PROFILES[code]);
+  const authorityProfiles = [
+    GUIDE_AUTHORITY_PROFILES[role] || GUIDE_AUTHORITY_PROFILES.student,
+    ...activeRoleCodes.map((code) => GUIDE_AUTHORITY_PROFILES[code]),
+  ];
+  const prodiScopeCount = (user?.access_scope_prodi_ids || []).length;
+  const scopeLabel = prodiScopeCount
+    ? `${prodiScopeCount} scope prodi aktif`
+    : activeRoleCodes.length ? "Penugasan aktif" : "Role utama";
   const steps = isAdmin
     ? [
-        ["1", "Siapkan struktur akademik", "Buat Prodi, Mata Kuliah, lalu kelas semester. Kode kelas dibuat otomatis."],
-        ["2", "Kelola pengguna", "Admin dapat membuat/import mahasiswa. Dosen hanya memilih mahasiswa aktif atau memproses request."],
-        ["3", "Pantau approval", "Request mahasiswa harus ditinjau dan disetujui sebelum mahasiswa melihat materi dan tugas kelas."],
-        ["4", "Tutup dan finalisasi", "Akhiri kelas ketika pembelajaran selesai, selesaikan koreksi, lalu ketik FINALISASI untuk mengunci rekap."],
-        ["5", "Arsip dan rollover", "Arsipkan kelas yang sudah difinalisasi. Tahun berikutnya selalu buat kelas baru dengan kode baru."],
+        ["1", "Siapkan periode dan struktur", "Atur tahun ajaran, semester, fakultas/prodi, serta sarana sebelum kegiatan akademik dimulai."],
+        ["2", "Tetapkan kalender dan penugasan", "Terbitkan kalender akademik, lalu lengkapi kurikulum, jadwal, SK, dosen wali, dan pejabat struktural sesuai kebutuhan periode."],
+        ["3", "Kelola layanan operasional", "Pantau KRS, pembiayaan, PMB, serta data sivitas dari kelompok menu yang sesuai."],
+        ["4", "Delegasikan wewenang", "Gunakan Jabatan Akademik dan Hak Akses untuk memberi tugas Kaprodi, BAAK, Keuangan, atau PMB tanpa mengubah role utama akun."],
+        ["5", "Tutup, arsip, dan evaluasi", "Finalisasi aktivitas semester, siapkan backup, lalu gunakan laporan sebagai bahan evaluasi periode berikutnya."],
       ]
     : isLecturer
       ? [
-          ["1", "Buat kelas aktif", "Pilih Mata Kuliah, tahun akademik, semester, nama kelas, dan jadwal. Bagikan kode kelas."],
+          ["1", "Siapkan kelas aktif", "Pilih mata kuliah, tahun akademik, semester, nama kelas, dan jadwal. Bagikan kode kelas."],
           ["2", "Setujui anggota", "Buka menu Mahasiswa, tinjau request pending, lalu Approve atau Reject. Tambah langsung hanya untuk mahasiswa aktif."],
           ["3", "Kelola pembelajaran", "Buat materi dan tugas hanya saat kelas Aktif. Atur bobot nilai dan kategori Tugas/UTS/UAS."],
           ["4", "Koreksi submission", "Nilai, feedback, dan permintaan revisi tersedia selama kelas Aktif atau Berakhir. Submission baru ditutup setelah kelas diakhiri."],
           ["5", "Finalisasi semester", "Pastikan seluruh komponen nilai lengkap, klik Finalisasi, ketik FINALISASI, lalu gunakan Arsip. Setelah itu data read-only."],
         ]
       : [
-          ["1", "Buat akun", "Daftar sebagai mahasiswa menggunakan NIM, email, dan password."],
-          ["2", "Gabung dengan kode", "Masukkan kode kelas. Status akan menjadi Menunggu ACC sampai dosen menyetujui."],
-          ["3", "Belajar dan mengumpulkan", "Setelah disetujui, buka Materi dan Tugas. Periksa deadline sebelum mengunggah file."],
-          ["4", "Tanggapi revisi", "Jika dosen meminta revisi, unggah ulang hanya pada tugas yang berstatus Direvisi."],
-          ["5", "Semester berikutnya", "Kelas lama menjadi arsip. Gunakan kode kelas baru untuk semester baru dan tunggu approval kembali."],
+          ["1", "Lengkapi akun", "Pastikan NIM, email, dan profil Anda benar agar layanan akademik dapat diproses."],
+          ["2", "Atur rencana studi", "Isi KRS pada periode aktif dan pantau status persetujuan dosen wali bila diterapkan kampus."],
+          ["3", "Gabung dan belajar", "Masukkan kode kelas, tunggu persetujuan dosen, lalu buka materi dan tugas yang tersedia."],
+          ["4", "Kumpulkan tepat waktu", "Periksa deadline, unggah berkas, dan tanggapi revisi hanya pada tugas yang berstatus Direvisi."],
+          ["5", "Pantau hasil semester", "Lihat nilai, KHS, dan tagihan UKT dari akun sendiri. Kelas lama tetap tersimpan sebagai arsip."],
         ];
   const rules = [
-    "Aksi penting seperti mengakhiri kelas, finalisasi nilai, arsip, hapus data, import, dan perubahan bobot selalu membutuhkan konfirmasi.",
-    "Kelas Berakhir menutup anggota baru, materi baru, tugas baru, dan submission baru. Penilaian masih dapat diselesaikan sampai Finalisasi.",
-    "Kelas yang sudah Finalisasi/Arsip tidak boleh diubah. Untuk tahun berikutnya, buat kelas baru; histori kelas lama tetap tersimpan.",
+    "Role utama akun tidak berubah ketika menerima jabatan struktural. Jabatan hanya menambahkan wewenang sesuai templat dan scope penugasan.",
+    "Akses tugas tambahan otomatis dicabut saat penunjukan jabatan dicabut atau dinonaktifkan oleh Administrator Kampus.",
+    "Jangan berbagi akun. Semua perubahan penting, termasuk pembayaran, nilai, penghapusan, dan konfigurasi, harus dapat dipertanggungjawabkan melalui jejak audit.",
   ];
   return (
     <div className="space-y-6" data-testid={`${role}-guide-page`}>
       <section className="meeting-hero" data-testid={`${role}-guide-hero`}>
         <div>
-          <p className="meeting-overline">Panduan LMS</p>
+          <p className="meeting-overline">Panduan & Wewenang</p>
           <h2 className="font-display text-2xl font-semibold">{title}</h2>
           <p className="meeting-description">{intro}</p>
         </div>
         <div className="meeting-summary">
-          <div><strong>{steps.length}</strong><span>Langkah utama</span></div>
+          <div><strong>{authorityProfiles.length}</strong><span>Peran aktif</span></div>
           <div><strong>{classes.length || "—"}</strong><span>Kelas terlihat</span></div>
-          <div><strong>1</strong><span>Alur semester</span></div>
+          <div><strong>{scopeLabel}</strong><span>Cakupan akses</span></div>
         </div>
       </section>
+
+      <Card className="rounded-md shadow-none" data-testid={`${role}-guide-authority-card`}>
+        <CardHeader>
+          <CardTitle>Wewenang akun saat ini</CardTitle>
+          <p className="text-sm text-slate-500">Daftar ini mengikuti role utama dan jabatan struktural aktif pada akun Anda.</p>
+        </CardHeader>
+        <CardContent className="grid gap-4 xl:grid-cols-2">
+          {authorityProfiles.map((profile) => (
+            <div key={profile.title} className="rounded-xl border border-slate-200 bg-white p-4">
+              <div className="flex flex-wrap items-start justify-between gap-2">
+                <div>
+                  <strong className="block text-slate-900">{profile.title}</strong>
+                  <p className="mt-1 text-xs text-slate-500">Scope: {profile.scope}</p>
+                </div>
+                <Badge className="border-indigo-200 bg-indigo-50 text-indigo-700">Aktif</Badge>
+              </div>
+              <div className="mt-4 grid gap-3 sm:grid-cols-2">
+                <div className="rounded-lg border border-emerald-100 bg-emerald-50 p-3 text-xs text-emerald-900">
+                  <strong className="mb-1 block">Dapat dilakukan</strong>
+                  <ul className="space-y-1 list-disc pl-4">{profile.allowed.map((item) => <li key={item}>{item}</li>)}</ul>
+                </div>
+                <div className="rounded-lg border border-amber-100 bg-amber-50 p-3 text-xs text-amber-900">
+                  <strong className="mb-1 block">Batas wewenang</strong>
+                  <ul className="space-y-1 list-disc pl-4">{profile.limits.map((item) => <li key={item}>{item}</li>)}</ul>
+                </div>
+              </div>
+              {onNavigate && profile.actions.length > 0 && (
+                <div className="mt-3 flex flex-wrap gap-2">
+                  {profile.actions.map(([pageKey, label]) => (
+                    <Button key={pageKey} type="button" variant="outline" size="sm" onClick={() => onNavigate(pageKey)}>
+                      <BookOpen /> {label}
+                    </Button>
+                  ))}
+                </div>
+              )}
+            </div>
+          ))}
+        </CardContent>
+      </Card>
+
       <div className="grid gap-6 xl:grid-cols-[1.25fr_0.75fr]">
         <Card className="rounded-md shadow-none" data-testid={`${role}-guide-steps-card`}>
           <CardHeader>
             <CardTitle>Urutan kerja yang disarankan</CardTitle>
-            <p className="text-sm text-slate-500">Ikuti dari atas ke bawah agar status kelas dan data nilai tetap konsisten.</p>
+            <p className="text-sm text-slate-500">Ikuti langkah sesuai peran utama agar status akademik dan data tetap konsisten.</p>
           </CardHeader>
           <CardContent className="space-y-3">
             {steps.map(([number, heading, description]) => (
@@ -15344,11 +16656,10 @@ function GuidePage({ role = "student", classes = [], onNavigate }) {
         </Card>
         <Card className="rounded-md shadow-none" data-testid={`${role}-guide-rules-card`}>
           <CardHeader>
-            <CardTitle>Aturan penting</CardTitle>
+            <CardTitle>Aturan akses penting</CardTitle>
           </CardHeader>
           <CardContent className="space-y-3">
             {rules.map((rule) => <div key={rule} className="flex gap-2 border border-amber-200 bg-amber-50 p-3 text-sm text-amber-900"><AlertTriangle className="mt-0.5 h-4 w-4 shrink-0" /><span>{rule}</span></div>)}
-            {onNavigate && isAdmin && <Button type="button" variant="outline" onClick={() => onNavigate("classes")}><BookOpen /> Buka konfigurasi kelas</Button>}
           </CardContent>
         </Card>
       </div>
@@ -15954,82 +17265,9 @@ function StudentGradesPage({ assignments, avgGrade, gradedAssignments }) {
 }
 
 function StudentCalendarPage({ events }) {
-  const orderedEvents = useMemo(
-    () =>
-      [...events].sort(
-        (left, right) => new Date(left.date) - new Date(right.date),
-      ),
-    [events],
-  );
-  const upcomingEvents = orderedEvents.filter(
-    (event) => new Date(event.date).getTime() >= Date.now(),
-  );
-
   return (
-    <div className="space-y-5" data-testid="student-calendar-page">
-      <section className="meeting-hero" data-testid="student-calendar-hero">
-        <div>
-          <p className="meeting-overline">Agenda akademik</p>
-          <h2 className="font-display text-2xl font-semibold">
-            Kalender & deadline
-          </h2>
-          <p className="meeting-description">
-            Pantau jadwal pengumpulan tugas agar tidak ada deadline yang
-            terlewat.
-          </p>
-        </div>
-        <div className="meeting-summary">
-          <div>
-            <strong>{events.length}</strong>
-            <span>Total agenda</span>
-          </div>
-          <div className={upcomingEvents.length ? "attention" : ""}>
-            <strong>{upcomingEvents.length}</strong>
-            <span>Akan datang</span>
-          </div>
-        </div>
-      </section>
-      {orderedEvents.length === 0 ? (
-        <EmptyState
-          title="Belum ada agenda"
-          description="Deadline tugas dan agenda kelas akan muncul di sini."
-        />
-      ) : (
-        <div
-          className="student-agenda-list"
-          data-testid="student-calendar-list"
-        >
-          {orderedEvents.map((event) => {
-            const isPast = new Date(event.date).getTime() < Date.now();
-            return (
-              <article
-                key={event.id}
-                className={`student-agenda-item ${isPast ? "past" : ""}`}
-                data-testid={`student-calendar-item-${event.id}`}
-              >
-                <span className="student-agenda-icon">
-                  <CalendarDays />
-                </span>
-                <div className="min-w-0 flex-1">
-                  <p className="font-semibold text-slate-900">{event.title}</p>
-                  <p className="mt-1 text-sm text-slate-500">
-                    {fmtDate(event.date)}
-                  </p>
-                </div>
-                <Badge
-                  className={
-                    isPast
-                      ? "border-slate-200 bg-slate-50 text-slate-600"
-                      : "border-blue-200 bg-blue-50 text-blue-700"
-                  }
-                >
-                  {isPast ? "Selesai" : "Mendatang"}
-                </Badge>
-              </article>
-            );
-          })}
-        </div>
-      )}
+    <div data-testid="student-calendar-page">
+      <CalendarPage events={events} />
     </div>
   );
 }
@@ -18538,9 +19776,13 @@ function StudentApp({ token, user, onLogout, branding, onUserUpdate, version }) 
       Number.isFinite(new Date(assignment.deadline).getTime()) &&
       new Date(assignment.deadline).getTime() >= Date.now() - 3600000,
   );
+  const studentCalendarEvents = useMemo(
+    () => calendarEventsForSemester(data.calendar, selectedSemester, filteredStudentData.classes),
+    [data.calendar, filteredStudentData.classes, selectedSemester],
+  );
   const studentUpcomingEvents = useMemo(
     () =>
-      [...(data.calendar || [])]
+      [...studentCalendarEvents]
         .filter((event) => {
           const date = new Date(event.date).getTime();
           return Number.isFinite(date) && date >= Date.now() - 3600000;
@@ -18550,7 +19792,7 @@ function StudentApp({ token, user, onLogout, branding, onUserUpdate, version }) 
             new Date(left.date).getTime() - new Date(right.date).getTime(),
         )
         .slice(0, 5),
-    [data.calendar],
+    [studentCalendarEvents],
   );
   const studentRecentGrades = useMemo(
     () =>
@@ -18585,7 +19827,7 @@ function StudentApp({ token, user, onLogout, branding, onUserUpdate, version }) 
       label: "Utama",
       items: [
         ["home",        LayoutDashboard,  "Beranda"],
-        ["calendar",    CalendarDays,     "Kalender"],
+        ["calendar",    CalendarDays,     "Kalender Akademik"],
       ],
     },
     {
@@ -18609,7 +19851,7 @@ function StudentApp({ token, user, onLogout, branding, onUserUpdate, version }) 
       label: "Akun & Bantuan",
       items: [
         ["profile",     Users,            "Profil"],
-        ["guide",       BookOpen,         "Panduan LMS"],
+        ["guide",       BookOpen,         "Panduan & Wewenang"],
       ],
     },
   ];
@@ -19505,7 +20747,7 @@ function StudentApp({ token, user, onLogout, branding, onUserUpdate, version }) 
           {studentPage === "khs" && <KHSPage token={token} selectedSemester={selectedSemester} tahunAjaran={data.tahunAjaran} />}
           {studentPage === "keuangan" && <KeuanganPage user={user} token={token} />}
           {studentPage === "calendar" && (
-            <StudentCalendarPage events={data.calendar} />
+            <StudentCalendarPage events={studentCalendarEvents} />
           )}
           {studentPage === "profile" && (
             <ProfilePage
@@ -19515,7 +20757,7 @@ function StudentApp({ token, user, onLogout, branding, onUserUpdate, version }) 
               enrollments={data.enrollments}
             />
           )}
-          {studentPage === "guide" && <GuidePage role="student" classes={studentClassSummaries} />}
+          {studentPage === "guide" && <GuidePage role="student" user={user} classes={studentClassSummaries} />}
         </section>
       </main>
       <nav
@@ -20350,6 +21592,13 @@ function App() {
     localStorage.setItem("elearn_user", JSON.stringify(updated));
     setUser(updated);
   }, []);
+  useEffect(() => {
+    if (!token) return;
+    axios
+      .get(`${API}/auth/me`, { headers: { Authorization: `Bearer ${token}` } })
+      .then(({ data }) => handleUserUpdate(data))
+      .catch(() => {});
+  }, [handleUserUpdate, token]);
   const handleBrandingUpdate = useCallback((updated) => {
     setBranding((current) => ({ ...current, ...updated }));
   }, []);
@@ -20655,7 +21904,7 @@ export function JabatanAkademikPage({ token, lecturers = [] }) {
       });
 
       if (res && res.ok) {
-        toast.success(`Pejabat ${jabatanItem.nama} ${prodiItem ? `(${prodiItem.nama})` : ""} berhasil ditunjuk!`);
+        toast.success(`Pejabat ${jabatanItem.nama} ${prodiItem ? `(${prodiItem.nama})` : ""} berhasil ditunjuk dan akses turunannya disinkronkan.`);
         loadData();
       } else {
         const statusStr = res ? `[HTTP ${res.status}] ` : "";
@@ -20699,7 +21948,7 @@ export function JabatanAkademikPage({ token, lecturers = [] }) {
         });
       }
       if (res.ok) {
-        toast.success("Penunjukan pejabat berhasil dicabut");
+        toast.success("Penunjukan pejabat dan akses turunannya berhasil dicabut");
         loadData();
       }
     } catch (err) {
@@ -21782,7 +23031,7 @@ export function FeederPage({ token }) {
   };
 
   return (
-    <div className="max-w-4xl mx-auto space-y-6">
+    <div className="w-full min-w-0 space-y-6" data-testid="feeder-page-full-width">
       {/* Header Banner */}
       <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-4 bg-gradient-to-r from-slate-900 via-indigo-950 to-slate-900 p-6 rounded-2xl text-white shadow-md">
         <div className="flex items-center gap-4">
@@ -22069,6 +23318,7 @@ export function FeederPage({ token }) {
                   ["Tidak berubah", oldImportPreview.summary?.unchanged || 0, "text-slate-700"],
                   ["Lokal lebih baru", oldImportPreview.summary?.local_newer || 0, "text-amber-700"],
                   ["Konflik", oldImportPreview.summary?.conflict || 0, "text-rose-700"],
+                  ["Pembiayaan ditahan", oldImportPreview.summary?.reconciliation_hold || 0, "text-amber-700"],
                 ].map(([label, value, color]) => (
                   <div key={label} className="rounded-lg border border-slate-200 bg-white p-3">
                     <span className="text-[10px] uppercase font-semibold text-slate-400">{label}</span>
@@ -22076,6 +23326,22 @@ export function FeederPage({ token }) {
                   </div>
                 ))}
               </div>
+
+              {oldImportPreview.migration_report?.finance && (
+                <div className={`rounded-lg border p-3 ${oldImportPreview.migration_report.finance.status === "needs_reconciliation" ? "border-amber-200 bg-amber-50" : "border-emerald-200 bg-emerald-50"}`}>
+                  <strong className="text-xs block text-slate-900">Rekonsiliasi Pembiayaan OLD-SIAKAD</strong>
+                  <p className="text-[11px] text-slate-700 mt-1">
+                    Tagihan Rp {Number(oldImportPreview.migration_report.finance.billed_amount || 0).toLocaleString("id-ID")} · Terbayar Rp {Number(oldImportPreview.migration_report.finance.paid_amount || 0).toLocaleString("id-ID")} · Pembayaran tervalidasi Rp {Number(oldImportPreview.migration_report.finance.payment_amount || 0).toLocaleString("id-ID")}
+                  </p>
+                  {oldImportPreview.migration_report.finance.status === "needs_reconciliation" ? (
+                    <p className="text-[11px] text-amber-800 mt-1">
+                      {oldImportPreview.migration_report.finance.finance_migration_exceptions || 0} pengecualian ditemukan. {oldImportPreview.migration_report.finance.operations_held || 0} operasi pembiayaan ditahan; data akademik yang aman tetap dapat diterapkan.
+                    </p>
+                  ) : (
+                    <p className="text-[11px] text-emerald-800 mt-1">Data pembiayaan sudah konsisten dan dapat diproses secara inkremental.</p>
+                  )}
+                </div>
+              )}
 
               {oldImportPreview.migration_report?.three_way_grades && (
                 <div className="rounded-lg border border-blue-200 bg-blue-50/60 p-3">

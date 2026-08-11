@@ -1509,6 +1509,14 @@ OLD_IMPORT_BASE_COLLECTIONS = [
     "krs",
     "khs",
 ]
+OLD_IMPORT_FINANCE_COLLECTIONS = {
+    "finance_components",
+    "finance_schemes",
+    "finance_scheme_rules",
+    "tuition_bills",
+    "tuition_payments",
+    "finance_migration_exceptions",
+}
 
 
 def incremental_summary(entries: list[Dict[str, Any]]) -> Dict[str, Any]:
@@ -1526,8 +1534,28 @@ def incremental_summary(entries: list[Dict[str, Any]]) -> Dict[str, Any]:
         "unchanged": statuses["unchanged"],
         "local_newer": statuses["local_newer"],
         "conflict": statuses["conflict"],
+        "reconciliation_hold": statuses["reconciliation_hold"],
         "by_collection": {key: dict(value) for key, value in by_collection.items()},
     }
+
+
+def hold_finance_entries_for_reconciliation(
+    entries: list[Dict[str, Any]],
+    finance_summary: Dict[str, Any],
+) -> int:
+    """Hold automatic finance writes when BIPOT and payment totals differ."""
+    if not finance_summary.get("finance_migration_exceptions"):
+        return 0
+    held = 0
+    for entry in entries:
+        if (
+            entry.get("collection") in OLD_IMPORT_FINANCE_COLLECTIONS
+            and entry.get("status") in {"ready_create", "ready_update"}
+        ):
+            entry["status"] = "reconciliation_hold"
+            entry["action"] = "review"
+            held += 1
+    return held
 
 
 def public_incremental_entry(entry: Dict[str, Any]) -> Dict[str, Any]:
@@ -1599,12 +1627,14 @@ async def preview_old_siakad_import(
         await file.close()
 
         from old_siakad_migration import (  # Lazy import avoids router cycle.
+            PlannedUpdate,
             build_plan,
             build_three_way_grade_summary,
             classify_incremental_updates,
             fetch_live_feeder,
             parse_old_tables,
         )
+        from old_siakad_finance_migration import build_finance_plan
 
         try:
             tables = await asyncio.to_thread(parse_old_tables, Path(temp_path))
@@ -1633,10 +1663,17 @@ async def preview_old_siakad_import(
             period=requested_period,
             source_name=filename,
         )
+        finance_plan, finance_summary = build_finance_plan(tables, filename)
+        updates.extend(
+            PlannedUpdate(collection, {"id": document["id"]}, document, upsert=True)
+            for collection, documents in finance_plan.items()
+            for document in documents
+        )
         for name in sorted({item.collection for item in updates} - set(current)):
             current[name] = await getattr(db, name).find({}, {"_id": 0}).to_list(None)
         states = await db.old_siakad_sync_state.find({}, {"_id": 0}).to_list(None)
         entries, _ = classify_incremental_updates(updates, current, states)
+        finance_operations_held = hold_finance_entries_for_reconciliation(entries, finance_summary)
         preview_id = str(uuid4())
         preview_document = {
             "id": preview_id,
@@ -1655,6 +1692,15 @@ async def preview_old_siakad_import(
                 "students_old_only_vs_feeder": len(report.get("students_old_only_vs_feeder", [])),
                 "students_feeder_only_vs_old": len(report.get("students_feeder_only_vs_old", [])),
                 "three_way_grades": dict(grade_summary),
+                "finance": {
+                    **finance_summary,
+                    "operations_held": finance_operations_held,
+                    "status": (
+                        "needs_reconciliation"
+                        if finance_summary.get("finance_migration_exceptions")
+                        else "ready"
+                    ),
+                },
             },
             "operations": entries,
             "created_by": user.get("id"),
@@ -1726,9 +1772,14 @@ async def apply_old_siakad_import(
             continue
 
         if status in {"ready_create", "ready_update"} and entry.get("needs_write", True):
+            write_values = dict(entry.get("values") or {})
+            # Re-import must never replace the original local creation time.
+            # ``created_at`` remains available for an actual upsert only.
+            if current is not None:
+                write_values.pop("created_at", None)
             write = await collection.update_one(
                 entry["query"],
-                {"$set": entry.get("values") or {}},
+                {"$set": write_values},
                 upsert=bool(entry.get("upsert")),
             )
             if write.upserted_id is not None:

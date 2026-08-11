@@ -54,91 +54,190 @@ async def require_admin(request: Request) -> Dict[str, Any]:
 
 # ─── MODUL SISTEM & AKSI ──────────────────────────────────────────────────────
 
+# Katalog ini mengikuti menu yang benar-benar tersedia pada SIAKAD baru. Modul
+# lama yang terlalu umum (mis. ``data_master``) dipecah agar admin dapat memberi
+# akses secara lebih presisi tanpa harus membuka seluruh area data master.
 SYSTEM_MODULES = [
     {
         "key": "dashboard",
         "name": "Dashboard & Ringkasan",
         "category": "Utama",
-        "description": "Akses ke statistik dashboard dan aktivitas umum sistem"
+        "description": "Statistik, aktivitas, dan ringkasan pekerjaan akademik.",
     },
     {
         "key": "materials",
         "name": "Materi & Diskusi Pembelajaran",
         "category": "Pembelajaran",
-        "description": "Kelola materi perkuliahan, modul, dan forum diskusi"
+        "description": "Materi kuliah, file modul, dan forum diskusi kelas.",
     },
     {
         "key": "assignments",
         "name": "Tugas & Kuis",
         "category": "Pembelajaran",
-        "description": "Kelola tugas kuliah, pengumpulan mahasiswa, dan kuis online"
+        "description": "Tugas, kuis, pengumpulan, dan penilaian aktivitas kelas.",
     },
     {
         "key": "rps",
-        "name": "RPS (Rencana Pembelajaran)",
+        "name": "RPS & Pertemuan",
         "category": "Pembelajaran",
-        "description": "Kelola RPS 16 Sesi perkuliahan"
+        "description": "RPS 16 pertemuan, capaian pembelajaran, dan rencana sesi.",
     },
     {
         "key": "attendance",
         "name": "Presensi & Kehadiran",
         "category": "Pembelajaran",
-        "description": "Kelola absensi mahasiswa dan rekap kehadiran"
+        "description": "Presensi mahasiswa dan rekap kehadiran perkuliahan.",
     },
     {
         "key": "grading",
-        "name": "Penilaian & Bobot Nilai",
+        "name": "Penilaian, Bobot & Predikat",
         "category": "Evaluasi",
-        "description": "Input nilai mahasiswa, bobot komponen, dan predikat"
+        "description": "Input nilai, komponen bobot, serta predikat nilai.",
     },
     {
         "key": "rekap_nilai",
-        "name": "Rekap Nilai & Laporan BKD",
+        "name": "Rekap Nilai, Laporan & BKD",
         "category": "Evaluasi",
-        "description": "Cetak rekapitulasi nilai dan laporan kinerja dosen"
+        "description": "Rekap nilai, laporan akademik, BKD, dan portofolio dosen.",
     },
     {
         "key": "krs_khs",
-        "name": "Perwalian KRS & KHS",
+        "name": "KRS, Perwalian & KHS",
         "category": "SIAKAD",
-        "description": "Persetujuan KRS mahasiswa, cetak KHS, dan transkrip nilai"
+        "description": "Pengisian dan persetujuan KRS, KHS, serta transkrip mahasiswa.",
     },
     {
         "key": "keuangan",
-        "name": "Keuangan Kampus",
+        "name": "Keuangan, UKT & BIPOT",
         "category": "SIAKAD",
-        "description": "Kelola tagihan, pembayaran perkuliahan, dan dispensasi"
+        "description": "Komponen BIPOT, skema UKT, tagihan, pembayaran, dan verifikasi.",
     },
     {
-        "key": "data_master",
-        "name": "Data Master Akademik",
-        "category": "Data Master",
-        "description": "Kelola Data Fakultas, Prodi, Kurikulum, Mata Kuliah, Gedung & Ruangan"
+        "key": "pmb",
+        "name": "PMB (Penerimaan Mahasiswa Baru)",
+        "category": "SIAKAD",
+        "description": "Pendaftaran, seleksi, registrasi ulang, dan konversi calon mahasiswa.",
     },
     {
-        "key": "user_management",
-        "name": "Manajemen Pengguna",
-        "category": "Data Master",
-        "description": "Kelola data Dosen, Mahasiswa, dan Assign Dosen Wali"
+        "key": "academic_setup",
+        "name": "Konfigurasi & Periode Akademik",
+        "category": "Data Master Akademik",
+        "description": "Konfigurasi akademik, setup semester, dan tahun ajaran.",
     },
     {
-        "key": "konfigurasi",
-        "name": "Setup & Konfigurasi Akademik",
-        "category": "Data Master",
-        "description": "Setup Semester Baru, Tahun Ajaran, dan Konfigurasi Kampus"
+        "key": "academic_calendar",
+        "name": "Kalender Akademik",
+        "category": "Data Master Akademik",
+        "description": "Kalender kegiatan institusi, publikasi agenda, dan pengaturan tenggat akademik.",
+    },
+    {
+        "key": "academic_structure",
+        "name": "Struktur Akademik",
+        "category": "Data Master Akademik",
+        "description": "Data fakultas dan program studi beserta status aktifnya.",
+    },
+    {
+        "key": "curriculum_schedule",
+        "name": "Kurikulum, Mata Kuliah & Jadwal",
+        "category": "Data Master Akademik",
+        "description": "Kurikulum, dosen pengampu mata kuliah, dan jadwal mengajar.",
+    },
+    {
+        "key": "facilities",
+        "name": "Gedung & Ruangan",
+        "category": "Data Master Akademik",
+        "description": "Master gedung, ruangan, dan kapasitas sarana perkuliahan.",
+    },
+    {
+        "key": "academic_documents",
+        "name": "Dokumen SK Akademik",
+        "category": "Data Master Akademik",
+        "description": "SK mengajar dan SK jabatan akademik dosen.",
+    },
+    {
+        "key": "student_records",
+        "name": "Data Mahasiswa",
+        "category": "Data Sivitas",
+        "description": "Biodata, status studi, detail akademik, dan dokumen mahasiswa.",
+    },
+    {
+        "key": "lecturer_records",
+        "name": "Data Dosen & Jabatan Akademik",
+        "category": "Data Sivitas",
+        "description": "Biodata dosen, NIDN/NUPTK, dan jabatan akademik.",
+    },
+    {
+        "key": "academic_advising",
+        "name": "Penempatan & Dosen Wali",
+        "category": "Data Sivitas",
+        "description": "Penempatan mahasiswa ke prodi/kelas dan penugasan dosen wali.",
+    },
+    {
+        "key": "access_control",
+        "name": "Hak Akses User",
+        "category": "Sistem & Integrasi",
+        "description": "Role, templat, dan pengecualian hak akses per pengguna.",
+    },
+    {
+        "key": "campus_settings",
+        "name": "Pengaturan Kampus",
+        "category": "Sistem & Integrasi",
+        "description": "Identitas kampus, pengaturan aplikasi, dan preferensi operasional.",
+    },
+    {
+        "key": "integration_api",
+        "name": "Integrasi API",
+        "category": "Sistem & Integrasi",
+        "description": "Konfigurasi koneksi dan layanan API eksternal kampus.",
     },
     {
         "key": "feeder",
         "name": "PDDikti Feeder",
         "category": "Sistem & Integrasi",
-        "description": "Sinkronisasi data kampus dengan PDDikti Kemdikbud"
+        "description": "Koneksi, sinkronisasi, dan migrasi data ke PDDikti Neo Feeder.",
     },
     {
-        "key": "system_settings",
-        "name": "Pengaturan Sistem & Log",
+        "key": "sso",
+        "name": "Login SSO",
         "category": "Sistem & Integrasi",
-        "description": "Pengaturan aplikasi, SSO, backup database, dan log akses"
-    }
+        "description": "Single Sign-On dan pengaturan autentikasi institusi.",
+    },
+    {
+        "key": "cloud_storage",
+        "name": "Google Drive",
+        "category": "Sistem & Integrasi",
+        "description": "Koneksi penyimpanan dokumen Google Drive.",
+    },
+    {
+        "key": "whatsapp",
+        "name": "WhatsApp",
+        "category": "Sistem & Integrasi",
+        "description": "Konfigurasi notifikasi dan pesan WhatsApp kampus.",
+    },
+    {
+        "key": "email",
+        "name": "Email",
+        "category": "Sistem & Integrasi",
+        "description": "Konfigurasi pengiriman email dan notifikasi sistem.",
+    },
+    {
+        "key": "old_siakad_migration",
+        "name": "Migrasi OLD-SIAKAD",
+        "category": "Pemeliharaan",
+        "description": "Preview dan impor inkremental data dari sistem SIAKAD lama.",
+    },
+    {
+        "key": "database_backup",
+        "name": "Backup Database",
+        "category": "Pemeliharaan",
+        "description": "Pembuatan, pemulihan, dan pemantauan cadangan data sistem.",
+    },
+    {
+        "key": "data_maintenance",
+        "name": "Pemeliharaan & Bersihkan Data",
+        "category": "Pemeliharaan",
+        "description": "Audit, pembersihan data, dan pemeliharaan operasional sistem.",
+    },
 ]
 
 ACTIONS = [
@@ -149,21 +248,187 @@ ACTIONS = [
     {"key": "export", "label": "Export / Cetak"}
 ]
 
+ACTION_KEYS = tuple(action["key"] for action in ACTIONS)
+SYSTEM_MODULE_KEYS = {module["key"] for module in SYSTEM_MODULES}
+
+# Jalur migrasi hak akses dari katalog versi sebelumnya. Nilai pada modul lama
+# diterapkan pada modul turunan hanya bila modul turunan belum memiliki nilai
+# eksplisit. Dengan begitu data akses tersimpan tidak mendadak hilang atau
+# berubah menjadi tertutup setelah katalog diperbarui.
+LEGACY_MODULE_EXPANSIONS = {
+    "data_master": {
+        "academic_structure",
+        "curriculum_schedule",
+        "facilities",
+        "academic_documents",
+    },
+    "user_management": {
+        "student_records",
+        "lecturer_records",
+        "academic_advising",
+    },
+    "konfigurasi": {"academic_setup", "academic_calendar"},
+    "system_settings": {
+        "access_control",
+        "campus_settings",
+        "integration_api",
+        "sso",
+        "cloud_storage",
+        "whatsapp",
+        "email",
+        "old_siakad_migration",
+        "database_backup",
+        "data_maintenance",
+    },
+}
+
+
+def _permission_actions(enabled: bool = False) -> Dict[str, bool]:
+    return {action_key: enabled for action_key in ACTION_KEYS}
+
 
 def default_permission_matrix(full_access: bool = False) -> Dict[str, Dict[str, bool]]:
-    matrix = {}
-    for mod in SYSTEM_MODULES:
-        matrix[mod["key"]] = {
-            "view": full_access,
-            "create": full_access,
-            "edit": full_access,
-            "delete": full_access,
-            "export": full_access,
-        }
+    return {module["key"]: _permission_actions(full_access) for module in SYSTEM_MODULES}
+
+
+def _matrix_from_grants(grants: Dict[str, set[str]]) -> Dict[str, Dict[str, bool]]:
+    matrix = default_permission_matrix()
+    for module_key, allowed_actions in grants.items():
+        if module_key in SYSTEM_MODULE_KEYS:
+            matrix[module_key] = {
+                action_key: action_key in allowed_actions for action_key in ACTION_KEYS
+            }
     return matrix
 
 
+def role_default_permission_matrix(role: str) -> Dict[str, Dict[str, bool]]:
+    """Default least-privilege matrix for the three login roles."""
+    if role == "admin":
+        return default_permission_matrix(full_access=True)
+
+    if role == "lecturer":
+        return _matrix_from_grants({
+            "dashboard": {"view"},
+            "materials": set(ACTION_KEYS),
+            "assignments": set(ACTION_KEYS),
+            "rps": {"view", "create", "edit", "export"},
+            "attendance": {"view", "create", "edit", "export"},
+            "grading": {"view", "create", "edit", "export"},
+            "rekap_nilai": {"view", "export"},
+            "krs_khs": {"view", "edit", "export"},
+            "academic_calendar": {"view"},
+        })
+
+    return _matrix_from_grants({
+        "dashboard": {"view"},
+        "materials": {"view"},
+        "assignments": {"view", "create"},
+        "rps": {"view"},
+        "attendance": {"view"},
+        "grading": {"view", "export"},
+        "krs_khs": {"view", "create", "edit", "export"},
+        "keuangan": {"view", "export"},
+        "academic_calendar": {"view"},
+    })
+
+
+def normalize_permission_matrix(
+    permissions: Optional[Dict[str, Dict[str, bool]]],
+    fallback: Optional[Dict[str, Dict[str, bool]]] = None,
+) -> Dict[str, Dict[str, bool]]:
+    """Return a complete current matrix while safely expanding legacy keys."""
+    source = permissions or {}
+    fallback = fallback or default_permission_matrix()
+    normalized: Dict[str, Dict[str, bool]] = {}
+
+    for module in SYSTEM_MODULES:
+        module_key = module["key"]
+        selected = source.get(module_key)
+        if not isinstance(selected, dict):
+            for legacy_key, expanded_modules in LEGACY_MODULE_EXPANSIONS.items():
+                legacy_value = source.get(legacy_key)
+                if module_key in expanded_modules and isinstance(legacy_value, dict):
+                    selected = legacy_value
+                    break
+        if not isinstance(selected, dict):
+            selected = fallback.get(module_key, {})
+
+        normalized[module_key] = {
+            action_key: bool(selected.get(action_key, False))
+            for action_key in ACTION_KEYS
+        }
+
+    return normalized
+
+
 # ─── SEED DEFAULT TEMPLATES ─────────────────────────────────────────────────
+
+KAPRODI_DEFAULT_MATRIX = _matrix_from_grants({
+    "dashboard": {"view", "export"},
+    "materials": set(ACTION_KEYS),
+    "assignments": set(ACTION_KEYS),
+    "rps": set(ACTION_KEYS),
+    "attendance": {"view", "create", "edit", "export"},
+    "grading": {"view", "create", "edit", "export"},
+    "rekap_nilai": {"view", "export"},
+    "krs_khs": {"view", "create", "edit", "export"},
+    "academic_calendar": {"view"},
+    "academic_structure": {"view"},
+    "curriculum_schedule": {"view", "create", "edit", "export"},
+    "academic_documents": {"view", "create", "edit", "export"},
+    "student_records": {"view", "export"},
+    "lecturer_records": {"view", "export"},
+    "academic_advising": {"view", "create", "edit", "export"},
+    "feeder": {"view"},
+})
+
+FINANCE_STAFF_DEFAULT_MATRIX = _matrix_from_grants({
+    "dashboard": {"view", "export"},
+    "krs_khs": {"view", "export"},
+    "keuangan": set(ACTION_KEYS),
+    "student_records": {"view", "export"},
+    "academic_structure": {"view"},
+    "academic_setup": {"view"},
+    "academic_calendar": {"view"},
+})
+
+ACADEMIC_OPERATOR_DEFAULT_MATRIX = _matrix_from_grants({
+    "dashboard": {"view", "export"},
+    "krs_khs": {"view", "create", "edit", "export"},
+    "academic_setup": {"view", "create", "edit", "export"},
+    "academic_calendar": {"view", "create", "edit", "export"},
+    "academic_structure": {"view", "create", "edit", "export"},
+    "curriculum_schedule": {"view", "create", "edit", "export"},
+    "facilities": {"view", "create", "edit", "export"},
+    "academic_documents": {"view", "create", "edit", "export"},
+    "student_records": {"view", "create", "edit", "export"},
+    "lecturer_records": {"view", "create", "edit", "export"},
+    "academic_advising": {"view", "create", "edit", "export"},
+    "rekap_nilai": {"view", "export"},
+})
+
+PMB_STAFF_DEFAULT_MATRIX = _matrix_from_grants({
+    "dashboard": {"view", "export"},
+    "pmb": set(ACTION_KEYS),
+    "student_records": {"view", "create", "edit", "export"},
+    "academic_structure": {"view"},
+    "academic_setup": {"view"},
+    "academic_calendar": {"view"},
+})
+
+LEADERSHIP_DEFAULT_MATRIX = _matrix_from_grants({
+    "dashboard": {"view", "export"},
+    "rekap_nilai": {"view", "export"},
+    "krs_khs": {"view", "export"},
+    "keuangan": {"view", "export"},
+    "academic_setup": {"view"},
+    "academic_calendar": {"view"},
+    "academic_structure": {"view"},
+    "curriculum_schedule": {"view", "export"},
+    "student_records": {"view", "export"},
+    "lecturer_records": {"view", "export"},
+    "feeder": {"view"},
+})
 
 DEFAULT_TEMPLATES = [
     {
@@ -172,7 +437,7 @@ DEFAULT_TEMPLATES = [
         "description": "Akses penuh ke seluruh modul dan fungsi sistem",
         "role_target": "admin",
         "is_default": True,
-        "permissions": default_permission_matrix(full_access=True)
+        "permissions": role_default_permission_matrix("admin"),
     },
     {
         "id": "tpl_dosen",
@@ -180,22 +445,7 @@ DEFAULT_TEMPLATES = [
         "description": "Akses standar dosen untuk pembelajaran, RPS, presensi, penilaian, dan perwalian KRS",
         "role_target": "lecturer",
         "is_default": True,
-        "permissions": {
-            "dashboard": {"view": True, "create": False, "edit": False, "delete": False, "export": False},
-            "materials": {"view": True, "create": True, "edit": True, "delete": True, "export": True},
-            "assignments": {"view": True, "create": True, "edit": True, "delete": True, "export": True},
-            "rps": {"view": True, "create": True, "edit": True, "delete": False, "export": True},
-            "attendance": {"view": True, "create": True, "edit": True, "delete": False, "export": True},
-            "grading": {"view": True, "create": True, "edit": True, "delete": False, "export": True},
-            "rekap_nilai": {"view": True, "create": False, "edit": False, "delete": False, "export": True},
-            "krs_khs": {"view": True, "create": False, "edit": True, "delete": False, "export": True},
-            "keuangan": {"view": False, "create": False, "edit": False, "delete": False, "export": False},
-            "data_master": {"view": True, "create": False, "edit": False, "delete": False, "export": False},
-            "user_management": {"view": True, "create": False, "edit": False, "delete": False, "export": False},
-            "konfigurasi": {"view": False, "create": False, "edit": False, "delete": False, "export": False},
-            "feeder": {"view": False, "create": False, "edit": False, "delete": False, "export": False},
-            "system_settings": {"view": False, "create": False, "edit": False, "delete": False, "export": False},
-        }
+        "permissions": role_default_permission_matrix("lecturer"),
     },
     {
         "id": "tpl_mahasiswa",
@@ -203,22 +453,7 @@ DEFAULT_TEMPLATES = [
         "description": "Akses akademik perkuliahan, tugas, KRS, KHS, dan pembayaran tagihan",
         "role_target": "student",
         "is_default": True,
-        "permissions": {
-            "dashboard": {"view": True, "create": False, "edit": False, "delete": False, "export": False},
-            "materials": {"view": True, "create": False, "edit": False, "delete": False, "export": False},
-            "assignments": {"view": True, "create": True, "edit": False, "delete": False, "export": False},
-            "rps": {"view": True, "create": False, "edit": False, "delete": False, "export": False},
-            "attendance": {"view": True, "create": False, "edit": False, "delete": False, "export": False},
-            "grading": {"view": True, "create": False, "edit": False, "delete": False, "export": True},
-            "rekap_nilai": {"view": False, "create": False, "edit": False, "delete": False, "export": False},
-            "krs_khs": {"view": True, "create": True, "edit": True, "delete": False, "export": True},
-            "keuangan": {"view": True, "create": False, "edit": False, "delete": False, "export": True},
-            "data_master": {"view": False, "create": False, "edit": False, "delete": False, "export": False},
-            "user_management": {"view": False, "create": False, "edit": False, "delete": False, "export": False},
-            "konfigurasi": {"view": False, "create": False, "edit": False, "delete": False, "export": False},
-            "feeder": {"view": False, "create": False, "edit": False, "delete": False, "export": False},
-            "system_settings": {"view": False, "create": False, "edit": False, "delete": False, "export": False},
-        }
+        "permissions": role_default_permission_matrix("student"),
     },
     {
         "id": "tpl_kaprodi",
@@ -226,22 +461,7 @@ DEFAULT_TEMPLATES = [
         "description": "Akses khusus pengawasan kurikulum, dosen wali, dan rekap akademis prodi",
         "role_target": "lecturer",
         "is_default": True,
-        "permissions": {
-            "dashboard": {"view": True, "create": False, "edit": False, "delete": False, "export": True},
-            "materials": {"view": True, "create": True, "edit": True, "delete": True, "export": True},
-            "assignments": {"view": True, "create": True, "edit": True, "delete": True, "export": True},
-            "rps": {"view": True, "create": True, "edit": True, "delete": True, "export": True},
-            "attendance": {"view": True, "create": True, "edit": True, "delete": False, "export": True},
-            "grading": {"view": True, "create": True, "edit": True, "delete": False, "export": True},
-            "rekap_nilai": {"view": True, "create": False, "edit": False, "delete": False, "export": True},
-            "krs_khs": {"view": True, "create": True, "edit": True, "delete": False, "export": True},
-            "keuangan": {"view": True, "create": False, "edit": False, "delete": False, "export": False},
-            "data_master": {"view": True, "create": True, "edit": True, "delete": False, "export": True},
-            "user_management": {"view": True, "create": True, "edit": True, "delete": False, "export": True},
-            "konfigurasi": {"view": True, "create": False, "edit": False, "delete": False, "export": False},
-            "feeder": {"view": True, "create": False, "edit": False, "delete": False, "export": False},
-            "system_settings": {"view": False, "create": False, "edit": False, "delete": False, "export": False},
-        }
+        "permissions": KAPRODI_DEFAULT_MATRIX,
     },
     {
         "id": "tpl_keuangan",
@@ -249,31 +469,261 @@ DEFAULT_TEMPLATES = [
         "description": "Pengelolaan penuh tagihan, verifikasi pembayaran, dan laporan keuangan",
         "role_target": "admin",
         "is_default": True,
-        "permissions": {
-            "dashboard": {"view": True, "create": False, "edit": False, "delete": False, "export": True},
-            "materials": {"view": False, "create": False, "edit": False, "delete": False, "export": False},
-            "assignments": {"view": False, "create": False, "edit": False, "delete": False, "export": False},
-            "rps": {"view": False, "create": False, "edit": False, "delete": False, "export": False},
-            "attendance": {"view": False, "create": False, "edit": False, "delete": False, "export": False},
-            "grading": {"view": False, "create": False, "edit": False, "delete": False, "export": False},
-            "rekap_nilai": {"view": False, "create": False, "edit": False, "delete": False, "export": False},
-            "krs_khs": {"view": True, "create": False, "edit": False, "delete": False, "export": True},
-            "keuangan": {"view": True, "create": True, "edit": True, "delete": True, "export": True},
-            "data_master": {"view": True, "create": False, "edit": False, "delete": False, "export": False},
-            "user_management": {"view": True, "create": False, "edit": False, "delete": False, "export": True},
-            "konfigurasi": {"view": False, "create": False, "edit": False, "delete": False, "export": False},
-            "feeder": {"view": False, "create": False, "edit": False, "delete": False, "export": False},
-            "system_settings": {"view": False, "create": False, "edit": False, "delete": False, "export": False},
-        }
+        "permissions": FINANCE_STAFF_DEFAULT_MATRIX,
+    },
+    {
+        "id": "tpl_akademik",
+        "name": "Operator Akademik (BAAK)",
+        "description": "Pengelolaan periode, struktur akademik, KRS/KHS, dan data sivitas akademik",
+        "role_target": "all",
+        "is_default": True,
+        "permissions": ACADEMIC_OPERATOR_DEFAULT_MATRIX,
+    },
+    {
+        "id": "tpl_pmb",
+        "name": "Operator PMB",
+        "description": "Pengelolaan pendaftaran, seleksi, dan registrasi ulang calon mahasiswa",
+        "role_target": "all",
+        "is_default": True,
+        "permissions": PMB_STAFF_DEFAULT_MATRIX,
+    },
+    {
+        "id": "tpl_pimpinan",
+        "name": "Pimpinan Akademik",
+        "description": "Akses pemantauan dan laporan untuk pimpinan institusi",
+        "role_target": "all",
+        "is_default": True,
+        "permissions": LEADERSHIP_DEFAULT_MATRIX,
     }
 ]
 
 
+DEFAULT_TEMPLATE_MATRIX = {
+    template["id"]: template["permissions"] for template in DEFAULT_TEMPLATES
+}
+
+
+ROLE_DEFAULT_TEMPLATE_MAP = {
+    "admin": "tpl_admin",
+    "lecturer": "tpl_dosen",
+    "student": "tpl_mahasiswa",
+}
+
+
+def default_template_permissions(template_id: Optional[str], role_target: str = "all") -> Dict[str, Dict[str, bool]]:
+    if template_id in DEFAULT_TEMPLATE_MATRIX:
+        return DEFAULT_TEMPLATE_MATRIX[template_id]
+    if role_target in {"admin", "lecturer", "student"}:
+        return role_default_permission_matrix(role_target)
+    return default_permission_matrix()
+
+
+def normalize_template_permissions(template: Dict[str, Any]) -> Dict[str, Dict[str, bool]]:
+    return normalize_permission_matrix(
+        template.get("permissions"),
+        default_template_permissions(template.get("id"), template.get("role_target", "all")),
+    )
+
+
+def template_matches_user_role(template: Dict[str, Any], user_role: str) -> bool:
+    """A template can only be assigned to its declared role or to every role."""
+    return template.get("role_target", "all") in {"all", user_role}
+
+
+# Tugas tambahan/struktural adalah sumber akses tambahan. Jenjang fungsional
+# (Asisten Ahli, Lektor, dan seterusnya) sengaja tidak ada di daftar ini agar
+# kenaikan pangkat tidak berubah menjadi eskalasi privilese sistem.
+DEFAULT_POSITION_ACCESS_MAPPINGS = {
+    "DIREKTUR": {"template_id": "tpl_pimpinan", "access_role": "campus_leader"},
+    "DEKAN": {"template_id": "tpl_pimpinan", "access_role": "faculty_leader"},
+    "WADIR1": {"template_id": "tpl_akademik", "access_role": "academic_operator"},
+    "WADIR2": {"template_id": "tpl_keuangan", "access_role": "finance_officer"},
+    "WADIR3": {"template_id": "tpl_pmb", "access_role": "pmb_officer"},
+    "KAPRODI": {"template_id": "tpl_kaprodi", "access_role": "kaprodi"},
+    "SEKPRODI": {"template_id": "tpl_kaprodi", "access_role": "sekprodi"},
+    "AKADEMIK": {"template_id": "tpl_akademik", "access_role": "academic_operator"},
+    "BENDAHARA": {"template_id": "tpl_keuangan", "access_role": "finance_officer"},
+    "PMB": {"template_id": "tpl_pmb", "access_role": "pmb_officer"},
+}
+
+
+def merge_permission_matrices(
+    matrices: List[Dict[str, Dict[str, bool]]],
+) -> Dict[str, Dict[str, bool]]:
+    """Combine base access and active duty access using additive permissions."""
+    merged = default_permission_matrix()
+    for matrix in matrices:
+        normalized = normalize_permission_matrix(matrix)
+        for module_key, actions in normalized.items():
+            for action_key, allowed in actions.items():
+                merged[module_key][action_key] = merged[module_key][action_key] or allowed
+    return merged
+
+
+def position_accesses_from_assignments(
+    assignments: List[Dict[str, Any]],
+    templates_by_id: Dict[str, Dict[str, Any]],
+    overrides_by_jabatan_id: Optional[Dict[str, Dict[str, Any]]] = None,
+) -> List[Dict[str, Any]]:
+    """Resolve active structural assignments into derived access templates."""
+    overrides = overrides_by_jabatan_id or {}
+    accesses: List[Dict[str, Any]] = []
+    for assignment in assignments:
+        if assignment.get("status") in {"inactive", "revoked"}:
+            continue
+        code = str(assignment.get("jabatan_kode") or "").upper().strip()
+        explicit = overrides.get(assignment.get("jabatan_id", ""))
+        if explicit and not explicit.get("enabled", True):
+            continue
+        mapping = dict(DEFAULT_POSITION_ACCESS_MAPPINGS.get(code, {}))
+        if explicit:
+            mapping.update({
+                key: value for key, value in explicit.items()
+                if key in {"template_id", "access_role"} and value
+            })
+        template_id = mapping.get("template_id")
+        template = templates_by_id.get(template_id)
+        if not template:
+            continue
+        accesses.append({
+            "assignment_id": assignment.get("id", ""),
+            "jabatan_id": assignment.get("jabatan_id", ""),
+            "jabatan_kode": code,
+            "jabatan_nama": assignment.get("jabatan_nama", ""),
+            "template_id": template_id,
+            "template_name": template.get("name", "Templat Jabatan"),
+            "access_role": mapping.get("access_role", ""),
+            "prodi_id": assignment.get("prodi_id", ""),
+            "prodi_nama": assignment.get("prodi_nama", ""),
+            "permissions": normalize_template_permissions(template),
+        })
+    return accesses
+
+
+async def get_position_accesses(
+    db: PostgresDatabase,
+    user_id: str,
+    templates_by_id: Optional[Dict[str, Dict[str, Any]]] = None,
+) -> List[Dict[str, Any]]:
+    if templates_by_id is None:
+        templates = await db.access_templates.find({}, {"_id": 0}).to_list(None)
+        templates_by_id = {template["id"]: template for template in templates}
+    assignments = await db.jabatan_assignments.find(
+        {"user_id": user_id},
+        {"_id": 0},
+    ).to_list(None)
+    overrides = await db.access_position_mappings.find({}, {"_id": 0}).to_list(None)
+    overrides_by_jabatan_id = {
+        item.get("jabatan_id"): item for item in overrides if item.get("jabatan_id")
+    }
+    return position_accesses_from_assignments(
+        assignments,
+        templates_by_id,
+        overrides_by_jabatan_id,
+    )
+
+
+async def rebuild_user_position_access(db: PostgresDatabase, user_id: str) -> List[Dict[str, Any]]:
+    """Persist only derived role/scope metadata; permissions remain template-driven."""
+    await ensure_seed_templates(db)
+    templates = await db.access_templates.find({}, {"_id": 0}).to_list(None)
+    accesses = await get_position_accesses(
+        db,
+        user_id,
+        {template["id"]: template for template in templates},
+    )
+    roles = sorted({access["access_role"] for access in accesses if access.get("access_role")})
+    prodi_ids = sorted({access["prodi_id"] for access in accesses if access.get("prodi_id")})
+    program_manager_prodi_ids = sorted({
+        access["prodi_id"]
+        for access in accesses
+        if access.get("access_role") in {"kaprodi", "sekprodi"} and access.get("prodi_id")
+    })
+    await db.users.update_one(
+        {"id": user_id},
+        {"$set": {
+            "access_roles": roles,
+            "access_scope_prodi_ids": prodi_ids,
+            "is_kaprodi": bool(program_manager_prodi_ids),
+            "kaprodi_prodi_id": program_manager_prodi_ids[0] if program_manager_prodi_ids else "",
+            "access_roles_updated_at": now_iso(),
+        }},
+    )
+    return accesses
+
+
+async def build_effective_user_access(
+    db: PostgresDatabase,
+    target_user: Dict[str, Any],
+) -> Dict[str, Any]:
+    """Build the effective access view without changing the account's base role.
+
+    The manual template/custom matrix remains the user's own configuration. Every
+    active structural assignment contributes an additive matrix and optional
+    program-study scope. This deliberately keeps functional lecturer rank out of
+    access resolution.
+    """
+    await ensure_seed_templates(db)
+    urole = target_user.get("role", "student")
+    templates = await db.access_templates.find({}, {"_id": 0}).to_list(None)
+    template_map = {template["id"]: template for template in templates}
+    setting = await db.user_permissions.find_one(
+        {"user_id": target_user.get("id")},
+        {"_id": 0},
+    ) or {}
+
+    mode = setting.get("mode", "template")
+    template_id = setting.get("template_id") or ROLE_DEFAULT_TEMPLATE_MAP.get(urole, "tpl_mahasiswa")
+    base_template = template_map.get(template_id) or template_map.get(
+        ROLE_DEFAULT_TEMPLATE_MAP.get(urole, "tpl_mahasiswa")
+    )
+    base_permissions = normalize_permission_matrix(
+        base_template.get("permissions") if base_template else None,
+        default_template_permissions(
+            base_template.get("id") if base_template else ROLE_DEFAULT_TEMPLATE_MAP.get(urole),
+            base_template.get("role_target", urole) if base_template else urole,
+        ),
+    )
+    custom_permissions = normalize_permission_matrix(
+        setting.get("custom_permissions"),
+        base_permissions,
+    )
+    manual_permissions = custom_permissions if mode == "custom" else base_permissions
+    position_accesses = await get_position_accesses(
+        db,
+        target_user.get("id", ""),
+        template_map,
+    )
+    effective_permissions = merge_permission_matrices([
+        manual_permissions,
+        *[access["permissions"] for access in position_accesses],
+    ])
+    access_roles = sorted({
+        access["access_role"] for access in position_accesses if access.get("access_role")
+    })
+    access_scope_prodi_ids = sorted({
+        access["prodi_id"] for access in position_accesses if access.get("prodi_id")
+    })
+
+    return {
+        "access_mode": mode,
+        "template_id": template_id,
+        "template_name": base_template.get("name") if base_template else "Templat Default",
+        "base_permissions": base_permissions,
+        "custom_permissions": custom_permissions,
+        "effective_permissions": effective_permissions,
+        "position_accesses": position_accesses,
+        "access_roles": access_roles,
+        "access_scope_prodi_ids": access_scope_prodi_ids,
+    }
+
+
 async def ensure_seed_templates(db: PostgresDatabase):
-    count = await db.access_templates.count_documents({})
-    if count == 0:
-        for tpl in DEFAULT_TEMPLATES:
-            doc = {**tpl, "created_at": now_iso(), "updated_at": now_iso()}
+    """Ensure every built-in template exists without overwriting admin customisation."""
+    for template in DEFAULT_TEMPLATES:
+        existing = await db.access_templates.find_one({"id": template["id"]}, {"_id": 0})
+        if not existing:
+            doc = {**template, "created_at": now_iso(), "updated_at": now_iso()}
             await db.access_templates.insert_one(doc)
 
 
@@ -301,6 +751,11 @@ class BulkAssignPayload(BaseModel):
     template_id: str
 
 
+class PositionMappingPayload(BaseModel):
+    template_id: Optional[str] = None
+    enabled: bool = True
+
+
 # ─── ENDPOINTS ───────────────────────────────────────────────────────────────
 
 @router.get("/modules")
@@ -309,6 +764,103 @@ async def get_modules(user: Dict[str, Any] = Depends(get_current_user)):
     return {
         "modules": SYSTEM_MODULES,
         "actions": ACTIONS
+    }
+
+
+@router.get("/position-mappings")
+async def get_position_mappings(
+    db: PostgresDatabase = Depends(get_db),
+    user: Dict[str, Any] = Depends(require_admin),
+):
+    """Daftar pemetaan tugas tambahan/struktural ke templat hak akses."""
+    await ensure_seed_templates(db)
+    positions = await db.jabatan_akademik.find({}, {"_id": 0}).to_list(None)
+    if not positions:
+        # Keep the catalog available even when the Jabatan Akademik screen has
+        # not been opened yet on a newly migrated campus.
+        from routers.master_data import list_jabatan_akademik
+        positions = await list_jabatan_akademik(db)
+    templates = await db.access_templates.find({}, {"_id": 0}).to_list(None)
+    template_map = {template["id"]: template for template in templates}
+    overrides = await db.access_position_mappings.find({}, {"_id": 0}).to_list(None)
+    override_map = {item.get("jabatan_id"): item for item in overrides if item.get("jabatan_id")}
+
+    result = []
+    for position in positions:
+        code = str(position.get("kode") or "").upper().strip()
+        override = override_map.get(position.get("id"))
+        default = DEFAULT_POSITION_ACCESS_MAPPINGS.get(code, {})
+        enabled = override.get("enabled", True) if override else bool(default)
+        template_id = (
+            override.get("template_id") if override and override.get("template_id")
+            else default.get("template_id", "")
+        )
+        template = template_map.get(template_id)
+        result.append({
+            "jabatan_id": position.get("id", ""),
+            "jabatan_kode": code,
+            "jabatan_nama": position.get("nama", ""),
+            "scope": position.get("scope", "institution"),
+            "enabled": enabled,
+            "template_id": template_id,
+            "template_name": template.get("name", "") if template else "",
+            "access_role": (
+                override.get("access_role") if override and override.get("access_role")
+                else default.get("access_role", "")
+            ),
+            "source": "custom" if override else ("default" if default else "unmapped"),
+        })
+    return {"data": result}
+
+
+@router.put("/position-mappings/{jabatan_id}")
+async def save_position_mapping(
+    jabatan_id: str,
+    body: PositionMappingPayload,
+    db: PostgresDatabase = Depends(get_db),
+    user: Dict[str, Any] = Depends(require_admin),
+):
+    """Atur templat yang diturunkan saat jabatan ditugaskan kepada pengguna."""
+    position = await db.jabatan_akademik.find_one({"id": jabatan_id}, {"_id": 0})
+    if not position:
+        raise HTTPException(status_code=404, detail="Jabatan tidak ditemukan")
+    template = None
+    if body.enabled and body.template_id:
+        template = await db.access_templates.find_one({"id": body.template_id}, {"_id": 0})
+        if not template:
+            raise HTTPException(status_code=404, detail="Templat hak akses tidak ditemukan")
+
+    code = str(position.get("kode") or "").upper().strip()
+    default = DEFAULT_POSITION_ACCESS_MAPPINGS.get(code, {})
+    doc = {
+        "id": f"position-access-{jabatan_id}",
+        "jabatan_id": jabatan_id,
+        "jabatan_kode": code,
+        "enabled": body.enabled,
+        "template_id": body.template_id or "",
+        "access_role": default.get("access_role", ""),
+        "updated_at": now_iso(),
+        "updated_by": user.get("id", ""),
+    }
+    await db.access_position_mappings.update_one(
+        {"jabatan_id": jabatan_id},
+        {"$set": doc},
+        upsert=True,
+    )
+
+    affected = await db.jabatan_assignments.find(
+        {"jabatan_id": jabatan_id},
+        {"_id": 0, "user_id": 1},
+    ).to_list(None)
+    for assignment in affected:
+        if assignment.get("user_id"):
+            await rebuild_user_position_access(db, assignment["user_id"])
+    return {
+        "message": "Pemetaan jabatan ke templat hak akses berhasil disimpan",
+        "data": {
+            **doc,
+            "template_name": template.get("name", "") if template else "",
+        },
     }
 
 
@@ -334,9 +886,15 @@ async def get_role_permissions(
         role_doc = await db.role_permissions.find_one({"role": r_code}, {"_id": 0})
         if not role_doc:
             tpl_doc = await db.access_templates.find_one({"id": r["template_id"]}, {"_id": 0})
-            perms = tpl_doc.get("permissions") if tpl_doc else default_permission_matrix(r_code == "admin")
+            perms = normalize_permission_matrix(
+                tpl_doc.get("permissions") if tpl_doc else None,
+                default_template_permissions(r["template_id"], r_code),
+            )
         else:
-            perms = role_doc.get("permissions")
+            perms = normalize_permission_matrix(
+                role_doc.get("permissions"),
+                role_default_permission_matrix(r_code),
+            )
 
         result.append({
             "role": r_code,
@@ -362,7 +920,10 @@ async def save_role_permissions(
     existing = await db.role_permissions.find_one({"role": role_name}, {"_id": 0})
     doc = {
         "role": role_name,
-        "permissions": body.permissions,
+        "permissions": normalize_permission_matrix(
+            body.permissions,
+            role_default_permission_matrix(role_name),
+        ),
         "updated_at": now_iso()
     }
     if existing:
@@ -380,7 +941,7 @@ async def save_role_permissions(
     if tpl_id:
         await db.access_templates.update_one(
             {"id": tpl_id},
-            {"$set": {"permissions": body.permissions, "updated_at": now_iso()}}
+            {"$set": {"permissions": doc["permissions"], "updated_at": now_iso()}}
         )
 
     return {"message": f"Hak akses modul untuk role '{role_name}' berhasil diperbarui"}
@@ -404,6 +965,7 @@ async def get_templates(
             counts[tid] = counts.get(tid, 0) + 1
 
     for tpl in templates:
+        tpl["permissions"] = normalize_template_permissions(tpl)
         tpl["user_count"] = counts.get(tpl["id"], 0)
 
     return templates
@@ -424,7 +986,10 @@ async def create_template(
         "description": body.description or "",
         "role_target": body.role_target,
         "is_default": False,
-        "permissions": body.permissions,
+        "permissions": normalize_permission_matrix(
+            body.permissions,
+            default_template_permissions(None, body.role_target),
+        ),
         "created_at": now_iso(),
         "updated_at": now_iso()
     }
@@ -448,7 +1013,10 @@ async def update_template(
         "name": body.name,
         "description": body.description or "",
         "role_target": body.role_target,
-        "permissions": body.permissions,
+        "permissions": normalize_permission_matrix(
+            body.permissions,
+            default_template_permissions(template_id, body.role_target),
+        ),
         "updated_at": now_iso()
     }
     await db.access_templates.update_one({"id": template_id}, {"$set": updates})
@@ -467,6 +1035,16 @@ async def delete_template(
         raise HTTPException(status_code=404, detail="Templat tidak ditemukan")
     if ex.get("is_default"):
         raise HTTPException(status_code=400, detail="Templat sistem bawaan (default) tidak dapat dihapus")
+
+    position_mapping = await db.access_position_mappings.find_one(
+        {"template_id": template_id, "enabled": {"$ne": False}},
+        {"_id": 0, "jabatan_id": 1},
+    )
+    if position_mapping:
+        raise HTTPException(
+            status_code=409,
+            detail="Templat masih dipakai oleh pemetaan jabatan. Ubah atau nonaktifkan pemetaan tersebut terlebih dahulu.",
+        )
 
     await db.access_templates.delete_one({"id": template_id})
 
@@ -506,7 +1084,10 @@ async def list_user_access(
     total = await db.users.count_documents(query)
     skip = (page - 1) * limit
     
-    users = await db.users.find(query, {"_id": 0, "password_hash": 0}).skip(skip).limit(limit).to_list(None)
+    users = await db.users.find(
+        query,
+        {"_id": 0, "password_hash": 0},
+    ).skip(skip).to_list(limit)
     
     templates = await db.access_templates.find({}, {"_id": 0}).to_list(None)
     tpl_map = {t["id"]: t for t in templates}
@@ -521,6 +1102,22 @@ async def list_user_access(
     user_ids = [u["id"] for u in users if "id" in u]
     perm_docs = await db.user_permissions.find({"user_id": {"$in": user_ids}}, {"_id": 0}).to_list(None)
     perm_map = {p["user_id"]: p for p in perm_docs}
+    position_assignments = await db.jabatan_assignments.find(
+        {"user_id": {"$in": user_ids}},
+        {"_id": 0},
+    ).to_list(None)
+    mapping_overrides = await db.access_position_mappings.find({}, {"_id": 0}).to_list(None)
+    override_map = {
+        item.get("jabatan_id"): item for item in mapping_overrides if item.get("jabatan_id")
+    }
+    position_accesses_by_user: Dict[str, List[Dict[str, Any]]] = {}
+    for assignment in position_assignments:
+        user_id = assignment.get("user_id")
+        if not user_id:
+            continue
+        position_accesses_by_user.setdefault(user_id, []).extend(
+            position_accesses_from_assignments([assignment], tpl_map, override_map)
+        )
 
     result = []
     for u in users:
@@ -532,6 +1129,7 @@ async def list_user_access(
         template_id = p_setting.get("template_id") or role_default_map.get(urole, "tpl_mahasiswa")
         
         tpl_info = tpl_map.get(template_id) or tpl_map.get(role_default_map.get(urole, "tpl_mahasiswa"))
+        position_accesses = position_accesses_by_user.get(uid, [])
         
         result.append({
             "id": uid,
@@ -544,7 +1142,14 @@ async def list_user_access(
             "access_mode": mode,
             "template_id": template_id,
             "template_name": tpl_info.get("name") if tpl_info else "Templat Default",
-            "has_custom": mode == "custom"
+            "has_custom": mode == "custom",
+            "position_accesses": [{
+                "jabatan_nama": access["jabatan_nama"],
+                "template_id": access["template_id"],
+                "template_name": access["template_name"],
+                "access_role": access["access_role"],
+                "prodi_id": access["prodi_id"],
+            } for access in position_accesses],
         })
 
     return {
@@ -568,43 +1173,35 @@ async def get_user_access_detail(
     if not target_user:
         raise HTTPException(status_code=404, detail="User tidak ditemukan")
 
-    urole = target_user.get("role", "student")
-    role_default_map = {
-        "admin": "tpl_admin",
-        "lecturer": "tpl_dosen",
-        "student": "tpl_mahasiswa"
-    }
-
-    templates = await db.access_templates.find({}, {"_id": 0}).to_list(None)
-    tpl_map = {t["id"]: t for t in templates}
-
-    p_setting = await db.user_permissions.find_one({"user_id": user_id}, {"_id": 0}) or {}
-    
-    mode = p_setting.get("mode", "template")
-    template_id = p_setting.get("template_id") or role_default_map.get(urole, "tpl_mahasiswa")
-    
-    base_tpl = tpl_map.get(template_id) or tpl_map.get(role_default_map.get(urole, "tpl_mahasiswa"))
-    base_permissions = base_tpl.get("permissions", default_permission_matrix(full_access=(urole == "admin")))
-
-    custom_permissions = p_setting.get("custom_permissions") or base_permissions
-
-    effective_permissions = custom_permissions if mode == "custom" else base_permissions
+    effective_access = await build_effective_user_access(db, target_user)
 
     return {
         "user": {
             "id": target_user.get("id"),
             "name": target_user.get("name") or target_user.get("full_name") or "User",
             "email": target_user.get("email"),
-            "role": urole,
+            "role": target_user.get("role", "student"),
             "nim": target_user.get("nim"),
             "nidn": target_user.get("nidn")
         },
-        "access_mode": mode,
-        "template_id": template_id,
-        "template_name": base_tpl.get("name") if base_tpl else "Templat Default",
-        "base_permissions": base_permissions,
-        "custom_permissions": custom_permissions,
-        "effective_permissions": effective_permissions
+        **effective_access,
+    }
+
+
+@router.get("/me/effective")
+async def get_my_effective_access(
+    db: PostgresDatabase = Depends(get_db),
+    user: Dict[str, Any] = Depends(get_current_user),
+):
+    """Return the caller's resolved permissions, roles, and structural scope."""
+    effective_access = await build_effective_user_access(db, user)
+    return {
+        "user": {
+            "id": user.get("id"),
+            "name": user.get("name") or user.get("full_name") or "User",
+            "role": user.get("role", "student"),
+        },
+        **effective_access,
     }
 
 
@@ -619,13 +1216,40 @@ async def save_user_permissions(
     target_user = await db.users.find_one({"id": user_id}, {"_id": 0})
     if not target_user:
         raise HTTPException(status_code=404, detail="User tidak ditemukan")
+    if body.mode not in {"template", "custom"}:
+        raise HTTPException(status_code=400, detail="Mode hak akses tidak valid")
 
     existing = await db.user_permissions.find_one({"user_id": user_id}, {"_id": 0})
+    role_default_map = {
+        "admin": "tpl_admin",
+        "lecturer": "tpl_dosen",
+        "student": "tpl_mahasiswa",
+    }
+    urole = target_user.get("role", "student")
+    selected_template_id = body.template_id or role_default_map.get(urole, "tpl_mahasiswa")
+    selected_template = await db.access_templates.find_one({"id": selected_template_id}, {"_id": 0})
+    if not selected_template:
+        raise HTTPException(status_code=404, detail="Templat hak akses tidak ditemukan")
+    if not template_matches_user_role(selected_template, urole):
+        raise HTTPException(
+            status_code=422,
+            detail="Templat hanya dapat diterapkan pada pengguna dengan role yang sesuai",
+        )
+    base_permissions = normalize_permission_matrix(
+        selected_template.get("permissions"),
+        default_template_permissions(
+            selected_template.get("id"),
+            selected_template.get("role_target", urole),
+        ),
+    )
     doc = {
         "user_id": user_id,
         "mode": body.mode,
-        "template_id": body.template_id,
-        "custom_permissions": body.custom_permissions or {},
+        "template_id": selected_template_id,
+        "custom_permissions": normalize_permission_matrix(
+            body.custom_permissions,
+            base_permissions,
+        ) if body.mode == "custom" else {},
         "updated_at": now_iso()
     }
 
@@ -652,6 +1276,29 @@ async def bulk_assign_template(
     tpl = await db.access_templates.find_one({"id": body.template_id}, {"_id": 0})
     if not tpl:
         raise HTTPException(status_code=404, detail="Templat hak akses tidak ditemukan")
+
+    recipients = await db.users.find(
+        {"id": {"$in": body.user_ids}},
+        {"_id": 0, "id": 1, "name": 1, "role": 1},
+    ).to_list(None)
+    found_ids = {recipient.get("id") for recipient in recipients}
+    missing_ids = [user_id for user_id in body.user_ids if user_id not in found_ids]
+    if missing_ids:
+        raise HTTPException(status_code=404, detail="Satu atau lebih pengguna tidak ditemukan")
+
+    incompatible = [
+        recipient.get("name") or recipient.get("id")
+        for recipient in recipients
+        if not template_matches_user_role(tpl, recipient.get("role", "student"))
+    ]
+    if incompatible:
+        raise HTTPException(
+            status_code=422,
+            detail=(
+                "Templat hanya dapat diterapkan pada role yang sesuai. "
+                f"Pengguna tidak sesuai: {', '.join(incompatible[:3])}"
+            ),
+        )
 
     for uid in body.user_ids:
         existing = await db.user_permissions.find_one({"user_id": uid}, {"_id": 0})

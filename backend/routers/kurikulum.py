@@ -40,12 +40,15 @@ async def get_current_user(request: Request) -> Dict[str, Any]:
 async def get_current_user_with_roles(request: Request) -> Dict[str, Any]:
     user = await get_current_user(request)
     jabatan = str(user.get("jabatan_akademik") or user.get("jabatan") or user.get("tugas_tambahan") or "").lower()
+    derived_roles = user.get("access_roles")
+    has_synced_roles = isinstance(derived_roles, list)
     is_kaprodi = (
         user.get("is_kaprodi") is True
         or str(user.get("is_kaprodi")).lower() == "true"
         or bool(user.get("kaprodi_prodi_id"))
-        or "kaprodi" in jabatan
-        or "ketua prodi" in jabatan
+        or "kaprodi" in (derived_roles or [])
+        or "sekprodi" in (derived_roles or [])
+        or (not has_synced_roles and ("kaprodi" in jabatan or "ketua prodi" in jabatan))
     )
     user["is_kaprodi"] = is_kaprodi
     return user

@@ -331,7 +331,8 @@ async def get_current_user_or_applicant(request: Request) -> Dict[str, Any]:
 async def require_admin(request: Request) -> Dict[str, Any]:
     user = await get_current_user_or_applicant(request)
     role = (user.get("role") or "").lower()
-    if role not in {"admin", "superadmin", "pmb", "staff", "academic", "lecturer", "dosen", "fakultas", "prodi"}:
+    is_pmb_officer = "pmb_officer" in (user.get("access_roles") or [])
+    if role not in {"admin", "superadmin", "pmb", "staff", "academic", "lecturer", "dosen", "fakultas", "prodi"} and not is_pmb_officer:
         raise HTTPException(status_code=403, detail="Akses khusus Administrator Kampus / Panitia PMB")
     return user
 

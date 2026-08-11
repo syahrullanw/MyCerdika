@@ -2,6 +2,40 @@
 
 Semua perubahan penting pada aplikasi ini dicatat di sini. Versi rilis utama disimpan di file [`VERSION`](./VERSION), sedangkan versi skema database yang sudah diterapkan dicatat oleh tabel `app_schema_migrations` di PostgreSQL.
 
+## [1.7.0] — 2026-08-11
+
+### Tata kelola akademik, jabatan, dan hak akses
+
+- Menata ulang sidebar Admin dan ruang kerja pengguna menjadi kelompok menu yang lebih jelas, serta memperbarui panduan dan batas wewenang sesuai role utama dan jabatan struktural aktif.
+- Menambahkan katalog **Modul Sistem**, templat hak akses, serta penerapan akses turunan dari penunjukan jabatan akademik. Role utama akun tetap utuh; Kaprodi, Akademik/BAAK, Keuangan, PMB, dan pimpinan memperoleh wewenang tambahan sesuai penugasan.
+- Menambahkan sinkronisasi scope prodi dari penunjukan jabatan yang sudah ada, termasuk saat layanan dimulai setelah migrasi. Penunjukan aktif kini mengalahkan field profil OLD-SIAKAD yang lama.
+- Memperbaiki pembatasan Data Mahasiswa pada ruang Dosen: Kaprodi hanya melihat mahasiswa pada prodi yang ditugaskan, sedangkan dosen non-Kaprodi hanya melihat mahasiswa di kelas yang diampu.
+- Memperbaiki kasus data lama multi-prodi pada profil dosen. Scope efektif Syahrul Anwar sekarang mengikuti penugasan **Kaprodi RKJ-D4**, bukan daftar kode prodi lama.
+
+### Data mahasiswa, dosen, dan migrasi OLD-SIAKAD
+
+- Melengkapi detail serta formulir tambah/edit mahasiswa dengan field biodata, alamat, orang tua/wali, registrasi, pembiayaan, dan identitas PDDIKTI yang relevan dengan referensi OLD-SIAKAD.
+- Menyelaraskan data dosen dan penugasan jabatan akademik agar dapat menjadi sumber role, scope prodi, serta daftar pejabat aktif.
+- Menambahkan proses migrasi inkremental OLD-SIAKAD yang aman, termasuk preview, audit konflik, pengamanan data lokal yang lebih baru, dan rekonsiliasi data pembiayaan sebelum penerapan.
+- Menyiapkan perilaku aman saat hierarki fakultas dinonaktifkan agar data program studi dan relasinya tetap terjaga.
+
+### Keuangan dan PDDIKTI Feeder
+
+- Melengkapi modul pembiayaan/UKT dan kompatibilitas data tagihan/pembayaran dari sistem lama, termasuk penanganan endpoint tagihan Keuangan Kampus.
+- Memperluas halaman PDDIKTI Neo Feeder menjadi layout penuh, dengan konfigurasi koneksi, pengujian koneksi, auto-sync, serta panel preview migrasi OLD-SIAKAD yang lebih informatif.
+
+### Kalender, dashboard, dan pengalaman pengguna
+
+- Mengubah Kalender Akademik menjadi pusat kontrol kegiatan akademik kampus: agenda dapat dikelola, dipublikasikan sesuai sasaran pengguna/prodi, dan tampil bersama deadline tugas mahasiswa.
+- Dashboard kini menampilkan role tambahan dari jabatan aktif, misalnya Kaprodi atau Staf Akademik, agar konteks kewenangan pengguna lebih jelas.
+- Seluruh ringkasan dashboard dan data semester mengikuti semester yang dipilih pada selector header, termasuk kelas, mahasiswa, aktivitas, serta rekap terkait.
+
+### Validasi rilis
+
+- Menambahkan pengujian untuk normalisasi scope prodi data lama dan prioritas scope dari penunjukan jabatan aktif.
+- Pemeriksaan backend, build frontend, dan verifikasi API pembatasan mahasiswa Kaprodi berhasil.
+- Tidak ada migration skema PostgreSQL baru; versi skema tetap `002_domain_tables`.
+
 ## [1.6.1] — 2026-08-10
 
 ### Optimasi performa untuk server kecil

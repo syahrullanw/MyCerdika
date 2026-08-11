@@ -11,6 +11,7 @@ from fastapi import APIRouter, Depends, HTTPException, Request, Header
 from pydantic import BaseModel, Field
 
 from postgres_database import PostgresDatabase
+from routers.keuangan import get_financial_clearance
 
 
 router = APIRouter(prefix="/api/v1/krs", tags=["SIAKAD KRS & KHS"])
@@ -194,6 +195,16 @@ async def submit_krs(
     period = await get_active_period(db)
     period_id = payload.academic_period_id or period["id"]
 
+    clearance = await get_financial_clearance(db, user, period_id, "krs")
+    if not clearance["is_clear"]:
+        raise HTTPException(
+            status_code=403,
+            detail=(
+                f"KRS belum dapat diajukan: pelunasan {clearance['paid_percent']:.0f}% "
+                f"belum memenuhi batas {clearance['required_percent']:.0f}%"
+            ),
+        )
+
     total_sks = sum(item.sks for item in payload.items)
     if total_sks > 24:
         raise HTTPException(status_code=400, detail="Batas maksimal pengisian KRS adalah 24 SKS")
@@ -238,7 +249,12 @@ async def submit_krs(
         await db.krs.insert_one(krs_doc)
 
     result = await db.krs.find_one({"id": krs_id}, {"_id": 0})
-    return {"ok": True, "message": "KRS berhasil diajukan ke Dosen Pembimbing Akademik", "krs": result}
+    return {
+        "ok": True,
+        "message": "KRS berhasil diajukan ke Dosen Pembimbing Akademik",
+        "krs": result,
+        "financial_clearance": clearance,
+    }
 
 
 def _period_semester_identity(period: Optional[Dict[str, Any]]) -> Dict[str, str]:
@@ -540,4 +556,3 @@ async def get_my_transkrip(
         trans_list = await db.transkrip.find({"student_id": student_id}, {"_id": 0}).sort("semester_ke", 1).to_list(None)
 
     return {"ok": True, "transkrip": trans_list}
-

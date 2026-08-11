@@ -530,6 +530,30 @@ button, .form-select, input, textarea, [data-testid$="card"] {
   margin-top: 16px;
 }
 
+.admin-nav-group-toggle {
+  display: flex;
+  width: 100%;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  margin: 0 2px 6px;
+  padding: 4px 8px;
+  border-radius: 8px;
+  color: rgba(224, 242, 254, 0.62);
+  text-align: left;
+  transition: background-color 160ms ease, color 160ms ease;
+}
+
+.admin-nav-group-toggle:hover {
+  background: rgba(255, 255, 255, 0.06);
+  color: rgba(240, 249, 255, 0.9);
+}
+
+.admin-nav-group-toggle:focus-visible {
+  outline: 2px solid rgba(125, 211, 252, 0.9);
+  outline-offset: 2px;
+}
+
 .admin-nav-group-label {
   margin: 0 10px 6px;
   color: rgba(224, 242, 254, 0.62);
@@ -538,6 +562,10 @@ button, .form-select, input, textarea, [data-testid$="card"] {
   letter-spacing: 0.12em;
   line-height: 1.5;
   text-transform: uppercase;
+}
+
+.admin-nav-group-toggle .admin-nav-group-label {
+  margin: 0;
 }
 
 .admin-nav-item {
@@ -3788,6 +3816,66 @@ button, .form-select, input, textarea, [data-testid$="card"] {
   color: #475569;
   font-size: 0.87rem;
   line-height: 1.55;
+}
+
+.dashboard-active-roles {
+  display: grid;
+  gap: 6px;
+  max-width: 720px;
+  margin-top: 14px;
+}
+
+.dashboard-active-roles-label {
+  color: #64748b;
+  font-size: 0.64rem;
+  font-weight: 800;
+  letter-spacing: 0.1em;
+  text-transform: uppercase;
+}
+
+.dashboard-active-role-list {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 7px;
+}
+
+.dashboard-active-role-pill,
+.dashboard-active-role-scope {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  min-height: 28px;
+  border: 1px solid #c7d2fe;
+  border-radius: 999px;
+  background: rgba(238, 242, 255, 0.88);
+  color: #4338ca;
+  padding: 5px 10px;
+  font-size: 0.7rem;
+  font-weight: 750;
+  line-height: 1;
+}
+
+.dashboard-active-role-pill svg {
+  width: 14px;
+  height: 14px;
+}
+
+.dashboard-active-role-pill.primary {
+  border-color: #93c5fd;
+  background: #eff6ff;
+  color: #1d4ed8;
+}
+
+.dashboard-active-role-scope {
+  border-color: #bae6fd;
+  background: rgba(240, 249, 255, 0.9);
+  color: #0369a1;
+}
+
+.dashboard-active-roles-note {
+  color: #64748b;
+  font-size: 0.7rem;
 }
 
 .dashboard-command-actions {

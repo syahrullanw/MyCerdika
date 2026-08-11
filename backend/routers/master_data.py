@@ -12,6 +12,7 @@ from fastapi.responses import HTMLResponse
 from pydantic import BaseModel, Field
 
 from postgres_database import PostgresDatabase
+from routers.user_access import rebuild_user_position_access
 
 
 router = APIRouter(prefix="/api/v1/master", tags=["Master Data SIAKAD"])
@@ -45,12 +46,18 @@ async def get_current_user(request: Request) -> Dict[str, Any]:
 async def get_current_user_with_roles(request: Request) -> Dict[str, Any]:
     user = await get_current_user(request)
     jabatan = str(user.get("jabatan_akademik") or user.get("jabatan") or user.get("tugas_tambahan") or "").lower()
+    derived_roles = user.get("access_roles")
+    # If the assignment synchronizer has run, its derived roles are the source
+    # of truth. The legacy text-field fallback is kept only for old accounts
+    # that have not been synchronized yet.
+    has_synced_roles = isinstance(derived_roles, list)
     is_kaprodi = (
         user.get("is_kaprodi") is True
         or str(user.get("is_kaprodi")).lower() == "true"
         or bool(user.get("kaprodi_prodi_id"))
-        or "kaprodi" in jabatan
-        or "ketua prodi" in jabatan
+        or "kaprodi" in (derived_roles or [])
+        or "sekprodi" in (derived_roles or [])
+        or (not has_synced_roles and ("kaprodi" in jabatan or "ketua prodi" in jabatan))
     )
     user["is_kaprodi"] = is_kaprodi
     return user
@@ -90,10 +97,28 @@ def _clean_code(value: str) -> str:
 #  - ukt_mode     : "flat" | "per_sks" | "custom"
 # ═══════════════════════════════════════════════════════════════
 
+DEFAULT_ACADEMIC_CONFIG = {
+    "use_fakultas": True,
+    "krs_mode": "wali_acc",
+    "ukt_mode": "flat",
+    "ukt_flat_amount": 0,
+    "ukt_per_sks_amount": 0,
+    "kampus_name": "Kampus",
+    "kampus_logo_url": "",
+}
+
+
 class AcademicConfigInput(BaseModel):
-    use_fakultas: bool = Field(True, description="Aktifkan hierarki Fakultas")
-    krs_mode: str = Field("wali_acc", description="auto = langsung sah | wali_acc = wajib ACC dosen wali")
-    ukt_mode: str = Field("flat", description="flat | per_sks | custom")
+    """Partial configuration update.
+
+    Each setting is optional so a UI toggle cannot reset unrelated academic
+    settings to model defaults. Empty strings remain valid for text fields;
+    omitted and null values are left untouched.
+    """
+
+    use_fakultas: Optional[bool] = Field(None, description="Aktifkan hierarki Fakultas")
+    krs_mode: Optional[str] = Field(None, description="auto = langsung sah | wali_acc = wajib ACC dosen wali")
+    ukt_mode: Optional[str] = Field(None, description="flat | per_sks | custom")
     ukt_flat_amount: Optional[float] = Field(None, description="Nominal UKT flat per semester")
     ukt_per_sks_amount: Optional[float] = Field(None, description="Nominal per SKS")
     kampus_name: Optional[str] = Field(None, description="Nama kampus")
@@ -108,15 +133,7 @@ async def get_academic_config(
     """Ambil konfigurasi akademik sistem. Publik (untuk UI adaptif)."""
     config = await db.academic_config.find_one({}, {"_id": 0})
     if not config:
-        config = {
-            "use_fakultas": True,
-            "krs_mode": "wali_acc",
-            "ukt_mode": "flat",
-            "ukt_flat_amount": 0,
-            "ukt_per_sks_amount": 0,
-            "kampus_name": "Kampus",
-            "kampus_logo_url": "",
-        }
+        config = dict(DEFAULT_ACADEMIC_CONFIG)
     return config
 
 
@@ -129,11 +146,19 @@ async def update_academic_config(
 ):
     """Update konfigurasi akademik sistem. Hanya admin."""
     existing = await db.academic_config.find_one({}, {"_id": 0})
-    data = {**body.dict(exclude_none=False), "updated_at": now_iso()}
+    changes = body.model_dump(exclude_unset=True, exclude_none=True)
+    if not changes:
+        raise HTTPException(status_code=422, detail="Minimal satu konfigurasi harus diubah")
+    data = {**changes, "updated_at": now_iso()}
     if existing:
         await db.academic_config.update_one({"id": existing["id"]}, {"$set": data})
     else:
-        await db.academic_config.insert_one({"id": new_id(), **data, "created_at": now_iso()})
+        await db.academic_config.insert_one({
+            "id": new_id(),
+            **DEFAULT_ACADEMIC_CONFIG,
+            **data,
+            "created_at": now_iso(),
+        })
     return {"ok": True, "message": "Konfigurasi berhasil disimpan"}
 
 
@@ -1345,6 +1370,8 @@ async def list_jabatan_assignments(db: PostgresDatabase = Depends(get_db)):
                 )
 
         assignments = await db.jabatan_assignments.find({}, {"_id": 0}).to_list(None)
+        for user_id in {item.get("user_id") for item in assignments if item.get("user_id")}:
+            await rebuild_user_position_access(db, user_id)
 
     return assignments or []
 
@@ -1468,6 +1495,12 @@ async def save_jabatan_assignment(
             upsert=True,
         )
 
+    derived_accesses = await rebuild_user_position_access(db, user["id"])
+    doc["access_sync"] = {
+        "roles": sorted({item["access_role"] for item in derived_accesses if item.get("access_role")}),
+        "templates": sorted({item["template_name"] for item in derived_accesses if item.get("template_name")}),
+        "scope_prodi_ids": sorted({item["prodi_id"] for item in derived_accesses if item.get("prodi_id")}),
+    }
     return doc
 
 
@@ -1490,6 +1523,14 @@ async def delete_jabatan_assignment(
                 {"$unset": {"kaprodi": "", "kaprodi_user_id": "", "kaprodi_name": "", "kaprodi_nip": ""}},
             )
         await db.jabatan_assignments.delete_one({"id": assignment_id})
+        derived_accesses = await rebuild_user_position_access(db, ex.get("user_id", ""))
+        return {
+            "ok": True,
+            "access_sync": {
+                "roles": sorted({item["access_role"] for item in derived_accesses if item.get("access_role")}),
+                "scope_prodi_ids": sorted({item["prodi_id"] for item in derived_accesses if item.get("prodi_id")}),
+            },
+        }
     return {"ok": True}
 
 
