@@ -47,6 +47,13 @@ const WHY_US_ICONS = {
 const BACKEND_URL = (process.env.REACT_APP_BACKEND_URL || "").replace(/\/+$/, "") || window.location.origin;
 const api = axios.create({ baseURL: BACKEND_URL });
 
+const CAMPUS_ASSETS = {
+  hero: "/campus/poltek-campus-main.jpg",
+  entrance: "/campus/poltek-campus-entrance.png",
+  learningCenter: "/campus/poltek-learning-center.jpg",
+  aerial: "/campus/poltek-campus-aerial.webp",
+};
+
 const STEPS = [
   { id: 1, label: "Formulir", desc: "Data Diri & Asal Sekolah", icon: User },
   { id: 2, label: "Pilih Kelas", desc: "Reguler / Khusus", icon: BookOpen },
@@ -242,22 +249,26 @@ export function PmbLandingPage({ onOpenRegister, onOpenLogin, onAuth, branding, 
 
       {/* 3. Hero Section */}
       {vis.hero !== false && (
-        <section className="relative overflow-hidden pt-12 pb-20 sm:pt-20 sm:pb-28 px-4 sm:px-8 z-10">
-          <div className="max-w-5xl mx-auto text-center space-y-6 relative z-10">
-            <div className="inline-flex items-center gap-2 px-3.5 py-1.5 rounded-full bg-sky-950/70 border border-sky-400/40 text-cyan-300 text-xs font-bold shadow-lg shadow-sky-900/30 backdrop-blur-md">
-              <span className="w-2 h-2 rounded-full bg-cyan-400 animate-ping" />
-              <span>{settings?.landing_hero_badge || "PENERIMAAN MAHASISWA BARU 2026/2027 • GELOMBANG 1"}</span>
-            </div>
+        <section className="relative overflow-hidden pt-12 pb-20 sm:pt-20 sm:pb-24 px-4 sm:px-8 z-10">
+          <div className="max-w-7xl mx-auto grid lg:grid-cols-[minmax(0,0.9fr)_minmax(420px,1.1fr)] items-center gap-10 xl:gap-16 relative z-10">
+            <div className="space-y-6 text-center lg:text-left">
+              <div className="inline-flex items-center gap-2 px-3.5 py-1.5 rounded-full bg-sky-950/70 border border-sky-400/40 text-cyan-300 text-xs font-bold shadow-lg shadow-sky-900/30 backdrop-blur-md">
+                <span className="w-2 h-2 rounded-full bg-cyan-400 animate-ping" />
+                <span>{settings?.landing_hero_badge || "PENERIMAAN MAHASISWA BARU 2026/2027 • GELOMBANG 1"}</span>
+              </div>
 
-            <h2 className="text-3xl sm:text-5xl lg:text-6xl font-black text-white tracking-tight leading-tight drop-shadow-md">
-              {settings?.landing_hero_title || "Raih Gelar Sarjana Impian & Bangun Karir Masa Depan Gemilang"}
-            </h2>
+              <div className="space-y-3">
+                <p className="text-xs font-extrabold uppercase tracking-[0.28em] text-amber-300">Politeknik SCI · Kampus Masa Depan</p>
+                <h2 className="text-3xl sm:text-5xl lg:text-6xl font-black text-white tracking-tight leading-tight drop-shadow-md">
+                  {settings?.landing_hero_title || "Raih Gelar Sarjana Impian & Bangun Karir Masa Depan Gemilang"}
+                </h2>
+              </div>
 
-            <p className="text-sm sm:text-base text-slate-200 max-w-2xl mx-auto leading-relaxed drop-shadow">
-              {settings?.landing_hero_subtitle || "Pendidikan tinggi berbasis teknologi, kurikulum berstandar industri modern, serta fleksibilitas kuliah Kelas Reguler (Online/Offline) dan Kelas Khusus Karyawan."}
-            </p>
+              <p className="text-sm sm:text-base text-slate-200 max-w-2xl mx-auto lg:mx-0 leading-relaxed drop-shadow">
+                {settings?.landing_hero_subtitle || "Pendidikan tinggi berbasis teknologi, kurikulum berstandar industri modern, serta fleksibilitas kuliah Kelas Reguler (Online/Offline) dan Kelas Khusus Karyawan."}
+              </p>
 
-            <div className="flex flex-wrap items-center justify-center gap-3 pt-4">
+              <div className="flex flex-wrap items-center justify-center lg:justify-start gap-3 pt-2">
               <Button
                 type="button"
                 size="lg"
@@ -294,7 +305,7 @@ export function PmbLandingPage({ onOpenRegister, onOpenLogin, onAuth, branding, 
             </div>
 
             {/* Quick Trust Highlights */}
-            <div className="grid grid-cols-2 sm:grid-cols-4 gap-3 pt-10 text-left">
+            <div className="grid grid-cols-2 sm:grid-cols-4 lg:grid-cols-2 gap-3 pt-4 lg:pt-2 text-left">
               <div className="p-4 bg-[#031533]/70 border border-sky-500/20 rounded-2xl backdrop-blur-md shadow-xl">
                 <p className="text-cyan-400 font-bold text-xs">Akreditasi</p>
                 <p className="text-base font-black text-white mt-0.5">{settings?.landing_stat_accreditation || "Unggul (A)"}</p>
@@ -314,6 +325,57 @@ export function PmbLandingPage({ onOpenRegister, onOpenLogin, onAuth, branding, 
                 <p className="text-sky-400 font-bold text-xs">Ujian Seleksi</p>
                 <p className="text-base font-black text-white mt-0.5">{settings?.landing_stat_selection || "CBT Instan"}</p>
                 <p className="text-[10px] text-slate-300">Hasil langsung keluar</p>
+              </div>
+            </div>
+          </div>
+
+            <div className="relative min-h-[390px] sm:min-h-[500px] lg:min-h-[580px] flex items-center justify-center">
+              <div className="absolute -inset-6 rounded-[3rem] bg-gradient-to-br from-sky-400/15 via-transparent to-amber-300/10 blur-2xl" />
+              <div className="relative w-full max-w-[650px]">
+                <div className="overflow-hidden rounded-[2rem] border border-white/20 bg-slate-950/40 p-2 shadow-2xl shadow-sky-950/50 rotate-[1deg]">
+                  <img
+                    src={CAMPUS_ASSETS.hero}
+                    alt="Gedung utama Politeknik SCI"
+                    className="aspect-[16/11] w-full rounded-[1.5rem] object-cover"
+                    loading="eager"
+                  />
+                  <div className="absolute inset-2 rounded-[1.5rem] bg-gradient-to-t from-[#020b1c]/75 via-transparent to-white/5 pointer-events-none" />
+                  <div className="absolute bottom-7 left-7 right-7 flex items-end justify-between gap-3 text-white">
+                    <div>
+                      <p className="text-[10px] font-bold uppercase tracking-[0.25em] text-cyan-300">Ruang tumbuh generasi digital</p>
+                      <p className="mt-1 text-lg sm:text-xl font-black">Politeknik SCI</p>
+                    </div>
+                    <div className="rounded-full border border-white/25 bg-slate-950/45 px-3 py-1.5 text-[10px] font-bold backdrop-blur-md">Kampus inovatif</div>
+                  </div>
+                </div>
+
+                <div className="absolute -bottom-12 -left-3 sm:-left-10 w-32 sm:w-40 overflow-hidden rounded-2xl border-4 border-[#061a3d] bg-slate-900 shadow-2xl shadow-sky-950/70 -rotate-6">
+                  <img
+                    src={CAMPUS_ASSETS.aerial}
+                    alt="Sudut arsitektur Politeknik SCI"
+                    className="aspect-[4/5] w-full object-cover"
+                    loading="lazy"
+                  />
+                </div>
+
+                <div className="absolute -right-2 sm:-right-8 -top-10 w-40 sm:w-52 overflow-hidden rounded-2xl border-4 border-[#061a3d] bg-slate-900 shadow-2xl shadow-sky-950/70 rotate-6">
+                  <img
+                    src={CAMPUS_ASSETS.learningCenter}
+                    alt="Learning Center Politeknik SCI"
+                    className="aspect-[3/2] w-full object-cover"
+                    loading="lazy"
+                  />
+                  <p className="bg-slate-950/90 px-3 py-2 text-[10px] font-bold text-cyan-200">Learning Center & ruang kolaborasi</p>
+                </div>
+
+                <div className="absolute right-3 -bottom-8 sm:right-8 sm:-bottom-10 hidden sm:block w-44 overflow-hidden rounded-2xl border-4 border-[#061a3d] bg-slate-900 shadow-2xl shadow-sky-950/70 rotate-3">
+                  <img
+                    src={CAMPUS_ASSETS.entrance}
+                    alt="Area masuk kampus Politeknik SCI"
+                    className="aspect-[16/10] w-full object-cover"
+                    loading="lazy"
+                  />
+                </div>
               </div>
             </div>
           </div>

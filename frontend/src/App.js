@@ -192,8 +192,8 @@ const StatusBadge = ({ children, color = "blue" }) => {
 };
 
 const logoUrl = "/app-icon.svg";
-const authBg =
-  "https://images.unsplash.com/photo-1523580846011-d3a5bc25702b?crop=entropy&cs=srgb&fm=jpg&ixlib=rb-4.1.0&q=85";
+const authBg = "/campus/poltek-campus-main.jpg";
+const authCampusDetail = "/campus/poltek-campus-aerial.webp";
 const practicumCover =
   "https://images.unsplash.com/photo-1619410283995-43d9134e7656?crop=entropy&cs=srgb&fm=jpg&ixid=M3w4NjA1MDZ8MHwxfHNlYXJjaHwxfHxjb21wdXRlciUyMHNjaWVuY2UlMjBwcm9ncmFtbWluZyUyMHNjcmVlbnxlbnwwfHx8fDE3Nzk1NTA1NDd8MA&ixlib=rb-4.1.0&q=85";
 const defaultWhatsAppForm = {
@@ -1386,6 +1386,7 @@ const EmptyState = memo(function EmptyState({ title, description }) {
 });
 
 function LoginScreen({ onAuth, branding, ssoError = "", version }) {
+  const campusName = branding?.campus_name?.trim() || "POLITEKNIK SCI";
   const resetQuery = useMemo(() => getResetPasswordQuery(), []);
   const [mode, setMode] = useState(resetQuery.active ? "forgot" : "login");
   const [login, setLogin] = useState({ identifier: "", password: "" });
@@ -1643,12 +1644,23 @@ function LoginScreen({ onAuth, branding, ssoError = "", version }) {
       >
         <img
           src={authBg}
-          alt="E-learning akademik"
-          className="h-full w-full object-cover opacity-75"
-          loading="lazy"
+          alt="Gedung utama Politeknik SCI"
+          className="h-full w-full object-cover opacity-80"
+          loading="eager"
           data-testid="login-background-image"
         />
-        <div className="absolute inset-0 bg-gradient-to-t from-slate-950 via-slate-950/35 to-transparent" />
+        <div className="absolute inset-0 bg-gradient-to-tr from-[#020b1c] via-[#061a3d]/35 to-sky-950/10" />
+        <div className="absolute left-10 top-10 flex items-center gap-3 rounded-2xl border border-white/20 bg-slate-950/35 px-4 py-3 text-white backdrop-blur-md">
+          <img
+            src={authCampusDetail}
+            alt="Detail arsitektur Politeknik SCI"
+            className="h-12 w-12 rounded-xl object-cover"
+          />
+          <div>
+            <p className="text-[10px] font-bold uppercase tracking-[0.22em] text-cyan-300">Kampus berbasis teknologi</p>
+            <p className="mt-0.5 text-sm font-extrabold">{campusName}</p>
+          </div>
+        </div>
         <div className="absolute bottom-12 left-12 right-12 text-white">
           <img
             src={brandingLogo(branding)}
@@ -1656,18 +1668,19 @@ function LoginScreen({ onAuth, branding, ssoError = "", version }) {
             className="mb-8 h-16 w-16"
             data-testid="login-logo-image"
           />
+          <p className="mb-3 text-xs font-bold uppercase tracking-[0.28em] text-cyan-300">Portal Akademik Terpadu</p>
           <h1
             className="font-display text-5xl font-bold leading-tight"
             data-testid="login-hero-title"
           >
-            Ruang kendali pembelajaran dosen.
+            Tumbuh di kampus yang dirancang untuk masa depan.
           </h1>
           <p
             className="mt-5 max-w-xl text-lg text-slate-200"
             data-testid="login-hero-subtitle"
           >
-            Kelola kelas, tugas, submission, rubrik, reminder, dan rekap nilai
-            dari satu aplikasi PWA.
+            Satu pintu untuk mengelola pembelajaran, tugas, presensi, penilaian,
+            dan layanan akademik di {campusName}.
           </p>
         </div>
       </section>
@@ -1688,7 +1701,7 @@ function LoginScreen({ onAuth, branding, ssoError = "", version }) {
                 className="text-xs font-semibold uppercase tracking-[0.2em] text-slate-500"
                 data-testid="login-overline"
               >
-                {brandingName(branding)}
+                {campusName}
               </p>
               <h2
                 className="font-display text-3xl font-bold text-slate-950"

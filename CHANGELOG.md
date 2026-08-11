@@ -2,6 +2,22 @@
 
 Semua perubahan penting pada aplikasi ini dicatat di sini. Versi rilis utama disimpan di file [`VERSION`](./VERSION), sedangkan versi skema database yang sudah diterapkan dicatat oleh tabel `app_schema_migrations` di PostgreSQL.
 
+## [1.7.1] — 2026-08-11
+
+### Identitas visual kampus pada PMB dan login utama
+
+- Menambahkan aset foto resmi Politeknik SCI ke kedua aplikasi frontend: fasad utama, area masuk kampus, Learning Center, dan sudut aerial kampus.
+- Memperbarui hero landing page PMB menjadi layout editorial berbasis foto kampus dengan kolase visual, label identitas **Politeknik SCI · Kampus Masa Depan**, dan konteks fasilitas/ruang belajar.
+- Menyamakan pembaruan pada route PMB di SIAKAD dan portal PMB mandiri agar pengalaman identitas kampus konsisten.
+- Memperbarui halaman login utama dengan foto fasad kampus, detail arsitektur, copy Portal Akademik Terpadu, dan penyebutan nama kampus pada panel autentikasi.
+- Menandai versi aplikasi utama dan portal PMB mandiri menjadi `1.7.1`; versi backend dibaca terpusat dari file `VERSION`.
+
+### Validasi rilis
+
+- Production build frontend utama berhasil.
+- Production build frontend PMB mandiri berhasil.
+- Pemeriksaan browser lokal mengonfirmasi empat foto kampus termuat pada landing page PMB, CTA hero tetap terlihat, dan layout mobile dapat dirender.
+
 ## [1.7.0] — 2026-08-11
 
 ### Tata kelola akademik, jabatan, dan hak akses
