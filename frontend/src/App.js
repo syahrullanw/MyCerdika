@@ -32,8 +32,7 @@ import { StudentAttendancePage } from "@/components/StudentAttendanceComponents"
 import { KurikulumMasterPage } from "@/components/KurikulumComponents";
 import { UserAccessPage } from "@/components/UserAccessComponents";
 import { IntegrationSettingsPage } from "@/components/IntegrationSettingsPage";
-import { CamabaPortal, AdminPmbHub, PmbLandingPage, PmbDirectRegisterModal } from "@/components/PmbComponents";
-import { SchoolSearchInput } from "@/components/pmb/SchoolSearchInput";
+import { CamabaPortal, AdminPmbHub, PmbLandingPage } from "@/components/PmbComponents";
 import { apiErrorMessage } from "@/lib/utils";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
@@ -1408,46 +1407,9 @@ function LoginScreen({ onAuth, branding, ssoError = "", version }) {
     login_url: "",
     local_login_enabled: true,
   });
-  const [pmbPrograms, setPmbPrograms] = useState([]);
-  const [referralFeedback, setReferralFeedback] = useState(null);
-  const [pmbRegisterData, setPmbRegisterData] = useState({
-    name: "",
-    nik: "",
-    nisn: "",
-    gender: "L",
-    email: "",
-    whatsapp: "",
-    password: "",
-    asal_sekolah: "",
-    npsn_sekolah: "",
-    alamat_sekolah: "",
-    jurusan_asal: "",
-    prodi_id: "",
-    class_type: "reguler",
-    learning_mode: "offline",
-    referral_code: "",
-  });
   const progress = useActionProgress();
   const otpMessageId = forgot.delivery?.message_id || "";
   const otpDeliveryStatus = forgot.delivery?.status || "";
-
-  useEffect(() => {
-    if (typeof window !== "undefined") {
-      const params = new URLSearchParams(window.location.search);
-      const refCode = params.get("ref");
-      if (refCode) {
-        setMode("pmb");
-        const clean = refCode.toUpperCase();
-        setPmbRegisterData((prev) => ({ ...prev, referral_code: clean }));
-        axios
-          .get(`${API}/v1/pmb/referrals/public/check/${clean}`)
-          .then(({ data }) => {
-            if (data.ok && data.valid) setReferralFeedback(data);
-          })
-          .catch(() => {});
-      }
-    }
-  }, []);
 
   useEffect(() => {
     axios
@@ -1455,22 +1417,6 @@ function LoginScreen({ onAuth, branding, ssoError = "", version }) {
       .then(({ data }) => setSso(data))
       .catch(() => setSso((current) => ({ ...current, enabled: false })));
   }, []);
-
-  useEffect(() => {
-    if (mode === "pmb") {
-      axios
-        .get(`${API}/v1/pmb/public/config`)
-        .then(({ data }) => {
-          if (data.ok) {
-            setPmbPrograms(data.programs || []);
-            if (data.programs?.length > 0 && !pmbRegisterData.prodi_id) {
-              setPmbRegisterData((prev) => ({ ...prev, prodi_id: data.programs[0].id }));
-            }
-          }
-        })
-        .catch(() => {});
-    }
-  }, [mode]);
 
   useEffect(() => {
     if (ssoError) toast.error(ssoError);
@@ -1588,51 +1534,6 @@ function LoginScreen({ onAuth, branding, ssoError = "", version }) {
     }
   }
 
-  async function submitPmbRegister(event) {
-    event.preventDefault();
-    if (!pmbRegisterData.prodi_id) {
-      toast.error("Silakan pilih Program Studi pilihan");
-      return;
-    }
-    const nik = (pmbRegisterData.nik || "").replace(/\D/g, "");
-    if (!/^\d{16}$/.test(nik)) {
-      toast.error("NIK harus terdiri dari 16 digit angka sesuai KTP");
-      return;
-    }
-    const nisn = (pmbRegisterData.nisn || "").replace(/\D/g, "");
-    if (!/^\d{10}$/.test(nisn)) {
-      toast.error("NISN harus terdiri dari 10 digit angka sesuai data Kemendikbud");
-      return;
-    }
-    const wa = (pmbRegisterData.whatsapp || "").replace(/[\s\-.]/g, "");
-    if (!/^\+?\d{9,15}$/.test(wa)) {
-      toast.error("Nomor WhatsApp tidak valid (harus 9-15 digit angka)");
-      return;
-    }
-    if (!/^[^@\s]+@[^@\s]+\.[^@\s]{2,}$/.test(pmbRegisterData.email || "")) {
-      toast.error("Format email tidak valid");
-      return;
-    }
-    if (!pmbRegisterData.password || pmbRegisterData.password.length < 6) {
-      toast.error("Password minimal 6 karakter");
-      return;
-    }
-    setBusy(true);
-    const operation = progress.begin("Mendaftarkan Calon Mahasiswa Baru");
-    try {
-      const { data } = await axios.post(`${API}/v1/pmb/register`, pmbRegisterData);
-      progress.finish(operation, "Pendaftaran berhasil");
-      onAuth({ token: data.token, user: { ...data.applicant, role: "camaba" } });
-      toast.success(data.message || "Pendaftaran PMB berhasil!");
-    } catch (error) {
-      const msg = apiErrorMessage(error, "Pendaftaran gagal");
-      progress.fail(operation, msg);
-      toast.error(msg);
-    } finally {
-      setBusy(false);
-    }
-  }
-
   return (
     <main
       className="min-h-screen bg-slate-50 lg:grid lg:grid-cols-[1.05fr_0.95fr]"
@@ -1709,37 +1610,13 @@ function LoginScreen({ onAuth, branding, ssoError = "", version }) {
               >
                 {mode === "login"
                   ? "Satu pintu login"
-                  : mode === "pmb"
-                    ? "Pendaftaran PMB"
-                    : "Lupa password"}
+                  : "Lupa password"}
               </h2>
             </div>
           </div>
 
-          {/* PMB Landing Page Link Banner */}
-          <div className="mb-4 p-3 bg-gradient-to-r from-slate-900 via-indigo-950 to-slate-900 text-white rounded-xl shadow-sm flex items-center justify-between gap-2 border border-indigo-900/50">
-            <div className="flex items-center gap-2.5">
-              <div className="w-7 h-7 rounded-lg bg-indigo-600 flex items-center justify-center text-xs font-bold shrink-0">
-                <GraduationCap className="w-4 h-4" />
-              </div>
-              <div>
-                <p className="font-bold text-xs text-amber-300">Penerimaan Mahasiswa Baru 2026/2027</p>
-                <p className="text-[10px] text-slate-300">Info Program Studi, Biaya, Beasiswa, & Formulir Utama.</p>
-              </div>
-            </div>
-            <button
-              type="button"
-              onClick={() => {
-                window.location.hash = "#pmb";
-              }}
-              className="bg-amber-400 hover:bg-amber-300 text-slate-950 font-extrabold text-[11px] h-7 px-3 rounded-lg shrink-0 transition-colors"
-            >
-              Info PMB →
-            </button>
-          </div>
-
           <div
-            className="mb-5 grid grid-cols-3 gap-1.5 rounded-2xl border border-blue-200 bg-white p-1 text-xs"
+            className="mb-5 grid grid-cols-2 gap-1.5 rounded-2xl border border-blue-200 bg-white p-1 text-xs"
             data-testid="front-auth-tabs"
           >
             <Button
@@ -1759,19 +1636,6 @@ function LoginScreen({ onAuth, branding, ssoError = "", version }) {
               className="text-xs px-2"
             >
               Lupa
-            </Button>
-            <Button
-              type="button"
-              variant={mode === "pmb" ? "default" : "ghost"}
-              data-testid="front-pmb-tab-button"
-              onClick={() => setMode("pmb")}
-              className={`text-xs px-2 font-bold ${
-                mode === "pmb"
-                  ? "bg-gradient-to-r from-sky-600 to-indigo-600 text-white shadow-sm"
-                  : "text-indigo-600 hover:text-indigo-700 hover:bg-indigo-50"
-              }`}
-            >
-              <GraduationCap className="w-4 h-4 mr-1 inline" /> PMB
             </Button>
           </div>
           {mode === "login" && (
@@ -1812,7 +1676,7 @@ function LoginScreen({ onAuth, branding, ssoError = "", version }) {
                   >
                     <Field
                       id="login-identifier"
-                      label="Username / NIM / Nomor HP / Email / No. Registrasi PMB"
+                      label="Username / NIM / Nomor HP / Email"
                     >
                       <Input
                         id="login-identifier"
@@ -1821,7 +1685,7 @@ function LoginScreen({ onAuth, branding, ssoError = "", version }) {
                         onChange={(e) =>
                           setLogin({ ...login, identifier: e.target.value })
                         }
-                        placeholder="mis. PMB20260001 (calon mahasiswa)"
+                        placeholder="Masukkan username, NIM, nomor HP, atau email"
                       />
                     </Field>
                     <Field id="login-password" label="Password">
@@ -1950,266 +1814,6 @@ function LoginScreen({ onAuth, branding, ssoError = "", version }) {
                 gateway.
               </p>
             </form>
-          )}
-          {mode === "pmb" && (
-            <div className="space-y-4 border border-slate-200 bg-white p-6 rounded-xl shadow-sm" data-testid="pmb-auth-panel">
-              {/* Dedicated Standalone PMB Callout */}
-              <div className="p-3.5 bg-gradient-to-r from-sky-50 to-indigo-50 border border-indigo-200 rounded-xl flex flex-col sm:flex-row items-center justify-between gap-3">
-                <div className="flex items-center gap-2.5">
-                  <div className="w-8 h-8 rounded-lg bg-indigo-600 text-white flex items-center justify-center font-bold shrink-0">
-                    <GraduationCap className="w-4 h-4" />
-                  </div>
-                  <div>
-                    <p className="font-bold text-xs text-indigo-950">Portal PMB Mandiri (Port 3001)</p>
-                    <p className="text-[11px] text-indigo-700">Landing Page, Info Beasiswa, & Ujian CBT Mandiri</p>
-                  </div>
-                </div>
-                <a
-                  href={process.env.REACT_APP_PMB_URL || "http://localhost:3001"}
-                  target="_blank"
-                  rel="noreferrer"
-                  className="px-3.5 py-1.5 bg-indigo-600 hover:bg-indigo-700 text-white font-bold text-xs rounded-lg shadow-sm inline-flex items-center gap-1 shrink-0"
-                >
-                  Buka Portal PMB Resmi ↗
-                </a>
-              </div>
-
-              <div className="flex items-center justify-between pb-3 border-b border-slate-100">
-                <div>
-                  <h3 className="font-bold text-base text-slate-900">Formulir Pendaftaran PMB</h3>
-                  <p className="text-[11px] text-slate-500">Penerimaan Mahasiswa Baru Jalur Mandiri</p>
-                </div>
-                <button
-                  type="button"
-                  onClick={() => setMode("login")}
-                  className="px-3 py-1 text-xs font-bold rounded-md text-indigo-600 hover:text-indigo-700 hover:bg-indigo-50"
-                >
-                  Sudah daftar? Login
-                </button>
-              </div>
-
-              <form onSubmit={submitPmbRegister} className="space-y-4" data-testid="pmb-register-form">
-                <div className="grid gap-3 sm:grid-cols-2">
-                    <Field id="pmb-name" label="Nama Lengkap *">
-                      <Input
-                        id="pmb-name"
-                        value={pmbRegisterData.name}
-                        onChange={(e) => setPmbRegisterData({ ...pmbRegisterData, name: e.target.value })}
-                        required
-                        placeholder="Nama sesuai KTP"
-                        className="text-xs"
-                      />
-                    </Field>
-                    <Field id="pmb-nik" label="NIK / No. KTP *">
-                      <Input
-                        id="pmb-nik"
-                        value={pmbRegisterData.nik}
-                        onChange={(e) => setPmbRegisterData({ ...pmbRegisterData, nik: e.target.value })}
-                        placeholder="16 digit NIK"
-                        className="text-xs font-mono"
-                        maxLength={16}
-                      />
-                    </Field>
-                    <Field id="pmb-nisn" label="NISN *">
-                      <Input
-                        id="pmb-nisn"
-                        value={pmbRegisterData.nisn}
-                        onChange={(e) => setPmbRegisterData({ ...pmbRegisterData, nisn: e.target.value })}
-                        placeholder="10 digit NISN"
-                        className="text-xs font-mono"
-                        maxLength={10}
-                      />
-                    </Field>
-                    <Field id="pmb-gender" label="Jenis Kelamin *">
-                      <select
-                        id="pmb-gender"
-                        value={pmbRegisterData.gender}
-                        onChange={(e) => setPmbRegisterData({ ...pmbRegisterData, gender: e.target.value })}
-                        className="w-full border border-slate-300 rounded-md p-2 text-xs bg-white font-medium"
-                      >
-                        <option value="L">Laki-laki</option>
-                        <option value="P">Perempuan</option>
-                      </select>
-                    </Field>
-                  </div>
-
-                  <div className="grid gap-3 sm:grid-cols-2">
-                    <Field id="pmb-email" label="Email Aktif *">
-                      <Input
-                        id="pmb-email"
-                        type="email"
-                        value={pmbRegisterData.email}
-                        onChange={(e) => setPmbRegisterData({ ...pmbRegisterData, email: e.target.value })}
-                        required
-                        placeholder="email@example.com"
-                        className="text-xs"
-                      />
-                    </Field>
-                    <Field id="pmb-whatsapp" label="No. WhatsApp *">
-                      <Input
-                        id="pmb-whatsapp"
-                        value={pmbRegisterData.whatsapp}
-                        onChange={(e) => setPmbRegisterData({ ...pmbRegisterData, whatsapp: e.target.value })}
-                        required
-                        placeholder="08123456789"
-                        className="text-xs font-mono"
-                      />
-                    </Field>
-                  </div>
-
-                  <div className="grid gap-3 sm:grid-cols-2">
-                    <Field id="pmb-sekolah" label="Asal Sekolah / Kampus *">
-                      <SchoolSearchInput
-                        value={pmbRegisterData.asal_sekolah}
-                        onTyping={(v) => setPmbRegisterData({ ...pmbRegisterData, asal_sekolah: v })}
-                        onSelect={(s) =>
-                          setPmbRegisterData({
-                            ...pmbRegisterData,
-                            asal_sekolah: s.nama,
-                            npsn_sekolah: s.npsn,
-                            alamat_sekolah: s.alamat,
-                          })
-                        }
-                        placeholder="Ketik nama sekolah untuk pencarian otomatis"
-                      />
-                    </Field>
-                    <Field id="pmb-jurusan" label="Jurusan Asal">
-                      <Input
-                        id="pmb-jurusan"
-                        value={pmbRegisterData.jurusan_asal}
-                        onChange={(e) => setPmbRegisterData({ ...pmbRegisterData, jurusan_asal: e.target.value })}
-                        placeholder="IPA / IPS / RPL / TKJ"
-                        className="text-xs"
-                      />
-                    </Field>
-                  </div>
-
-                  <Field id="pmb-prodi" label="Pilihan Program Studi *">
-                    <select
-                      id="pmb-prodi"
-                      value={pmbRegisterData.prodi_id}
-                      onChange={(e) => setPmbRegisterData({ ...pmbRegisterData, prodi_id: e.target.value })}
-                      required
-                      className="w-full border border-slate-300 rounded-md p-2 text-xs bg-white font-medium"
-                    >
-                      <option value="">-- Pilih Program Studi --</option>
-                      {pmbPrograms.map((p) => (
-                        <option key={p.id} value={p.id}>
-                          {p.nama} ({p.jenjang || "S1"})
-                        </option>
-                      ))}
-                    </select>
-                  </Field>
-
-                  {/* Alur 2: Pemilihan Kelas Reguler vs Khusus */}
-                  <div className="p-3.5 rounded-xl border border-slate-200 bg-slate-50 space-y-2.5">
-                    <Label className="text-xs font-bold text-slate-800">Pilihan Tipe Kelas & Mode Kuliah:</Label>
-                    <div className="grid grid-cols-2 gap-2">
-                      <button
-                        type="button"
-                        onClick={() => setPmbRegisterData({ ...pmbRegisterData, class_type: "reguler" })}
-                        className={`p-2 rounded-lg border text-xs font-bold text-left transition-all ${
-                          pmbRegisterData.class_type === "reguler"
-                            ? "bg-sky-50 border-sky-600 text-sky-900 ring-1 ring-sky-500"
-                            : "bg-white border-slate-200 text-slate-700 hover:bg-slate-100"
-                        }`}
-                      >
-                        <p>Kelas Reguler</p>
-                        <p className="text-[10px] font-normal text-slate-500">Bisa Online / Offline</p>
-                      </button>
-                      <button
-                        type="button"
-                        onClick={() => setPmbRegisterData({ ...pmbRegisterData, class_type: "khusus", learning_mode: "offline" })}
-                        className={`p-2 rounded-lg border text-xs font-bold text-left transition-all ${
-                          pmbRegisterData.class_type === "khusus"
-                            ? "bg-indigo-50 border-indigo-600 text-indigo-900 ring-1 ring-indigo-500"
-                            : "bg-white border-slate-200 text-slate-700 hover:bg-slate-100"
-                        }`}
-                      >
-                        <p>Kelas Khusus (Karyawan)</p>
-                        <p className="text-[10px] font-normal text-slate-500">Hanya Offline</p>
-                      </button>
-                    </div>
-
-                    {pmbRegisterData.class_type === "reguler" ? (
-                      <div className="flex gap-2 pt-1">
-                        <span className="text-[11px] text-slate-600 font-semibold self-center">Mode:</span>
-                        <button
-                          type="button"
-                          onClick={() => setPmbRegisterData({ ...pmbRegisterData, learning_mode: "offline" })}
-                          className={`px-2.5 py-1 rounded text-[11px] font-bold ${
-                            pmbRegisterData.learning_mode === "offline" ? "bg-sky-600 text-white" : "bg-white border border-slate-200 text-slate-700"
-                          }`}
-                        >
-                          <Landmark className="w-3 h-3 inline mr-1" /> Offline
-                        </button>
-                        <button
-                          type="button"
-                          onClick={() => setPmbRegisterData({ ...pmbRegisterData, learning_mode: "online" })}
-                          className={`px-2.5 py-1 rounded text-[11px] font-bold ${
-                            pmbRegisterData.learning_mode === "online" ? "bg-sky-600 text-white" : "bg-white border border-slate-200 text-slate-700"
-                          }`}
-                        >
-                          <Globe className="w-3 h-3 inline mr-1" /> Online
-                        </button>
-                      </div>
-                    ) : (
-                      <p className="text-[10px] text-amber-700 font-medium bg-amber-50 p-1.5 rounded border border-amber-200">
-                        <AlertTriangle className="w-3 h-3 inline mr-1" /> Kelas Khusus terkunci pada mode <strong>Offline (Tatap Muka)</strong>.
-                      </p>
-                    )}
-                  </div>
-
-                  <Field id="pmb-referral" label="Kode Referal Promotor (Opsional)">
-                    <Input
-                      id="pmb-referral"
-                      value={pmbRegisterData.referral_code}
-                      onChange={(e) => {
-                        const val = e.target.value.toUpperCase();
-                        setPmbRegisterData({ ...pmbRegisterData, referral_code: val });
-                        if (val.length >= 4) {
-                          axios
-                            .get(`${API}/v1/pmb/referrals/public/check/${val}`)
-                            .then(({ data }) => {
-                              if (data.ok && data.valid) setReferralFeedback(data);
-                              else setReferralFeedback(null);
-                            })
-                            .catch(() => setReferralFeedback(null));
-                        } else {
-                          setReferralFeedback(null);
-                        }
-                      }}
-                      placeholder="Contoh: REF-BUDI26 atau REF-DOSEN-ANDI"
-                      className="text-xs font-mono uppercase"
-                    />
-                    {referralFeedback && (
-                      <p className="text-[11px] text-emerald-700 font-bold mt-1 bg-emerald-50 p-1.5 rounded border border-emerald-200">
-                        <Check className="w-3 h-3 inline mr-1" /> {referralFeedback.message}
-                      </p>
-                    )}
-                  </Field>
-
-                  <Field id="pmb-password" label="Buat Password PMB *">
-                    <Input
-                      id="pmb-password"
-                      type="password"
-                      value={pmbRegisterData.password}
-                      onChange={(e) => setPmbRegisterData({ ...pmbRegisterData, password: e.target.value })}
-                      required
-                      placeholder="Minimal 6 karakter"
-                      className="text-xs"
-                    />
-                  </Field>
-
-                  <Button
-                    className="w-full bg-gradient-to-r from-sky-600 to-indigo-600 hover:from-sky-500 hover:to-indigo-500 text-white font-bold"
-                    disabled={busy}
-                    data-testid="pmb-register-submit-button"
-                  >
-                    <GraduationCap className="w-4 h-4 mr-1.5" /> Daftar Mahasiswa Baru Sekarang
-                  </Button>
-                </form>
-              </div>
           )}
           <VersionMeta version={version} className="mt-5 text-center" />
         </div>

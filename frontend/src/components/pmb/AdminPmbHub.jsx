@@ -954,7 +954,87 @@ export function AdminPmbHub({ token: propToken, user, programs: initialPrograms 
             </CardContent>
           </Card>
 
-          {/* Card 2: Switch Metode Pembayaran PMB */}
+          {/* Card 2: Program Referal */}
+          <Card className="border-slate-200 shadow-sm overflow-hidden">
+            <CardHeader className="bg-gradient-to-r from-indigo-900 via-violet-900 to-indigo-900 text-white py-4 px-6">
+              <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3">
+                <div>
+                  <CardTitle className="text-base font-bold flex items-center gap-2 text-white">
+                    <Gift className="w-5 h-5 text-amber-300" />
+                    Program Referal PMB
+                  </CardTitle>
+                  <CardDescription className="text-indigo-100 text-xs mt-0.5">
+                    Pisahkan status operasional program referal dari penayangan kampanyenya di landing page.
+                  </CardDescription>
+                </div>
+                <Badge className={`text-xs font-bold px-3 py-1 ${
+                  settings.referral_enabled !== false ? "bg-emerald-500 text-white" : "bg-slate-700 text-slate-300 border border-slate-600"
+                }`}>
+                  {settings.referral_enabled !== false ? "Referal AKTIF" : "Referal NONAKTIF"}
+                </Badge>
+              </div>
+            </CardHeader>
+            <CardContent className="p-6 space-y-3">
+              <div className={`flex flex-col sm:flex-row items-start sm:items-center justify-between gap-4 p-4 rounded-xl border transition-all ${
+                settings.referral_enabled !== false ? "bg-emerald-50/50 border-emerald-300" : "bg-slate-50 border-slate-200"
+              }`}>
+                <div className="space-y-1">
+                  <h4 className="font-bold text-slate-900 text-sm">Aktifkan program referal</h4>
+                  <p className="text-xs text-slate-600 leading-relaxed max-w-2xl">
+                    Saat Off, pendaftaran promotor dan penggunaan kode referal baru dinonaktifkan. Riwayat promotor serta komisi lama tetap tersimpan.
+                  </p>
+                </div>
+                <button
+                  type="button"
+                  aria-label="Aktifkan program referal"
+                  aria-pressed={settings.referral_enabled !== false}
+                  onClick={() => setSettings({ ...settings, referral_enabled: settings.referral_enabled === false })}
+                  className={`relative inline-flex h-7 w-14 shrink-0 cursor-pointer rounded-full border-2 border-transparent transition-colors duration-200 ease-in-out focus:outline-none ${
+                    settings.referral_enabled !== false ? "bg-emerald-600" : "bg-slate-300"
+                  }`}
+                >
+                  <span className={`pointer-events-none inline-block h-6 w-6 transform rounded-full bg-white shadow-md ring-0 transition duration-200 ease-in-out ${
+                    settings.referral_enabled !== false ? "translate-x-7" : "translate-x-0"
+                  }`} />
+                </button>
+              </div>
+
+              <div className={`flex flex-col sm:flex-row items-start sm:items-center justify-between gap-4 p-4 rounded-xl border transition-all ${
+                settings.landing_sections_visibility?.referral !== false ? "bg-violet-50/50 border-violet-300" : "bg-slate-50 border-slate-200"
+              }`}>
+                <div className="space-y-1">
+                  <h4 className="font-bold text-slate-900 text-sm">Tampilkan kampanye referal di landing page</h4>
+                  <p className="text-xs text-slate-600 leading-relaxed max-w-2xl">
+                    Atur visibilitas section kampanye “Mitra Referal” pada landing page PMB. Switch ini tidak mematikan program referal.
+                  </p>
+                </div>
+                <button
+                  type="button"
+                  aria-label="Tampilkan kampanye referal di landing page"
+                  aria-pressed={settings.landing_sections_visibility?.referral !== false}
+                  onClick={() => setSettings({
+                    ...settings,
+                    landing_sections_visibility: {
+                      ...(settings.landing_sections_visibility || {}),
+                      referral: settings.landing_sections_visibility?.referral === false,
+                    },
+                  })}
+                  className={`relative inline-flex h-7 w-14 shrink-0 cursor-pointer rounded-full border-2 border-transparent transition-colors duration-200 ease-in-out focus:outline-none ${
+                    settings.landing_sections_visibility?.referral !== false ? "bg-violet-600" : "bg-slate-300"
+                  }`}
+                >
+                  <span className={`pointer-events-none inline-block h-6 w-6 transform rounded-full bg-white shadow-md ring-0 transition duration-200 ease-in-out ${
+                    settings.landing_sections_visibility?.referral !== false ? "translate-x-7" : "translate-x-0"
+                  }`} />
+                </button>
+              </div>
+              <p className="text-[11px] text-slate-500">
+                Perubahan diterapkan setelah menekan tombol <strong>Simpan Seluruh Pengaturan PMB</strong> di bagian bawah halaman.
+              </p>
+            </CardContent>
+          </Card>
+
+          {/* Card 3: Switch Metode Pembayaran PMB */}
           <Card className="border-slate-200 shadow-sm overflow-hidden">
             <CardHeader className="bg-gradient-to-r from-slate-900 via-indigo-950 to-slate-900 text-white py-4 px-6">
               <CardTitle className="text-base font-bold flex items-center gap-2 text-white">

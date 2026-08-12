@@ -29,6 +29,7 @@ import { WhatsAppOfficialIcon } from "./PmbWhatsAppFloatingWidget";
 const api = axios.create({ baseURL: BACKEND_URL });
 
 export function PmbDirectRegisterModal({ isOpen, onClose, onAuth, defaultProdiId = "", programs = [] }) {
+  const [availablePrograms, setAvailablePrograms] = useState(Array.isArray(programs) ? programs : []);
   const [formData, setFormData] = useState({
     name: "",
     gender: "L",
@@ -60,6 +61,23 @@ export function PmbDirectRegisterModal({ isOpen, onClose, onAuth, defaultProdiId
   const [successData, setSuccessData] = useState(null);
   const [showPassword, setShowPassword] = useState(false);
   const [copiedKey, setCopiedKey] = useState("");
+
+  useEffect(() => {
+    setAvailablePrograms(Array.isArray(programs) ? programs : []);
+  }, [programs]);
+
+  useEffect(() => {
+    if (!isOpen || availablePrograms.length > 0) return undefined;
+    let cancelled = false;
+    api.get("/api/v1/pmb/public/config")
+      .then(({ data }) => {
+        if (!cancelled && data?.ok) setAvailablePrograms(data.programs || []);
+      })
+      .catch(() => {});
+    return () => {
+      cancelled = true;
+    };
+  }, [availablePrograms.length, isOpen]);
 
   useEffect(() => {
     if (defaultProdiId) {
@@ -104,6 +122,10 @@ export function PmbDirectRegisterModal({ isOpen, onClose, onAuth, defaultProdiId
     e.preventDefault();
     if (!formData.name || !formData.whatsapp || !formData.email || !formData.prodi_id) {
       toast.error("Harap lengkapi seluruh field formulir yang bertanda bintang (*)");
+      return;
+    }
+    if ((formData.asal_sekolah || "").trim().length < 3) {
+      toast.error("Pilih atau isi nama sekolah asal minimal 3 karakter");
       return;
     }
     const nik = (formData.nik || "").replace(/\D/g, "");
@@ -482,17 +504,51 @@ export function PmbDirectRegisterModal({ isOpen, onClose, onAuth, defaultProdiId
                 </h4>
 
                 <div>
+                  <Label className="text-xs font-bold">Sekolah Asal *</Label>
                   <SchoolSearchInput
-                    onSelectSchool={(sch) => {
+                    value={formData.asal_sekolah}
+                    onTyping={(value) => {
                       setFormData((prev) => ({
                         ...prev,
-                        asal_sekolah: sch.nama_sekolah,
-                        npsn_sekolah: sch.npsn,
-                        alamat_sekolah: sch.alamat_jalan || sch.kecamatan || "",
+                        asal_sekolah: value,
+                        ...(value === prev.asal_sekolah
+                          ? {}
+                          : { npsn_sekolah: "", alamat_sekolah: "" }),
                       }));
                     }}
-                    initialSchoolName={formData.asal_sekolah}
+                    onSelect={(sch) => {
+                      setFormData((prev) => ({
+                        ...prev,
+                        asal_sekolah: sch.nama || "",
+                        npsn_sekolah: sch.npsn || "",
+                        alamat_sekolah: [sch.alamat, sch.kecamatan, sch.kabupaten, sch.provinsi]
+                          .filter(Boolean)
+                          .join(", "),
+                      }));
+                    }}
                   />
+                </div>
+
+                <div className="grid sm:grid-cols-2 gap-3">
+                  <div>
+                    <Label className="text-xs font-bold">NPSN Sekolah</Label>
+                    <Input
+                      value={formData.npsn_sekolah}
+                      onChange={(e) => setFormData({ ...formData, npsn_sekolah: e.target.value.replace(/\D/g, "").slice(0, 8) })}
+                      placeholder="8 digit NPSN"
+                      maxLength={8}
+                      className="text-xs mt-1 font-mono"
+                    />
+                  </div>
+                  <div>
+                    <Label className="text-xs font-bold">Alamat Sekolah</Label>
+                    <Input
+                      value={formData.alamat_sekolah}
+                      onChange={(e) => setFormData({ ...formData, alamat_sekolah: e.target.value })}
+                      placeholder="Alamat sekolah"
+                      className="text-xs mt-1"
+                    />
+                  </div>
                 </div>
 
                 <div className="grid sm:grid-cols-2 gap-3">
@@ -556,7 +612,7 @@ export function PmbDirectRegisterModal({ isOpen, onClose, onAuth, defaultProdiId
                       className="mt-1 w-full border border-slate-300 rounded-md p-2 text-xs bg-white font-medium"
                     >
                       <option value="">-- Pilih Program Studi --</option>
-                      {programs.map((p) => (
+                      {availablePrograms.map((p) => (
                         <option key={p.id} value={p.id}>
                           {p.nama} ({p.jenjang || "S1"})
                         </option>
@@ -572,7 +628,7 @@ export function PmbDirectRegisterModal({ isOpen, onClose, onAuth, defaultProdiId
                       className="mt-1 w-full border border-slate-300 rounded-md p-2 text-xs bg-white"
                     >
                       <option value="">-- Tidak ada --</option>
-                      {programs.map((p) => (
+                      {availablePrograms.map((p) => (
                         <option key={p.id} value={p.id}>
                           {p.nama} ({p.jenjang || "S1"})
                         </option>

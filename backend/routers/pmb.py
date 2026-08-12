@@ -1268,6 +1268,10 @@ class PmbSettingsInput(BaseModel):
     referral_enabled: Optional[bool] = None
     referral_fee_registration: Optional[float] = None
     referral_fee_reregistration: Optional[float] = None
+    landing_sections_visibility: Optional[Dict[str, bool]] = Field(
+        None,
+        description="Kontrol tampilan section pada landing page PMB"
+    )
     wa_group_url: Optional[str] = None
     wa_group_name: Optional[str] = None
     online_test_enabled: Optional[bool] = Field(None, description="Switch Ujian Online CBT (Default: False/Off)")
@@ -1445,6 +1449,14 @@ async def get_pmb_public_config(request: Request):
 async def check_referral_code(code: str, request: Request):
     """Cek validitas kode referal saat pendaftaran PMB."""
     db: PostgresDatabase = get_db(request)
+    settings = await get_or_init_settings(db)
+    if settings.get("referral_enabled") is False:
+        return {
+            "ok": True,
+            "valid": False,
+            "message": "Program referal sedang tidak aktif"
+        }
+
     clean_code = code.strip().upper()
     ref = await db.pmb_referrals.find_one({"code": clean_code}, {"_id": 0})
     if not ref:
@@ -1554,6 +1566,9 @@ async def search_pmb_schools(request: Request, q: str = ""):
 async def register_referral_promoter(payload: PmbReferralRegisterInput, request: Request):
     """Mendaftar sebagai Promotor / Agen Referal PMB (Mahasiswa, Dosen, Mitra Eksternal)."""
     db: PostgresDatabase = get_db(request)
+    settings = await get_or_init_settings(db)
+    if settings.get("referral_enabled") is False:
+        raise HTTPException(status_code=400, detail="Program referal sedang tidak aktif")
 
     clean_code = payload.custom_code.strip().upper() if payload.custom_code else ""
     if clean_code:
@@ -1720,7 +1735,7 @@ async def register_pmb_applicant(payload: PmbRegisterInput, request: Request):
 
     # Check Referral Code if provided
     referrer_info = {}
-    if payload.referral_code:
+    if payload.referral_code and settings.get("referral_enabled") is not False:
         clean_ref = payload.referral_code.strip().upper()
         ref_doc = await db.pmb_referrals.find_one({"code": clean_ref}, {"_id": 0})
         if ref_doc:

@@ -2,6 +2,24 @@
 
 Semua perubahan penting pada aplikasi ini dicatat di sini. Versi rilis utama disimpan di file [`VERSION`](./VERSION), sedangkan versi skema database yang sudah diterapkan dicatat oleh tabel `app_schema_migrations` di PostgreSQL.
 
+## [1.7.2] — 2026-08-12
+
+### Penyempurnaan PMB dan autentikasi
+
+- Memperbaiki formulir PMB agar pilihan program studi tampil dan pilihan sekolah asal mengisi nama, NPSN, serta alamat sekolah dengan benar.
+- Menambahkan validasi nama sekolah asal agar submit tidak gagal dengan pesan `String should have at least 3 characters` ketika data sekolah sudah dipilih.
+- Menyederhanakan login utama dengan menghapus keterangan dan jalur login peserta PMB karena sudah tersedia pada portal PMB tersendiri.
+- Menambahkan switch admin untuk mengaktifkan atau menonaktifkan program referal secara operasional.
+- Menambahkan switch terpisah untuk menampilkan atau menyembunyikan kampanye referal pada landing page PMB.
+- Menyelaraskan endpoint publik agar kode referal dan pendaftaran promotor baru tidak diproses saat program referal dinonaktifkan.
+
+### Validasi rilis
+
+- Production build frontend utama berhasil.
+- Production build frontend PMB mandiri berhasil.
+- Backend berhasil melewati pemeriksaan sintaks Python.
+- Smoke test landing page PMB dan endpoint konfigurasi publik berhasil.
+
 ## [1.7.1] — 2026-08-11
 
 ### Identitas visual kampus pada PMB dan login utama
