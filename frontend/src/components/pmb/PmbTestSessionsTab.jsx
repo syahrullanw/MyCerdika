@@ -23,6 +23,9 @@ import {
   Clock,
   ShieldAlert,
   RotateCcw,
+  Globe,
+  Building2,
+  MapPin,
 } from "lucide-react";
 
 const BACKEND_URL = (process.env.REACT_APP_BACKEND_URL || "").replace(/\/+$/, "") || window.location.origin;
@@ -31,6 +34,8 @@ const api = axios.create({ baseURL: BACKEND_URL });
 const EMPTY_FORM = {
   title: "",
   description: "",
+  test_type: "all",
+  room_name: "",
   start_at: "",
   end_at: "",
   duration_minutes: 45,
@@ -117,6 +122,8 @@ export function PmbTestSessionsTab({ token }) {
     setForm({
       title: s.title || "",
       description: s.description || "",
+      test_type: s.test_type || "all",
+      room_name: s.room_name || "",
       start_at: toLocalInput(s.start_at),
       end_at: toLocalInput(s.end_at),
       duration_minutes: s.duration_minutes || 45,
@@ -141,6 +148,8 @@ export function PmbTestSessionsTab({ token }) {
     setSaving(true);
     const payload = {
       ...form,
+      test_type: form.test_type || "all",
+      room_name: (form.room_name || "").trim(),
       start_at: toIso(form.start_at),
       end_at: toIso(form.end_at),
       duration_minutes: parseInt(form.duration_minutes, 10) || 45,
@@ -411,6 +420,24 @@ export function PmbTestSessionsTab({ token }) {
                     <div className="flex items-center gap-2 flex-wrap">
                       <h4 className="font-bold text-slate-900 text-sm">{s.title}</h4>
                       <Badge className={sb.cls}>{sb.label}</Badge>
+                      <Badge variant="outline" className={
+                        s.test_type === "online" ? "border-indigo-300 text-indigo-700 bg-indigo-50 font-bold text-[10px] inline-flex items-center gap-1" :
+                        s.test_type === "offline" ? "border-emerald-300 text-emerald-700 bg-emerald-50 font-bold text-[10px] inline-flex items-center gap-1" :
+                        "border-purple-300 text-purple-700 bg-purple-50 font-bold text-[10px] inline-flex items-center gap-1"
+                      }>
+                        {s.test_type === "online" ? (
+                          <><Globe className="w-3 h-3" /> Ujian Online</>
+                        ) : s.test_type === "offline" ? (
+                          <><Building2 className="w-3 h-3" /> Ujian Offline</>
+                        ) : (
+                          <><Globe className="w-3 h-3" /><Building2 className="w-3 h-3" /> Online & Offline</>
+                        )}
+                      </Badge>
+                      {s.room_name && (
+                        <span className="text-[10px] text-slate-600 font-medium bg-slate-100 px-2 py-0.5 rounded border border-slate-200 inline-flex items-center gap-1">
+                          <MapPin className="w-3 h-3 text-slate-500" /> {s.room_name}
+                        </span>
+                      )}
                     </div>
                     <p className="text-[11px] text-slate-500 mt-0.5">{s.description || "-"}</p>
                   </div>
@@ -511,6 +538,32 @@ export function PmbTestSessionsTab({ token }) {
                 <Label className="text-[11px] font-semibold text-slate-600">Deskripsi</Label>
                 <Input value={form.description} onChange={(e) => setForm({ ...form, description: e.target.value })} placeholder="Instruksi / keterangan sesi" className="text-sm" />
               </div>
+
+              {/* Opsi Mode Ujian: Online & Offline */}
+              <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+                <div className="space-y-1.5">
+                  <Label className="text-[11px] font-semibold text-slate-600">Pilihan Jalur Ujian *</Label>
+                  <select
+                    value={form.test_type || "all"}
+                    onChange={(e) => setForm({ ...form, test_type: e.target.value })}
+                    className="w-full h-9 rounded-md border border-slate-200 bg-white px-3 text-xs font-semibold focus:outline-none focus:ring-2 focus:ring-indigo-500"
+                  >
+                    <option value="all">Terbuka untuk Online & Offline</option>
+                    <option value="online">Ujian Online (CBT Mandiri / Daring)</option>
+                    <option value="offline">Ujian Offline (di Kampus / Laboratorium)</option>
+                  </select>
+                </div>
+                <div className="space-y-1.5">
+                  <Label className="text-[11px] font-semibold text-slate-600">Ruangan / Lokasi Ujian (Opsional)</Label>
+                  <Input
+                    value={form.room_name || ""}
+                    onChange={(e) => setForm({ ...form, room_name: e.target.value })}
+                    placeholder="cth: Lab Komputer Kampus Lt. 2"
+                    className="text-sm"
+                  />
+                </div>
+              </div>
+
               <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
                 <div className="space-y-1.5">
                   <Label className="text-[11px] font-semibold text-slate-600">Buka Ujian *</Label>

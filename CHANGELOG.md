@@ -2,6 +2,22 @@
 
 Semua perubahan penting pada aplikasi ini dicatat di sini. Versi rilis utama disimpan di file [`VERSION`](./VERSION), sedangkan versi skema database yang sudah diterapkan dicatat oleh tabel `app_schema_migrations` di PostgreSQL.
 
+## [1.8.0] — 2026-08-12
+
+### Skema Pembayaran Custom, Approval Admin & Visual Dashboard PMB
+
+- **Pembayaran Custom Fleksibel**: Menambahkan skema pembayaran nominal custom/DP untuk pendaftaran dan uang pra-studi/her-registrasi, lengkap dengan pembuat kode bayar unik dinamis.
+- **Wajib Approval Admin**: Mengubah validasi pembayaran pendaftaran dan her-registrasi agar mewajibkan persetujuan (*approval*) dari Admin PMB sebelum berstatus terbayar (*verified*).
+- **Histori & Sisa Kurang Bayar**: Menambahkan modal histori pembayaran dan pelacakan sisa kurang bayar pendaftar pada dashboard Admin PMB (`AdminPmbHub.jsx`).
+- **Penataan Ulang Layout Tabel Admin**: Merestrukturisasi baris filter dan tabel calon mahasiswa dengan responsive grid layout, visual contrast tinggi, dan tombol aksi yang simetris & proporsional.
+- **Interactive Proof Preview Modal**: Menambahkan modal pop-up peninjau dokumen/gambar bukti transfer secara langsung di dalam aplikasi tanpa memaksa unduhan (*force download*).
+- **Stabilitas Frontend**: Memperbaiki error sintaks JSX pada `AdminPmbHub.jsx` dan `CamabaPortal.jsx` serta mengimpor modul `resolveMediaUrl`.
+
+### Validasi rilis
+
+- Suite pengujian unit backend (`backend/tests/test_pmb_flows.py`) lulus 100% (16/16 test suites passing).
+- Versi rilis dinaikkan ke `1.8.0`.
+
 ## [1.7.2] — 2026-08-12
 
 ### Penyempurnaan PMB dan autentikasi

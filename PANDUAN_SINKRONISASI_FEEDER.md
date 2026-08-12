@@ -25,7 +25,9 @@ Sebelum memulai:
 - Pastikan ekspor OLD-SIAKAD yang dipakai adalah file terbaru.
 - Buka **Sistem & Integrasi → PDDikti Feeder**.
 - Pastikan mode menunjukkan **Sandbox / Dev** dan endpoint adalah `/ws/sandbox2.php`.
-- Tekan **Uji Koneksi Feeder** dan lanjutkan hanya bila profil perguruan tinggi berhasil dibaca.
+- Sebelum audit atau sinkronisasi Feeder, tekan **Uji Koneksi Feeder** dan pastikan profil perguruan tinggi berhasil dibaca.
+
+Migrasi incremental OLD-SIAKAD ke SIAKAD baru tetap dapat dilakukan ketika Feeder tidak terhubung. Dalam kondisi tersebut, audit tiga arah ditunda dan aplikasi mempertahankan metadata Feeder yang sudah tersimpan.
 
 Jangan mengaktifkan auto-sync selama proses rekonsiliasi awal.
 
@@ -47,6 +49,8 @@ Jangan mengaktifkan auto-sync selama proses rekonsiliasi awal.
 6. Buat kembali preview migrasi sampai tidak ada update aman yang tertinggal.
 
 Migrasi incremental tidak menghapus record Feeder dan tidak menulis ke Feeder. Master Fakultas selalu dipertahankan sebagai data referensi walaupun hierarki Fakultas sedang dinonaktifkan pada UI; saklar hanya mengubah cara struktur tersebut digunakan.
+
+Jika Feeder tidak terhubung, preview akan menampilkan **Audit Feeder belum dijalankan**. Record baru dan update aman OLD → SIAKAD baru tetap dapat diterapkan; lanjutkan Tahap 2 setelah koneksi Feeder kembali tersedia.
 
 ### Rekonsiliasi pembiayaan
 

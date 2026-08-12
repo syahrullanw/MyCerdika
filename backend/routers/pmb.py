@@ -36,10 +36,23 @@ from postgres_database import PostgresDatabase
 router = APIRouter(prefix="/api/v1/pmb", tags=["PMB - Penerimaan Mahasiswa Baru"])
 
 
+import math
 import smtplib
 from email.mime.multipart import MIMEMultipart
 from email.mime.text import MIMEText
 import urllib.parse
+
+def calculate_haversine_distance(lat1: float, lon1: float, lat2: float, lon2: float) -> float:
+    """Menghitung jarak dalam satuan meter antara dua titik koordinat GPS menggunakan formula Haversine."""
+    R = 6371000.0  # Radius bumi dalam meter
+    phi1 = math.radians(lat1)
+    phi2 = math.radians(lat2)
+    delta_phi = math.radians(lat2 - lat1)
+    delta_lambda = math.radians(lon2 - lon1)
+
+    a = math.sin(delta_phi / 2.0) ** 2 + math.cos(phi1) * math.cos(phi2) * math.sin(delta_lambda / 2.0) ** 2
+    c = 2.0 * math.atan2(math.sqrt(a), math.sqrt(1.0 - a))
+    return R * c
 
 def now_iso() -> str:
     return datetime.now(timezone.utc).isoformat()
@@ -393,6 +406,11 @@ async def get_or_init_settings(db: PostgresDatabase) -> Dict[str, Any]:
         "zoom_meeting_id": "889 922 3344",
         "zoom_passcode": "PMB2026",
         "offline_test_location": "Gedung Rektorat Lt. 2 Ruang CBT Kampus",
+        "offline_test_room_name": "Lab Komputer CBT Kampus Utama Lt. 2",
+        "offline_test_lat": -6.2088,
+        "offline_test_lng": 106.8456,
+        "offline_test_radius_meters": 100.0,
+        "offline_test_enforce_gps": True,
         "offline_test_schedule_default": "Setiap Sabtu & Minggu, Pukul 09:00 - 11:30 WIB",
         "sibermaru_title": "SIBERMARU 2026 (Orientasi & Pengenalan Kehidupan Kampus)",
         "sibermaru_schedule": "28 - 30 Agustus 2026, Pukul 07:30 - 16:00 WIB",
@@ -472,8 +490,8 @@ async def get_or_init_settings(db: PostgresDatabase) -> Dict[str, Any]:
                 "a": "Alur pendaftaran terdiri dari 10 tahapan praktis: 1. Isi Formulir Online, 2. Pilih Kelas (Reguler/Khusus), 3. Bayar Biaya Formulir (QRIS/VA), 4. Gabung Grup WhatsApp Resmi, 5. Pilih Jalur Tes (CBT Online / Offline Kampus), 6/7. Ujian & Skor Keluar Instan, 8. Daftar Ulang (Pra-studi & Ukuran Baju), 9. Konfirmasi Sibermaru, dan 10. Penerbitan NIM Resmi SIAKAD."
             },
             {
-                "q": "Apakah tersedia pilihan kuliah Online (Daring Penuh) dan Kelas Karyawan?",
-                "a": "Ya! Untuk Kelas Reguler tersedia opsi mode Online (Daring Penuh) dan Offline (Tatap Muka). Untuk Kelas Khusus / Karyawan (jadwal malam / akhir pekan), perkuliahan diselenggarakan secara Tatap Muka di kampus sesuai standar mutu kurikulum."
+                "q": "Apakah tersedia pilihan kuliah Online (Daring Penuh) dan Kelas Khusus Eksekutif?",
+                "a": "Ya! Untuk Kelas Reguler tersedia opsi mode Online (Daring Penuh) dan Offline (Tatap Muka), serta Kelas Weekend Online. Untuk Kelas Khusus Offline, perkuliahan diselenggarakan dengan kurikulum khusus eksekutif dan pembelajaran tatap muka di kampus."
             },
             {
                 "q": "Apakah biaya uang pra-studi daftar ulang bisa dicicil?",
@@ -1028,8 +1046,8 @@ class PmbRegisterInput(BaseModel):
     @classmethod
     def validate_class_type(cls, v):
         v = str(v or "").strip().lower()
-        if v not in ["reguler", "khusus"]:
-            raise ValueError("Tipe kelas harus 'reguler' atau 'khusus'")
+        if v not in ["reguler", "weekend", "khusus"]:
+            raise ValueError("Tipe kelas harus 'reguler', 'weekend', atau 'khusus'")
         return v
 
     @field_validator("learning_mode")
@@ -1145,8 +1163,8 @@ class PmbUpdateFormInput(BaseModel):
         if v is None:
             return v
         v = str(v).strip().lower()
-        if v not in ["reguler", "khusus"]:
-            raise ValueError("Tipe kelas harus 'reguler' atau 'khusus'")
+        if v not in ["reguler", "weekend", "khusus"]:
+            raise ValueError("Tipe kelas harus 'reguler', 'weekend', atau 'khusus'")
         return v
 
     @field_validator("learning_mode")
@@ -1163,6 +1181,7 @@ class PmbUpdateFormInput(BaseModel):
 class PmbPayRegInput(BaseModel):
     payment_method: str = Field("QRIS", description="Metode: QRIS, VA_MANDIRI, VA_BCA, MANUAL")
     payment_proof_url: Optional[str] = Field("", description="URL Bukti Transfer jika manual")
+    custom_amount: Optional[float] = Field(None, description="Nominal custom pembayaran yang diinputkan camaba")
     notes: Optional[str] = Field("", description="Catatan pembayaran")
 
 
@@ -1175,11 +1194,12 @@ class PmbCbtSubmitInput(BaseModel):
 
 
 class PmbReregisterPayInput(BaseModel):
-    scheme: str = Field("full", description="'full' atau 'installment'")
+    scheme: str = Field("full", description="'full', 'installment', atau 'custom'")
     term: Optional[int] = Field(1, description="Nomor cicilan jika installment (1, 2, 3)")
     payment_method: str = Field("QRIS", description="QRIS, VA_MANDIRI, VA_BCA, MANUAL")
     payment_proof_url: Optional[str] = Field("", description="Bukti bayar jika manual")
-    amount: Optional[float] = Field(None, description="Nominal yang dibayarkan (untuk verifikasi; backend menghitung otomatis)")
+    custom_amount: Optional[float] = Field(None, description="Nominal custom pembayaran pilihan camaba")
+    amount: Optional[float] = Field(None, description="Nominal yang dibayarkan")
 
 
 def check_payment_method_allowed(settings: Dict[str, Any], method: str) -> bool:
@@ -1197,6 +1217,47 @@ def check_payment_method_allowed(settings: Dict[str, Any], method: str) -> bool:
     return True
 
 
+def compute_applicant_balances(applicant: Dict[str, Any], settings: Dict[str, Any]) -> Dict[str, Any]:
+    """Menghitung total terbayar dan sisa kurang bayar pendaftaran & pra-studi berdasarkan histori transaksi verified."""
+    history = applicant.get("payment_history") or []
+    
+    # Registration Fee
+    reg_fee = float(applicant.get("reg_payment_fee") or settings.get("registration_fee") or 250000)
+    reg_paid = sum(
+        float(item.get("custom_amount") or item.get("billed_amount") or 0)
+        for item in history
+        if item.get("category") == "registration" and item.get("status") == "verified"
+    )
+    if not reg_paid and applicant.get("reg_payment_status") == "verified":
+        reg_paid = reg_fee
+        
+    reg_remaining = max(0.0, reg_fee - reg_paid)
+    
+    # Pra-Studi Fee
+    pra_fee = float(applicant.get("pra_studi_fee") or settings.get("pra_studi_total_fee") or 3500000)
+    pra_paid = sum(
+        float(item.get("custom_amount") or item.get("billed_amount") or 0)
+        for item in history
+        if item.get("category") == "pra_studi" and item.get("status") == "verified"
+    )
+    if not pra_paid and (applicant.get("pra_studi_payment_status") == "paid" or applicant.get("reregistration_status") == "completed"):
+        pra_paid = pra_fee
+        
+    pra_remaining = max(0.0, pra_fee - pra_paid)
+    total_remaining = reg_remaining + pra_remaining
+
+    return {
+        "reg_fee_total": reg_fee,
+        "reg_fee_paid": reg_paid,
+        "reg_fee_remaining": reg_remaining,
+        "pra_fee_total": pra_fee,
+        "pra_fee_paid": pra_paid,
+        "pra_fee_remaining": pra_remaining,
+        "total_remaining_balance": total_remaining,
+        "payment_history": history,
+    }
+
+
 class PmbShirtSizeInput(BaseModel):
     shirt_size: str = Field(..., min_length=1, description="S, M, L, XL, XXL, XXXL")
     shirt_notes: Optional[str] = Field("", description="Catatan ukuran baju / lingkar dada")
@@ -1209,10 +1270,12 @@ class PmbSibermaruConfirmInput(BaseModel):
     health_notes: Optional[str] = Field("", description="Catatan Riwayat Kesehatan / Alergi")
 
 
-# CBT Online Test Session Specific Schemas
+# CBT Online & Offline Test Session Specific Schemas
 class PmbTestSessionInput(BaseModel):
     title: str = Field(..., min_length=3, description="Nama Sesi Ujian")
     description: Optional[str] = Field("", description="Deskripsi / instruksi sesi")
+    test_type: Optional[str] = Field("all", description="'all' | 'online' | 'offline'")
+    room_name: Optional[str] = Field("", description="Ruangan / Lokasi Ujian")
     start_at: str = Field(..., description="Jadwal buka ujian (ISO)")
     end_at: str = Field(..., description="Jadwal tutup ujian (ISO)")
     duration_minutes: Optional[int] = Field(45, description="Durasi pengerjaan per peserta")
@@ -1227,6 +1290,9 @@ class PmbTestSessionInput(BaseModel):
 class PmbCbtStartInput(BaseModel):
     session_id: str = Field(..., min_length=1)
     token: str = Field(..., min_length=4, description="Token ujian dari panitia PMB")
+    lat: Optional[float] = Field(None, description="Koordinat Latitude perangkat camaba untuk validasi tes offline")
+    lng: Optional[float] = Field(None, description="Koordinat Longitude perangkat camaba untuk validasi tes offline")
+    accuracy: Optional[float] = Field(None, description="Akurasi GPS perangkat dalam meter")
 
 
 class PmbCbtSaveInput(BaseModel):
@@ -1253,6 +1319,24 @@ class PmbOfflineScoreInput(BaseModel):
     score: float = Field(..., description="Nilai Tes Offline 0-100")
     status: str = Field("passed", description="'passed' atau 'failed'")
     notes: Optional[str] = Field("", description="Catatan Hasil Penguji")
+
+
+class PmbApproveAdmissionInput(BaseModel):
+    approval_status: str = Field("approved", description="'approved' atau 'rejected'")
+    sk_number: Optional[str] = Field("", description="Nomor SK Penerimaan (contoh: SK-PMB/2026/001)")
+    sk_date: Optional[str] = Field("", description="Tanggal Penetapan SK Penerimaan")
+    decision_notes: Optional[str] = Field("", description="Catatan hasil verifikasi & approval panitia")
+
+
+class PmbApprovePaymentInput(BaseModel):
+    action: Optional[str] = Field("approve", description="'approve' atau 'reject'")
+    term: Optional[int] = Field(None, description="Nomor cicilan jika skema cicilan")
+    notes: Optional[str] = Field("", description="Catatan admin")
+
+
+class PmbBulkApproveAdmissionInput(BaseModel):
+    applicant_ids: Optional[List[str]] = Field(default_factory=list, description="Daftar ID pendaftar yang disetujui, kosong = semua yang lulus tes")
+    sk_date: Optional[str] = Field("", description="Tanggal penetapan SK Penerimaan")
 
 
 class PmbSettingsInput(BaseModel):
@@ -1288,6 +1372,11 @@ class PmbSettingsInput(BaseModel):
     zoom_meeting_id: Optional[str] = None
     zoom_passcode: Optional[str] = None
     offline_test_location: Optional[str] = None
+    offline_test_room_name: Optional[str] = Field(None, description="Nama Ruangan Ujian Offline CBT")
+    offline_test_lat: Optional[float] = Field(None, description="Koordinat Latitude Ruangan Ujian")
+    offline_test_lng: Optional[float] = Field(None, description="Koordinat Longitude Ruangan Ujian")
+    offline_test_radius_meters: Optional[float] = Field(None, description="Radius toleransi GPS ruangan ujian (meter)")
+    offline_test_enforce_gps: Optional[bool] = Field(None, description="Wajibkan validasi GPS untuk ujian offline")
     offline_test_schedule_default: Optional[str] = None
     sibermaru_title: Optional[str] = None
     sibermaru_schedule: Optional[str] = None
@@ -1425,23 +1514,92 @@ async def get_pmb_public_config(request: Request):
         "logo_url": campus_logo_url,
     }
 
+    # Fetch registered promoters / marketing staff for referral selection
+    promoters = []
+    if settings.get("referral_enabled") is not False:
+        try:
+            promoters = await db.pmb_referrals.find({}, {"_id": 0, "id": 1, "name": 1, "code": 1, "category": 1}).sort("name", 1).to_list(200)
+        except Exception:
+            promoters = []
+
+    class_options = [
+        {
+            "id": "reguler_offline",
+            "class_type": "reguler",
+            "learning_mode": "offline",
+            "name": "Kelas Reguler Offline",
+            "label": "Kelas Reguler Offline",
+            "badge": "Tatap Muka di Kampus",
+            "description": "Perkuliahan reguler tatap muka langsung di ruang kelas kampus (Senin - Jumat)."
+        },
+        {
+            "id": "reguler_online",
+            "class_type": "reguler",
+            "learning_mode": "online",
+            "name": "Kelas Reguler Online",
+            "label": "Kelas Reguler Online",
+            "badge": "Daring Penuh Fleksibel",
+            "description": "Perkuliahan daring interaktif via LMS SIAKAD & Video Conference (Senin - Jumat)."
+        },
+        {
+            "id": "weekend_online",
+            "class_type": "weekend",
+            "learning_mode": "online",
+            "name": "Kelas Weekend Online",
+            "label": "Kelas Weekend Online",
+            "badge": "Daring Akhir Pekan",
+            "description": "Perkuliahan daring intensif khusus akhir pekan (Sabtu & Minggu) fleksibel untuk bekerja."
+        },
+        {
+            "id": "khusus_offline",
+            "class_type": "khusus",
+            "learning_mode": "offline",
+            "name": "Kelas Khusus Offline",
+            "label": "Kelas Khusus Offline",
+            "badge": "Kelas Eksekutif",
+            "description": "Program perkuliahan jalur eksekutif dengan kurikulum khusus dan pembelajaran tatap muka di kampus."
+        }
+    ]
+
     return {
         "ok": True,
         "settings": settings,
         "programs": prodi_list,
         "branding": branding_info,
+        "promoters": promoters,
+        "class_options": class_options,
         "class_rules": {
             "reguler": {
                 "label": "Kelas Reguler",
                 "description": "Perkuliahan reguler fleksibel, tersedia pilihan kelas Online (Daring Penuh) maupun Offline (Tatap Muka di Kampus).",
                 "allowed_modes": ["online", "offline"]
             },
+            "weekend": {
+                "label": "Kelas Weekend",
+                "description": "Perkuliahan daring akhir pekan (Sabtu - Minggu).",
+                "allowed_modes": ["online"]
+            },
             "khusus": {
                 "label": "Kelas Khusus / Karyawan",
-                "description": "Perkuliahan intensif malam / akhir pekan. Sesuai regulasi, kelas khusus hanya diselenggarakan secara Offline (Tatap Muka).",
+                "description": "Perkuliahan intensif malam hari. Sesuai regulasi, kelas khusus diselenggarakan secara Offline (Tatap Muka di Kampus).",
                 "allowed_modes": ["offline"]
             }
         }
+    }
+
+
+@router.get("/referrals/public/promoters")
+async def get_public_promoters(request: Request):
+    """Publik: Mengambil daftar nama marketing / promotor PMB terdaftar untuk pilihan formulir pendaftaran."""
+    db: PostgresDatabase = get_db(request)
+    settings = await get_or_init_settings(db)
+    if settings.get("referral_enabled") is False:
+        return {"ok": True, "promoters": []}
+
+    promoters = await db.pmb_referrals.find({}, {"_id": 0, "id": 1, "name": 1, "code": 1, "category": 1}).sort("name", 1).to_list(300)
+    return {
+        "ok": True,
+        "promoters": promoters
     }
 
 
@@ -1702,12 +1860,14 @@ async def register_pmb_applicant(payload: PmbRegisterInput, request: Request):
 
     # Validate Class and Mode Rule
     class_type = payload.class_type.lower()
-    if class_type not in ["reguler", "khusus"]:
+    if class_type not in ["reguler", "weekend", "khusus"]:
         class_type = "reguler"
 
     learning_mode = payload.learning_mode.lower()
     if class_type == "khusus":
         learning_mode = "offline"
+    elif class_type == "weekend":
+        learning_mode = "online"
     elif learning_mode not in ["online", "offline"]:
         learning_mode = "offline"
 
@@ -1830,9 +1990,9 @@ async def register_pmb_applicant(payload: PmbRegisterInput, request: Request):
         
         # Alur 5, 6, 7: Pelaksanaan Tes
         "test_type": "",
-        "test_score": 0.0,
+        "test_score": None,
         "test_status": "pending",
-        "test_completed_at": "",
+        "test_completed_at": None,
         "offline_test_schedule": settings.get("offline_test_schedule_default", "Sabtu, Pukul 09:00 WIB"),
         "offline_test_location": settings.get("offline_test_location", "Gedung Rektorat Lt. 2"),
         "offline_examiner_notes": "",
@@ -1935,7 +2095,16 @@ async def get_my_application(request: Request, applicant: Dict[str, Any] = Depen
     db: PostgresDatabase = get_db(request)
     settings = await get_or_init_settings(db)
 
-    # Validasi sekuensial tahapan berjalan
+    # Validasi sekuensial tahapan berjalan:
+    # 1: Formulir Data Diri
+    # 2: Pilihan Kelas & Prodi
+    # 3: Pembayaran Form
+    # 4: Grup WhatsApp Resmi
+    # 5: Pilih Tes Seleksi
+    # 6/7: Ujian CBT (Offline GPS / Online Mandiri)
+    # 8: Surat Keputusan (SK) Penerimaan & Approval Admin PMB
+    # 9: Daftar Ulang (Pembayaran Pra-Studi & Ukuran Jas Almamater)
+    # 10: Orientasi Sibermaru & Akses Masuk SIAKAD (Klaim NIM)
     step = int(applicant.get("current_step") or 1)
     if applicant.get("reg_payment_status") == "verified":
         step = max(step, 4)
@@ -1945,9 +2114,9 @@ async def get_my_application(request: Request, applicant: Dict[str, Any] = Depen
                 step = max(step, 6 if applicant.get("test_type") == "offline" else 7)
                 if applicant.get("test_status") == "passed":
                     step = max(step, 8)
-                    if applicant.get("reregistration_status") in ["partial", "completed"] and applicant.get("shirt_size"):
+                    if applicant.get("sk_approved"):
                         step = max(step, 9)
-                        if applicant.get("sibermaru_confirmed"):
+                        if applicant.get("reregistration_status") in ["partial", "completed"] and applicant.get("shirt_size"):
                             step = max(step, 10)
 
     applicant["current_step"] = step
@@ -2063,6 +2232,8 @@ async def update_pmb_form(payload: PmbUpdateFormInput, request: Request, applica
         c_type = updates["class_type"].lower()
         if c_type == "khusus":
             updates["learning_mode"] = "offline"
+        elif c_type == "weekend":
+            updates["learning_mode"] = "online"
 
     if "prodi_id" in updates:
         p = await db.programs.find_one({"id": updates["prodi_id"]}, {"_id": 0})
@@ -2090,7 +2261,7 @@ async def update_pmb_form(payload: PmbUpdateFormInput, request: Request, applica
 
 @router.post("/pay-registration")
 async def pay_registration_fee(payload: PmbPayRegInput, request: Request, applicant: Dict[str, Any] = Depends(get_current_applicant)):
-    """Pembayaran Biaya Formulir Pendaftaran (Alur 3) — dengan kode unik 3 digit & metode MANUAL (bukti transfer)."""
+    """Pembayaran Biaya Formulir Pendaftaran (Alur 3) — mendukung nominal custom & histori transaksi."""
     db: PostgresDatabase = get_db(request)
     settings = await get_or_init_settings(db)
 
@@ -2102,47 +2273,61 @@ async def pay_registration_fee(payload: PmbPayRegInput, request: Request, applic
         )
 
     reg_fee = int(settings.get("registration_fee", 250000))
-    code = payment_unique_code(f"{applicant['id']}:reg:{reg_fee}")
-    billed_amount = build_unique_amount(reg_fee, code)
+    custom_nominal = int(payload.custom_amount) if payload.custom_amount and payload.custom_amount > 0 else reg_fee
+    
+    code = payment_unique_code(f"{applicant['id']}:reg:{custom_nominal}:{uuid4().hex[:6]}")
+    billed_amount = build_unique_amount(custom_nominal, code)
 
-    is_manual = method == "MANUAL"
-    status = "verified" if (not is_manual) or bool(payload.payment_proof_url) else "pending_verification"
+    entry_id = f"pay_reg_{uuid4().hex[:10]}"
+    payment_entry = {
+        "id": entry_id,
+        "category": "registration",
+        "scheme": "custom" if custom_nominal != reg_fee else "full",
+        "custom_amount": custom_nominal,
+        "unique_code": str(code),
+        "billed_amount": billed_amount,
+        "payment_method": method,
+        "payment_proof": payload.payment_proof_url or "",
+        "status": "pending_verification",
+        "notes": payload.notes or (f"Pembayaran pendaftaran custom Rp {custom_nominal:,}" if custom_nominal != reg_fee else "Pembayaran Pendaftaran Full"),
+        "created_at": now_iso(),
+        "verified_at": "",
+        "verified_by": "",
+    }
+
+    history = applicant.get("payment_history") or []
+    history.append(payment_entry)
 
     updates = {
         "reg_payment_fee": reg_fee,
-        "reg_payment_code": code,
+        "reg_payment_code": str(code),
         "reg_payment_amount": billed_amount,
-        "reg_payment_status": status,
+        "reg_payment_status": "pending_verification",
         "reg_payment_method": method,
         "reg_payment_proof": payload.payment_proof_url or "",
-        "reg_paid_at": now_iso(),
-        "reg_verified_at": now_iso() if status == "verified" else "",
-        "current_step": max(applicant.get("current_step", 1), 4),
-        "status": "payment_verified" if status == "verified" else "pending_payment",
+        "reg_paid_at": now_iso() if payload.payment_proof_url else "",
+        "payment_history": history,
+        "current_step": max(applicant.get("current_step", 1), 3),
+        "status": "pending_payment_verification",
     }
 
     await db.pmb_applicants.update_one({"id": applicant["id"]}, {"$set": updates})
 
-    # Update referral promoter metrics if referred
-    if applicant.get("referral_code"):
-        await db.pmb_referrals.update_one(
-            {"code": applicant.get("referral_code")},
-            {"$inc": {"total_paid_registration": 1}}
-        )
-
     updated = await db.pmb_applicants.find_one({"id": applicant["id"]}, {"_id": 0})
+    balances = compute_applicant_balances(updated, settings)
     safe_applicant = {k: v for k, v in updated.items() if k != "password_hash"}
 
     return {
         "ok": True,
-        "message": "Pembayaran biaya pendaftaran berhasil dicatat!" if status == "verified" else "Bukti pembayaran diterima, menunggu verifikasi panitia.",
+        "message": f"Bukti pembayaran pendaftaran Rp {custom_nominal:,} telah diterima, menunggu verifikasi panitia.",
         "applicant": safe_applicant,
+        "balances": balances,
         "payment": {
-            "fee": reg_fee,
+            "fee": custom_nominal,
             "unique_code": code,
             "amount": billed_amount,
             "method": method,
-            "status": status,
+            "status": "pending_verification",
             "account": {
                 "bank_name": settings.get("bank_account_name", ""),
                 "bank_account_number": settings.get("bank_account_number", ""),
@@ -2201,11 +2386,16 @@ async def choose_test_type(payload: PmbChooseTestInput, request: Request, applic
             detail="Ujian Online (CBT) saat ini dinonaktifkan oleh administrator kampus. Silakan pilih Ujian Offline di Kampus."
         )
 
-    next_step = 7 if t_type == "online" else 6
+    curr_step = applicant.get("current_step", 1)
+    has_finished = bool(
+        applicant.get("test_completed_at") or 
+        (applicant.get("test_status") and applicant.get("test_status") not in ("pending", "", "not_started"))
+    )
+    new_step = max(curr_step, 7) if has_finished else 6
 
     updates = {
         "test_type": t_type,
-        "current_step": max(applicant.get("current_step", 1), next_step),
+        "current_step": new_step,
         "offline_test_schedule": settings.get("offline_test_schedule_default", "Sabtu, Pukul 09:00 WIB"),
         "offline_test_location": settings.get("offline_test_location", "Gedung Rektorat Lt. 2"),
         "online_zoom_url": settings.get("zoom_test_url", "")
@@ -2269,7 +2459,7 @@ async def finalize_attempt(
     answers: Dict[str, Any],
     auto: bool = False,
 ) -> Dict[str, Any]:
-    """Menghitung nilai, memperbarui attempt & data pendaftar (Alur 7)."""
+    """Menghitung nilai, memperbarui attempt & data pendaftar (Alur 6/7 -> Alur 8)."""
     passing_grade = float(attempt.get("passing_grade", 70))
 
     keys = attempt.get("keys") or {}
@@ -2283,7 +2473,7 @@ async def finalize_attempt(
     score = result["score"]
     is_passed = score >= passing_grade
     status = "passed" if is_passed else "failed"
-    next_step = 8 if is_passed else 7
+    next_step = 7
 
     attempt_updates = {
         "answers": answers,
@@ -2300,8 +2490,9 @@ async def finalize_attempt(
     }
     await db.pmb_test_attempts.update_one({"id": attempt["id"]}, {"$set": attempt_updates})
 
+    test_type = attempt.get("test_type") or applicant.get("test_type") or "online"
     applicant_updates = {
-        "test_type": "online",
+        "test_type": test_type,
         "test_score": score,
         "test_status": status,
         "test_completed_at": now_iso(),
@@ -2322,22 +2513,56 @@ async def finalize_attempt(
         "total_count": result["total_count"],
         "flagged": attempt_updates["flagged"],
         "auto_submitted": attempt_updates["auto_submitted"],
-        "message": "Selamat! Anda dinyatakan LULUS seleksi ujian masuk." if is_passed else "Nilai Anda belum memenuhi passing grade minimal.",
+        "message": "Ujian seleksi Anda telah berhasil dikumpulkan. Silakan menunggu proses penetapan Surat Keputusan (SK) Penerimaan oleh Panitia PMB.",
     }
 
 
 async def get_session_for_applicant(db: PostgresDatabase, applicant_id: str) -> Dict[str, Any]:
-    """Sesi paling relevan untuk peserta: sesi aktif/terdekat (buka pertama kali)."""
+    """Sesi paling relevan untuk peserta: sesi aktif/terdekat sesuai jalur tes (online/offline/all)."""
     now = datetime.now(timezone.utc)
-    sessions = await db.pmb_test_sessions.find({}, {"_id": 0}).to_list(100)
-    sessions = sorted(sessions, key=lambda s: parse_dt(s.get("start_at")) or datetime.min)
-    active = [s for s in sessions if test_session_is_open(s, now)]
-    if active:
-        return active[0]
-    upcoming = [s for s in sessions if (parse_dt(s.get("start_at")) or now) >= now and (s.get("status") or "closed").lower() == "active"]
+    applicant = await db.pmb_applicants.find_one({"id": applicant_id}, {"_id": 0})
+    app_test_type = (applicant.get("test_type") if applicant else "online") or "online"
+
+    sessions = await db.pmb_test_sessions.find({"status": {"$ne": "closed"}}, {"_id": 0}).to_list(100)
+    if not sessions:
+        sessions = await db.pmb_test_sessions.find({}, {"_id": 0}).to_list(100)
+
+    if not sessions:
+        return None
+
+    # Filter matching applicant's test_type or hybrid "all"
+    matching = [
+        s for s in sessions
+        if s.get("test_type") in ("all", app_test_type) or not s.get("test_type")
+    ]
+    candidate_sessions = matching if matching else sessions
+
+    # 1. Currently open sessions (priority)
+    open_sessions = [s for s in candidate_sessions if test_session_is_open(s, now)]
+    if open_sessions:
+        open_sessions = sorted(
+            open_sessions,
+            key=lambda s: parse_dt(s.get("updated_at") or s.get("created_at") or s.get("start_at")) or datetime.min,
+            reverse=True
+        )
+        return open_sessions[0]
+
+    # 2. Upcoming active sessions (start_at >= now)
+    upcoming = [
+        s for s in candidate_sessions
+        if (parse_dt(s.get("end_at") or s.get("start_at")) or now) >= now and (s.get("status") or "active").lower() == "active"
+    ]
     if upcoming:
+        upcoming = sorted(upcoming, key=lambda s: parse_dt(s.get("start_at")) or datetime.max)
         return upcoming[0]
-    return (sessions or [None])[0]
+
+    # 3. Latest updated/created session
+    candidate_sessions = sorted(
+        candidate_sessions,
+        key=lambda s: parse_dt(s.get("updated_at") or s.get("created_at") or s.get("start_at")) or datetime.min,
+        reverse=True
+    )
+    return candidate_sessions[0]
 
 
 @router.get("/cbt/session")
@@ -2351,15 +2576,19 @@ async def get_cbt_session_status(request: Request, applicant: Dict[str, Any] = D
         return {
             "ok": True,
             "session": None,
+            "attempts": [],
+            "last_attempt": None,
             "message": "Belum ada sesi ujian CBT yang dijadwalkan. Hubungi panitia PMB.",
         }
 
     now = datetime.now(timezone.utc)
     open_state = session_open_state(session, now)
     attempts = await db.pmb_test_attempts.find(
-        {"session_id": session["id"], "applicant_id": applicant["id"]}, {"_id": 0}
+        {"session_id": session["id"], "applicant_id": applicant["id"]}, {"_id": 0, "keys": 0, "questions": 0}
     ).to_list(20)
     attempts = sorted(attempts, key=lambda a: parse_dt(a.get("started_at")) or datetime.min, reverse=True)
+
+    is_offline = applicant.get("test_type") == "offline" or session.get("test_type") == "offline"
 
     return {
         "ok": True,
@@ -2367,6 +2596,7 @@ async def get_cbt_session_status(request: Request, applicant: Dict[str, Any] = D
             "id": session["id"],
             "title": session.get("title"),
             "description": session.get("description"),
+            "test_type": session.get("test_type", "all"),
             "start_at": session.get("start_at"),
             "end_at": session.get("end_at"),
             "duration_minutes": session.get("duration_minutes"),
@@ -2375,6 +2605,12 @@ async def get_cbt_session_status(request: Request, applicant: Dict[str, Any] = D
             "state": open_state["state"],
             "state_label": open_state["label"],
             "violation_grace_seconds": session.get("violation_grace_seconds", settings.get("cbt_violation_grace_seconds", 30)),
+            "is_offline": is_offline,
+            "gps_required": is_offline and bool(settings.get("offline_test_enforce_gps", True)),
+            "room_name": session.get("room_name") or settings.get("offline_test_room_name") or settings.get("offline_test_location") or "Ruang CBT Kampus",
+            "room_lat": settings.get("offline_test_lat"),
+            "room_lng": settings.get("offline_test_lng"),
+            "radius_meters": settings.get("offline_test_radius_meters", 100.0),
         },
         "attempts": attempts,
         "last_attempt": attempts[0] if attempts else None,
@@ -2383,22 +2619,54 @@ async def get_cbt_session_status(request: Request, applicant: Dict[str, Any] = D
 
 @router.post("/cbt/start")
 async def start_cbt_session(payload: PmbCbtStartInput, request: Request, applicant: Dict[str, Any] = Depends(get_current_applicant)):
-    """Peserta: mulai ujian CBT dengan token dari panitia (memvalidasi token & jadwal)."""
+    """Peserta: mulai ujian CBT dengan token dari panitia (memvalidasi token, jadwal & geolokasi GPS untuk ujian offline)."""
     db: PostgresDatabase = get_db(request)
     settings = await get_or_init_settings(db)
     now = datetime.now(timezone.utc)
-
-    if not settings.get("online_test_enabled", False):
-        raise HTTPException(
-            status_code=400,
-            detail="Ujian Online (CBT) saat ini dinonaktifkan oleh administrator kampus. Silakan pilih Ujian Offline di Kampus."
-        )
 
     session = await db.pmb_test_sessions.find_one({"id": payload.session_id}, {"_id": 0})
     if not session:
         raise HTTPException(status_code=404, detail="Sesi ujian tidak ditemukan")
     if not test_session_is_open(session, now):
         raise HTTPException(status_code=403, detail="Sesi ujian belum dibuka atau telah berakhir")
+
+    is_offline = applicant.get("test_type") == "offline" or session.get("test_type") == "offline"
+    if not is_offline and not settings.get("online_test_enabled", False):
+        raise HTTPException(
+            status_code=400,
+            detail="Ujian Online (CBT) mandiri saat ini dinonaktifkan oleh administrator kampus. Silakan pilih Ujian Offline di Kampus."
+        )
+
+    # Validasi GPS Geolocation jika memilih Ujian Offline
+    geo_data: Dict[str, Any] = {
+        "geo_required": is_offline,
+        "geo_lat": payload.lat,
+        "geo_lng": payload.lng,
+        "geo_accuracy": payload.accuracy,
+        "geo_distance_meters": None,
+        "geo_valid": True,
+    }
+
+    if is_offline and settings.get("offline_test_enforce_gps", True):
+        target_lat = settings.get("offline_test_lat")
+        target_lng = settings.get("offline_test_lng")
+        max_radius = float(settings.get("offline_test_radius_meters") or 100.0)
+        room_name = settings.get("offline_test_room_name") or settings.get("offline_test_location") or "Ruang CBT Kampus"
+
+        if target_lat is not None and target_lng is not None:
+            if payload.lat is None or payload.lng is None:
+                raise HTTPException(
+                    status_code=400,
+                    detail=f"Ujian Offline memerlukan validasi lokasi GPS. Harap izinkan akses lokasi (GPS) pada perangkat/browser Anda untuk memverifikasi kehadiran di {room_name}."
+                )
+            distance = calculate_haversine_distance(float(payload.lat), float(payload.lng), float(target_lat), float(target_lng))
+            geo_data["geo_distance_meters"] = round(distance, 1)
+            if distance > max_radius:
+                geo_data["geo_valid"] = False
+                raise HTTPException(
+                    status_code=403,
+                    detail=f"Validasi GPS Gagal: Anda terdeteksi berada di luar area ruangan ujian ({round(distance)} meter dari {room_name}, radius maksimal {int(max_radius)} meter). Silakan masuk ke ruangan ujian kampus."
+                )
 
     token = payload.token.strip().upper()
     retake_allowed = session.get("retake_allowed", True)
@@ -2473,6 +2741,11 @@ async def start_cbt_session(payload: PmbCbtStartInput, request: Request, applica
         "name": applicant.get("name"),
         "token_used": token,
         "is_retake": is_retake,
+        "test_type": "offline" if is_offline else "online",
+        "geo_lat": geo_data.get("geo_lat"),
+        "geo_lng": geo_data.get("geo_lng"),
+        "geo_distance_meters": geo_data.get("geo_distance_meters"),
+        "geo_valid": geo_data.get("geo_valid", True),
         "started_at": started_at.isoformat(),
         "deadline_at": deadline_at.isoformat(),
         "duration_minutes": duration_minutes,
@@ -2599,6 +2872,8 @@ async def list_admin_test_sessions(request: Request, user: Dict[str, Any] = Depe
             "id": s["id"],
             "title": s.get("title"),
             "description": s.get("description"),
+            "test_type": s.get("test_type", "all"),
+            "room_name": s.get("room_name", ""),
             "start_at": s.get("start_at"),
             "end_at": s.get("end_at"),
             "duration_minutes": s.get("duration_minutes"),
@@ -2626,7 +2901,7 @@ async def list_admin_test_sessions(request: Request, user: Dict[str, Any] = Depe
 
 @router.post("/admin/test-sessions")
 async def create_admin_test_session(payload: PmbTestSessionInput, request: Request, user: Dict[str, Any] = Depends(require_admin)):
-    """Admin: membuat sesi ujian CBT (jadwal, durasi, passing grade) dan generate token ujian."""
+    """Admin: membuat sesi ujian CBT (jadwal, durasi, passing grade, tipe tes online/offline) dan generate token ujian."""
     db: PostgresDatabase = get_db(request)
 
     start = parse_dt(payload.start_at)
@@ -2640,10 +2915,16 @@ async def create_admin_test_session(payload: PmbTestSessionInput, request: Reque
     if status not in {"draft", "active", "closed"}:
         raise HTTPException(status_code=400, detail="Status harus draft/active/closed")
 
+    test_type = (payload.test_type or "all").lower()
+    if test_type not in {"all", "online", "offline"}:
+        test_type = "all"
+
     session = {
         "id": f"pmb_ts_{uuid4().hex[:8]}",
         "title": payload.title.strip(),
         "description": payload.description or "",
+        "test_type": test_type,
+        "room_name": (payload.room_name or "").strip(),
         "start_at": start.isoformat(),
         "end_at": end.isoformat(),
         "duration_minutes": int(payload.duration_minutes or 45),
@@ -2664,7 +2945,7 @@ async def create_admin_test_session(payload: PmbTestSessionInput, request: Reque
 
 @router.put("/admin/test-sessions/{session_id}")
 async def update_admin_test_session(session_id: str, payload: PmbTestSessionInput, request: Request, user: Dict[str, Any] = Depends(require_admin)):
-    """Admin: memperbarui jadwal/durasi/passing grade sesi ujian CBT."""
+    """Admin: memperbarui jadwal/durasi/passing grade/tipe tes online/offline sesi ujian CBT."""
     db: PostgresDatabase = get_db(request)
     existing = await db.pmb_test_sessions.find_one({"id": session_id}, {"_id": 0})
     if not existing:
@@ -2681,9 +2962,15 @@ async def update_admin_test_session(session_id: str, payload: PmbTestSessionInpu
     if status not in {"draft", "active", "closed"}:
         raise HTTPException(status_code=400, detail="Status harus draft/active/closed")
 
+    test_type = (payload.test_type or "all").lower()
+    if test_type not in {"all", "online", "offline"}:
+        test_type = "all"
+
     updates = {
         "title": payload.title.strip(),
         "description": payload.description or "",
+        "test_type": test_type,
+        "room_name": (payload.room_name or "").strip(),
         "start_at": start.isoformat(),
         "end_at": end.isoformat(),
         "duration_minutes": int(payload.duration_minutes or 45),
@@ -2871,87 +3158,75 @@ async def pay_pra_studi_fee(payload: PmbReregisterPayInput, request: Request, ap
 
     installments = applicant.get("installments") or []
     scheme = payload.scheme.lower()
-    pra_total = int(settings.get("pra_studi_total_fee", 3500000))
+    pra_total = int(applicant.get("pra_studi_fee") or settings.get("pra_studi_total_fee", 3500000))
 
-    payment_detail = None
-
-    if scheme == "full":
-        code = payment_unique_code(f"{applicant['id']}:pra:full:{pra_total}")
-        billed = build_unique_amount(pra_total, code)
-        for inst in installments:
-            inst["status"] = "paid"
-            inst["paid_at"] = now_iso()
-            inst["payment_method"] = method
-            inst["unique_code"] = code
-        rereg_status = "completed"
-        payment_detail = {
-            "scheme": "full",
-            "total_fee": pra_total,
-            "unique_code": code,
-            "amount": billed,
-            "term": None,
-            "installment": None,
-        }
-        pra_updates_payment = {
-            "pra_studi_payment_code": code,
-            "pra_studi_payment_amount": billed,
-            "pra_studi_payment_status": "paid",
-            "pra_studi_payment_method": method,
-            "pra_studi_payment_proof": payload.payment_proof_url or "",
-            "pra_studi_paid_at": now_iso(),
-        }
-    else:
+    if scheme == "custom" or (payload.custom_amount and payload.custom_amount > 0):
+        custom_nominal = int(payload.custom_amount)
+        term_num = None
+        code = payment_unique_code(f"{applicant['id']}:pra:custom:{custom_nominal}:{uuid4().hex[:6]}")
+        billed = build_unique_amount(custom_nominal, code)
+        scheme_type = "custom"
+        notes_str = f"Pembayaran Uang Pra-Studi custom Rp {custom_nominal:,}"
+    elif scheme == "installment":
         term_num = payload.term or 1
-        pra_updates_payment = {}
-        found = False
-        all_paid = True
-        chosen = None
-        for inst in installments:
-            if inst.get("term") == term_num:
-                inst_fee = int(inst.get("amount", 0) or 0)
-                code = payment_unique_code(f"{applicant['id']}:pra:inst:{term_num}:{inst_fee}")
-                billed = build_unique_amount(inst_fee, code)
-                inst["status"] = "paid"
-                inst["paid_at"] = now_iso()
-                inst["payment_method"] = method
-                inst["unique_code"] = code
-                inst["billed_amount"] = billed
-                found = True
-                chosen = inst
-            if inst.get("status") != "paid":
-                all_paid = False
+        found_inst = next((i for i in installments if i.get("term") == term_num), None)
+        custom_nominal = int(found_inst.get("amount", 1000000)) if found_inst else 1000000
+        code = payment_unique_code(f"{applicant['id']}:pra:inst:{term_num}:{custom_nominal}:{uuid4().hex[:6]}")
+        billed = build_unique_amount(custom_nominal, code)
+        scheme_type = "installment"
+        notes_str = f"Pembayaran Cicilan ke-{term_num} Pra-Studi Rp {custom_nominal:,}"
+        if found_inst:
+            found_inst["status"] = "pending_verification"
+            found_inst["submitted_at"] = now_iso()
+            found_inst["payment_method"] = method
+            found_inst["unique_code"] = str(code)
+            found_inst["billed_amount"] = billed
+            if payload.payment_proof_url:
+                found_inst["payment_proof"] = payload.payment_proof_url
+    else:
+        custom_nominal = pra_total
+        term_num = None
+        code = payment_unique_code(f"{applicant['id']}:pra:full:{pra_total}:{uuid4().hex[:6]}")
+        billed = build_unique_amount(pra_total, code)
+        scheme_type = "full"
+        notes_str = f"Pembayaran Uang Pra-Studi Lunas (Full) Rp {pra_total:,}"
 
-        if not found and installments:
-            inst = installments[0]
-            inst_fee = int(inst.get("amount", 0) or 0)
-            code = payment_unique_code(f"{applicant['id']}:pra:inst:{inst.get('term')}:{inst_fee}")
-            billed = build_unique_amount(inst_fee, code)
-            inst["status"] = "paid"
-            inst["paid_at"] = now_iso()
-            inst["payment_method"] = method
-            inst["unique_code"] = code
-            inst["billed_amount"] = billed
-            chosen = inst
+    entry_id = f"pay_pra_{uuid4().hex[:10]}"
+    payment_entry = {
+        "id": entry_id,
+        "category": "pra_studi",
+        "scheme": scheme_type,
+        "term": term_num,
+        "custom_amount": custom_nominal,
+        "unique_code": str(code),
+        "billed_amount": billed,
+        "payment_method": method,
+        "payment_proof": payload.payment_proof_url or "",
+        "status": "pending_verification",
+        "notes": notes_str,
+        "created_at": now_iso(),
+        "verified_at": "",
+        "verified_by": "",
+    }
 
-        rereg_status = "completed" if all_paid else "partial"
-        payment_detail = {
-            "scheme": "installment",
-            "total_fee": pra_total,
-            "unique_code": chosen.get("unique_code") if chosen else "",
-            "amount": chosen.get("billed_amount") if chosen else "",
-            "term": chosen.get("term") if chosen else (term_num or 1),
-            "installment": chosen,
-        }
-        if chosen and payload.payment_proof_url:
-            chosen["payment_proof"] = payload.payment_proof_url
+    history = applicant.get("payment_history") or []
+    history.append(payment_entry)
 
-    next_step = 9 if applicant.get("shirt_size") else 8
+    pra_updates_payment = {
+        "pra_studi_scheme": scheme_type,
+        "pra_studi_payment_code": str(code),
+        "pra_studi_payment_amount": billed,
+        "pra_studi_payment_status": "pending_verification",
+        "pra_studi_payment_method": method,
+        "pra_studi_payment_proof": payload.payment_proof_url or "",
+        "pra_studi_submitted_at": now_iso(),
+    }
 
     updates = {
-        "pra_studi_scheme": scheme,
         "installments": installments,
-        "reregistration_status": rereg_status,
-        "current_step": max(applicant.get("current_step", 1), next_step),
+        "reregistration_status": "pending_verification",
+        "payment_history": history,
+        "current_step": max(applicant.get("current_step", 1), 8),
         **pra_updates_payment,
     }
 
@@ -3029,7 +3304,7 @@ async def confirm_sibermaru(payload: PmbSibermaruConfirmInput, request: Request,
         "emergency_contact_phone": (payload.emergency_contact_phone or "").strip(),
         "health_notes": payload.health_notes or "",
         "sibermaru_confirmed_at": now_iso(),
-        "current_step": max(applicant.get("current_step", 1), 10)
+        "current_step": max(applicant.get("current_step", 1), 9)
     }
 
     await db.pmb_applicants.update_one({"id": applicant["id"]}, {"$set": updates})
@@ -3093,15 +3368,25 @@ async def get_pmb_proof(file_id: str):
 
 @router.get("/admission-letter")
 async def get_admission_letter(request: Request, applicant: Dict[str, Any] = Depends(get_current_applicant)):
-    """Surat Keputusan Penerimaan (LoA) & Ringkasan Kelulusan PMB (Alur 10)."""
+    """Surat Keputusan Penerimaan (LoA) & Ringkasan Kelulusan PMB (Alur 8)."""
     db: PostgresDatabase = get_db(request)
     settings = await get_or_init_settings(db)
 
+    year_prefix = settings.get("nim_prefix") or datetime.now().strftime("%Y")
+    default_sk = f"SK-PMB/{year_prefix}/{applicant.get('registration_number', '0001')}"
+    sk_num = applicant.get("sk_number") or default_sk
+    sk_date = applicant.get("sk_date") or datetime.now().strftime("%d %B %Y")
+    is_approved = bool(applicant.get("sk_approved"))
+    sk_status = "approved" if is_approved else "pending" if applicant.get("test_status") == "passed" else "not_eligible"
+
     return {
         "ok": True,
-        "institution_name": "INSTITUT TEKNOLOGI & BISNIS KAMPUS",
-        "letter_number": f"SK-PMB/{datetime.now().strftime('%Y')}/{applicant.get('registration_number', '0001')}",
-        "date": datetime.now().strftime("%d %B %Y"),
+        "sk_approved": is_approved,
+        "sk_status": sk_status,
+        "institution_name": settings.get("campus_name") or "POLITEKNIK SCI",
+        "letter_number": sk_num,
+        "date": sk_date,
+        "decision_notes": applicant.get("decision_notes", "Dinyatakan LULUS Seleksi Masuk dan Diterima sebagai Calon Mahasiswa Baru."),
         "applicant": {
             "name": applicant.get("name"),
             "registration_number": applicant.get("registration_number"),
@@ -3110,7 +3395,12 @@ async def get_admission_letter(request: Request, applicant: Dict[str, Any] = Dep
             "class_type": applicant.get("class_type"),
             "learning_mode": applicant.get("learning_mode"),
             "test_score": applicant.get("test_score"),
-            "generated_nim": applicant.get("generated_nim") or "Akan diterbitkan Panitia / Otomatis",
+            "test_status": applicant.get("test_status"),
+            "sk_approved": is_approved,
+            "sk_number": sk_num,
+            "sk_date": sk_date,
+            "sk_approved_by": applicant.get("sk_approved_by", ""),
+            "generated_nim": applicant.get("generated_nim") or "Diterbitkan resmi saat her-registrasi",
             "is_converted_to_student": applicant.get("is_converted_to_student", False)
         },
         "settings": settings
@@ -3149,6 +3439,13 @@ async def list_pmb_applicants(
             query["reg_payment_status"] = "verified"
         elif status == "passed":
             query["test_status"] = "passed"
+        elif status == "sk_approved":
+            query["sk_approved"] = True
+        elif status == "sk_pending":
+            query["test_status"] = "passed"
+            query["sk_approved"] = {"$ne": True}
+        elif status == "sk_rejected":
+            query["sk_status"] = "rejected"
         elif status == "reregistered":
             query["reregistration_status"] = {"$in": ["partial", "completed"]}
         elif status == "converted":
@@ -3185,15 +3482,31 @@ async def get_applicant_detail(applicant_id: str, request: Request, user: Dict[s
 
 
 @router.post("/admin/applicants/{applicant_id}/verify-payment")
-async def admin_verify_payment(applicant_id: str, request: Request, user: Dict[str, Any] = Depends(require_admin)):
-    """Admin: Verifikasi manual pembayaran formulir pendaftaran."""
+async def admin_verify_payment(
+    applicant_id: str,
+    payload: Optional[PmbApprovePaymentInput] = None,
+    request: Request = None,
+    user: Dict[str, Any] = Depends(require_admin)
+):
+    """Admin: Verifikasi & approval manual pembayaran formulir pendaftaran (Alur 3)."""
     db: PostgresDatabase = get_db(request)
     applicant = await db.pmb_applicants.find_one({"id": applicant_id}, {"_id": 0})
     if not applicant:
         raise HTTPException(status_code=404, detail="Pendaftar tidak ditemukan")
 
+    action = (payload.action if payload else "approve") or "approve"
+    if action == "reject":
+        updates = {
+            "reg_payment_status": "rejected",
+            "status": "payment_rejected",
+            "reg_payment_proof": "",  # Reset proof to allow reupload
+        }
+        await db.pmb_applicants.update_one({"id": applicant_id}, {"$set": updates})
+        return {"ok": True, "message": "Pembayaran formulir pendaftaran ditolak."}
+
     updates = {
         "reg_payment_status": "verified",
+        "registration_fee_paid": True,
         "reg_verified_at": now_iso(),
         "current_step": max(applicant.get("current_step", 1), 4),
         "status": "payment_verified"
@@ -3206,7 +3519,107 @@ async def admin_verify_payment(applicant_id: str, request: Request, user: Dict[s
             {"$inc": {"total_paid_registration": 1}}
         )
 
-    return {"ok": True, "message": "Pembayaran formulir pendaftaran berhasil diverifikasi"}
+    return {"ok": True, "message": "Pembayaran formulir pendaftaran berhasil disetujui & diverifikasi"}
+
+
+@router.get("/admin/applicants/{applicant_id}/payment-summary")
+async def get_admin_applicant_payment_summary(
+    applicant_id: str,
+    request: Request,
+    user: Dict[str, Any] = Depends(require_admin)
+):
+    """Admin: Histori transaksi pembayaran lengkap & akumulasi sisa kurang bayar pendaftar."""
+    db: PostgresDatabase = get_db(request)
+    applicant = await db.pmb_applicants.find_one({"id": applicant_id}, {"_id": 0, "password_hash": 0})
+    if not applicant:
+        raise HTTPException(status_code=404, detail="Pendaftar tidak ditemukan")
+    settings = await get_or_init_settings(db)
+    balances = compute_applicant_balances(applicant, settings)
+    return {"ok": True, "applicant_id": applicant_id, "balances": balances, "applicant": applicant}
+
+
+@router.post("/admin/applicants/{applicant_id}/payments/{payment_id}/verify")
+async def admin_verify_specific_payment_transaction(
+    applicant_id: str,
+    payment_id: str,
+    payload: PmbApprovePaymentInput,
+    request: Request,
+    user: Dict[str, Any] = Depends(require_admin)
+):
+    """Admin: Verifikasi atau tolak transaksi pembayaran tertentu (Alur 3 / Alur 8)."""
+    db: PostgresDatabase = get_db(request)
+    applicant = await db.pmb_applicants.find_one({"id": applicant_id}, {"_id": 0})
+    if not applicant:
+        raise HTTPException(status_code=404, detail="Pendaftar tidak ditemukan")
+
+    settings = await get_or_init_settings(db)
+    history = applicant.get("payment_history") or []
+    target_entry = next((p for p in history if p.get("id") == payment_id), None)
+    
+    if not target_entry:
+        target_entry = {
+            "id": payment_id,
+            "category": "registration",
+            "custom_amount": applicant.get("reg_payment_fee", 250000),
+            "status": "pending_verification",
+            "payment_method": applicant.get("reg_payment_method", "QRIS"),
+            "payment_proof": applicant.get("reg_payment_proof", ""),
+        }
+        history.append(target_entry)
+
+    action = (payload.action if payload else "approve") or "approve"
+    approver_name = user.get("name") or user.get("username") or "Panitia PMB"
+
+    if action == "reject":
+        target_entry["status"] = "rejected"
+        target_entry["verified_at"] = now_iso()
+        target_entry["verified_by"] = approver_name
+    else:
+        target_entry["status"] = "verified"
+        target_entry["verified_at"] = now_iso()
+        target_entry["verified_by"] = approver_name
+
+    # Recalculate balances
+    balances = compute_applicant_balances({"payment_history": history, **applicant}, settings)
+
+    reg_status = "verified" if balances["reg_fee_remaining"] <= 0 else ("partial" if balances["reg_fee_paid"] > 0 else "pending")
+    pra_status = "completed" if balances["pra_fee_remaining"] <= 0 else ("partial" if balances["pra_fee_paid"] > 0 else "pending")
+
+    current_step = applicant.get("current_step", 1)
+    if balances["reg_fee_paid"] > 0:
+        current_step = max(current_step, 4)
+    if balances["pra_fee_paid"] > 0 or applicant.get("shirt_size"):
+        current_step = max(current_step, 9)
+
+    updates = {
+        "payment_history": history,
+        "reg_payment_status": reg_status,
+        "registration_fee_paid": (balances["reg_fee_remaining"] <= 0),
+        "pra_studi_payment_status": pra_status,
+        "pra_studi_fee_paid": (balances["pra_fee_remaining"] <= 0),
+        "reregistration_status": pra_status,
+        "reg_fee_paid_amount": balances["reg_fee_paid"],
+        "reg_fee_remaining": balances["reg_fee_remaining"],
+        "pra_fee_paid_amount": balances["pra_fee_paid"],
+        "pra_fee_remaining": balances["pra_fee_remaining"],
+        "total_remaining_balance": balances["total_remaining_balance"],
+        "current_step": current_step,
+    }
+
+    if action == "approve" and applicant.get("referral_code"):
+        await db.pmb_referrals.update_one(
+            {"code": applicant["referral_code"]},
+            {"$inc": {"total_paid_registration": 1}}
+        )
+
+    await db.pmb_applicants.update_one({"id": applicant_id}, {"$set": updates})
+    updated = await db.pmb_applicants.find_one({"id": applicant_id}, {"_id": 0, "password_hash": 0})
+    return {
+        "ok": True,
+        "message": f"Transaksi pembayaran Rp {target_entry.get('custom_amount', 0):,} berhasil {'disetujui' if action == 'approve' else 'ditolak'}.",
+        "applicant": updated,
+        "balances": balances
+    }
 
 
 @router.post("/admin/applicants/{applicant_id}/offline-score")
@@ -3224,7 +3637,7 @@ async def admin_input_offline_score(
 
     is_passed = payload.status.lower() == "passed" or payload.score >= 70
     status_str = "passed" if is_passed else "failed"
-    next_step = 8 if is_passed else 6
+    next_step = 7 if is_passed else 6
 
     updates = {
         "test_type": "offline",
@@ -3238,6 +3651,107 @@ async def admin_input_offline_score(
 
     await db.pmb_applicants.update_one({"id": applicant_id}, {"$set": updates})
     return {"ok": True, "message": f"Nilai tes offline ({payload.score}) & status '{status_str}' berhasil disimpan"}
+
+
+@router.post("/admin/applicants/{applicant_id}/approve-admission")
+async def admin_approve_admission(
+    applicant_id: str,
+    payload: PmbApproveAdmissionInput,
+    request: Request,
+    user: Dict[str, Any] = Depends(require_admin)
+):
+    """Admin: Approve atau Reject Surat Keputusan (SK) Penerimaan Calon Mahasiswa Baru (Alur 7)."""
+    db: PostgresDatabase = get_db(request)
+    settings = await get_or_init_settings(db)
+
+    applicant = await db.pmb_applicants.find_one({"id": applicant_id}, {"_id": 0})
+    if not applicant:
+        raise HTTPException(status_code=404, detail="Pendaftar tidak ditemukan")
+
+    is_approved = payload.approval_status.lower() == "approved"
+    year_prefix = settings.get("nim_prefix") or datetime.now().strftime("%Y")
+    default_sk = f"SK-PMB/{year_prefix}/{applicant.get('registration_number', '0001')}"
+    sk_number = (payload.sk_number or "").strip() or applicant.get("sk_number") or default_sk
+    sk_date = (payload.sk_date or "").strip() or applicant.get("sk_date") or datetime.now().strftime("%d %B %Y")
+    approver_name = user.get("name") or user.get("username") or "Panitia PMB"
+
+    updates: Dict[str, Any] = {
+        "sk_approved": is_approved,
+        "sk_status": "approved" if is_approved else "rejected",
+        "sk_number": sk_number if is_approved else "",
+        "sk_date": sk_date if is_approved else "",
+        "sk_approved_at": now_iso() if is_approved else "",
+        "sk_approved_by": approver_name if is_approved else "",
+        "decision_notes": payload.decision_notes or ("Dinyatakan DITERIMA Resmi sebagai Mahasiswa Baru." if is_approved else "Belum memenuhi kualifikasi seleksi."),
+        "status": "accepted" if is_approved else "rejected",
+        "updated_at": now_iso(),
+    }
+
+    if is_approved:
+        updates["current_step"] = max(applicant.get("current_step", 1), 8)
+
+    await db.pmb_applicants.update_one({"id": applicant_id}, {"$set": updates})
+
+    return {
+        "ok": True,
+        "message": f"Surat Keputusan Penerimaan untuk '{applicant.get('name')}' berhasil {'disetujui' if is_approved else 'ditolak'}.",
+        "sk_approved": is_approved,
+        "sk_number": sk_number if is_approved else "",
+        "applicant_id": applicant_id
+    }
+
+
+@router.post("/admin/applicants/bulk-approve-admission")
+async def bulk_approve_admissions(
+    payload: PmbBulkApproveAdmissionInput,
+    request: Request,
+    user: Dict[str, Any] = Depends(require_admin)
+):
+    """Admin: 1-Click Bulk Approval SK Penerimaan untuk semua calon mahasiswa yang telah lulus ujian CBT."""
+    db: PostgresDatabase = get_db(request)
+    settings = await get_or_init_settings(db)
+
+    query: Dict[str, Any] = {
+        "$or": [
+            {"test_status": "passed"},
+            {"test_status": "completed"},
+            {"test_completed_at": {"$ne": None}},
+            {"test_score": {"$ne": None}},
+            {"cbt_attempt_id": {"$ne": None}},
+        ]
+    }
+    if payload.applicant_ids:
+        query = {"id": {"$in": payload.applicant_ids}}
+
+    passed_applicants = await db.pmb_applicants.find(query, {"_id": 0}).to_list(1000)
+    year_prefix = settings.get("nim_prefix") or datetime.now().strftime("%Y")
+    approver_name = user.get("name") or user.get("username") or "Panitia PMB"
+    sk_date = payload.sk_date.strip() if payload.sk_date else datetime.now().strftime("%d %B %Y")
+
+    approved_count = 0
+    for app in passed_applicants:
+        if not app.get("sk_approved"):
+            sk_number = f"SK-PMB/{year_prefix}/{app.get('registration_number', '0001')}"
+            updates = {
+                "sk_approved": True,
+                "sk_status": "approved",
+                "sk_number": sk_number,
+                "sk_date": sk_date,
+                "sk_approved_at": now_iso(),
+                "sk_approved_by": approver_name,
+                "decision_notes": "Dinyatakan DITERIMA Resmi melalui Keputusan Panitia PMB.",
+                "status": "accepted",
+                "current_step": max(app.get("current_step", 1), 8),
+                "updated_at": now_iso(),
+            }
+            await db.pmb_applicants.update_one({"id": app["id"]}, {"$set": updates})
+            approved_count += 1
+
+    return {
+        "ok": True,
+        "message": f"Berhasil menerbitkan & menyetujui SK Penerimaan untuk {approved_count} calon mahasiswa.",
+        "approved_count": approved_count
+    }
 
 
 @router.post("/admin/applicants/{applicant_id}/verify-reregistration")
@@ -3257,7 +3771,7 @@ async def admin_verify_reregistration(applicant_id: str, request: Request, user:
     updates = {
         "reregistration_status": "completed",
         "installments": installments,
-        "current_step": max(applicant.get("current_step", 1), 9)
+        "current_step": max(applicant.get("current_step", 1), 8)
     }
     await db.pmb_applicants.update_one({"id": applicant_id}, {"$set": updates})
 
@@ -3356,7 +3870,7 @@ async def admin_convert_applicant_to_student(
             "student_user_id": student_user_id,
             "converted_at": now_iso(),
             "status": "accepted_siakad",
-            "current_step": 10
+            "current_step": 9
         }}
     )
 
@@ -3421,7 +3935,8 @@ async def get_pmb_admin_stats(request: Request, user: Dict[str, Any] = Depends(r
     class_type_dist = {
         "reguler_offline": sum(1 for a in all_applicants if a.get("class_type") == "reguler" and a.get("learning_mode") == "offline"),
         "reguler_online": sum(1 for a in all_applicants if a.get("class_type") == "reguler" and a.get("learning_mode") == "online"),
-        "khusus_offline": sum(1 for a in all_applicants if a.get("class_type") == "khusus")
+        "weekend_online": sum(1 for a in all_applicants if a.get("class_type") == "weekend"),
+        "khusus_offline": sum(1 for a in all_applicants if a.get("class_type") == "khusus"),
     }
 
     prodi_counts: Dict[str, int] = {}
@@ -3788,7 +4303,8 @@ async def get_pmb_executive_final_report(request: Request, user: Dict[str, Any] 
     class_distribution = {
         "reguler_offline": sum(1 for a in all_applicants if a.get("class_type") == "reguler" and a.get("learning_mode") == "offline"),
         "reguler_online": sum(1 for a in all_applicants if a.get("class_type") == "reguler" and a.get("learning_mode") == "online"),
-        "khusus_offline": sum(1 for a in all_applicants if a.get("class_type") == "khusus")
+        "weekend_online": sum(1 for a in all_applicants if a.get("class_type") == "weekend"),
+        "khusus_offline": sum(1 for a in all_applicants if a.get("class_type") == "khusus"),
     }
 
     # Top Referrers

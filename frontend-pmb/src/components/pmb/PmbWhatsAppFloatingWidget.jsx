@@ -129,7 +129,7 @@ export function PmbWhatsAppFloatingWidget({ settings, branding }) {
               <div className="bg-slate-800/90 border border-slate-700/80 rounded-2xl rounded-tl-xs p-3 text-slate-200 shadow-md space-y-1.5 leading-relaxed">
                 <p className="font-semibold text-emerald-400 text-[11px]">Panitia PMB Resmi</p>
                 <p>
-                  Halo! 👋 Selamat datang di Portal PMB <strong>{campusName}</strong>.
+                  Halo! Selamat datang di Portal PMB <strong>{campusName}</strong>.
                 </p>
                 <p className="text-slate-300">
                   Ada yang ingin Anda tanyakan seputar pendaftaran, syarat prodi, jalur beasiswa, atau rincian biaya cicilan?

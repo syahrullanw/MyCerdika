@@ -119,12 +119,59 @@ export function PmbExamPage({ token, authToken, sessionId, onExit }) {
     } catch (_) {}
   }, [authToken]);
 
+  const acquireLocation = () => {
+    return new Promise((resolve) => {
+      if (!navigator.geolocation) {
+        resolve({ error: "Perangkat / browser Anda tidak mendukung fitur Geolocation GPS." });
+        return;
+      }
+      navigator.geolocation.getCurrentPosition(
+        (pos) => {
+          resolve({
+            lat: pos.coords.latitude,
+            lng: pos.coords.longitude,
+            accuracy: pos.coords.accuracy,
+          });
+        },
+        (err) => {
+          let msg = "Gagal mendeteksi lokasi GPS.";
+          if (err.code === 1) msg = "Izin lokasi GPS ditolak oleh browser. Mohon izinkan akses lokasi pada browser untuk verifikasi kehadiran di ruangan ujian.";
+          else if (err.code === 2) msg = "Posisi GPS tidak dapat ditentukan. Pastikan fitur lokasi/GPS aktif.";
+          else if (err.code === 3) msg = "Waktu permintaan sinyal GPS habis (timeout).";
+          resolve({ error: msg });
+        },
+        { enableHighAccuracy: true, timeout: 10000, maximumAge: 0 }
+      );
+    });
+  };
+
   const startExam = useCallback(async () => {
+    setError("");
     setStarting(true);
+    let coords = {};
+    if (navigator.geolocation) {
+      try {
+        const geoResult = await acquireLocation();
+        if (geoResult?.lat && geoResult?.lng) {
+          coords = {
+            lat: geoResult.lat,
+            lng: geoResult.lng,
+            accuracy: geoResult.accuracy,
+          };
+        }
+      } catch (_) {}
+    }
+
     try {
       const res = await api.post(
         "/api/v1/pmb/cbt/start",
-        { session_id: sessionId, token: tokenInput.trim() },
+        {
+          session_id: sessionId,
+          token: tokenInput.trim(),
+          lat: coords.lat ?? null,
+          lng: coords.lng ?? null,
+          accuracy: coords.accuracy ?? null,
+        },
         { headers: { Authorization: `Bearer ${authToken}` } }
       );
       const data = res.data;
@@ -333,48 +380,41 @@ export function PmbExamPage({ token, authToken, sessionId, onExit }) {
 
   // ---------------- PHASE: RESULT ----------------
   if (phase === "result" && result) {
-    const passed = Boolean(result.passed);
     return (
       <div className="min-h-screen bg-slate-950 flex items-center justify-center p-4">
         <Card className="w-full max-w-md border-slate-700 bg-slate-900 text-white shadow-2xl">
           <CardContent className="p-6 space-y-5 text-center">
-            <div className={`mx-auto w-16 h-16 rounded-full flex items-center justify-center ${passed ? "bg-emerald-500/20" : "bg-rose-500/20"}`}>
-              {passed ? (
-                <CheckCircle2 className="w-9 h-9 text-emerald-400" />
-              ) : (
-                <XCircle className="w-9 h-9 text-rose-400" />
-              )}
+            <div className="mx-auto w-16 h-16 rounded-full flex items-center justify-center bg-emerald-500/20">
+              <CheckCircle2 className="w-9 h-9 text-emerald-400" />
             </div>
             <div>
-              <h2 className="text-xl font-black text-white">{passed ? "Ujian Selesai & Dinyatakan LULUS" : "Ujian Selesai"}</h2>
-              <p className="text-xs text-slate-400 mt-1">{result.message}</p>
+              <h2 className="text-xl font-black text-white">Ujian Seleksi Selesai Dikerjakan</h2>
+              <p className="text-xs text-slate-300 mt-1.5 leading-relaxed">
+                Jawaban ujian CBT Anda telah berhasil dikumpulkan dan tersimpan di sistem PMB.
+              </p>
             </div>
 
-            <div className="grid grid-cols-2 gap-3">
-              <div className="rounded-xl bg-slate-800 border border-slate-700 p-4">
-                <p className="text-[10px] uppercase tracking-wider text-slate-400 font-semibold">Nilai</p>
-                <p className={`text-3xl font-black ${passed ? "text-emerald-400" : "text-rose-400"}`}>{result.score}</p>
-                <p className="text-[10px] text-slate-500">Passing grade {result.passing_grade}</p>
-              </div>
-              <div className="rounded-xl bg-slate-800 border border-slate-700 p-4">
-                <p className="text-[10px] uppercase tracking-wider text-slate-400 font-semibold">Benar</p>
-                <p className="text-3xl font-black text-white">{result.correct_count}<span className="text-sm text-slate-500">/{result.total_count}</span></p>
-                <p className="text-[10px] text-slate-500">Soal terjawab</p>
-              </div>
+            <div className="rounded-xl bg-slate-800/90 border border-slate-700 p-4 text-xs text-slate-300 text-left space-y-2">
+              <p className="font-bold text-emerald-400 text-[11px] uppercase tracking-wider flex items-center gap-1.5">
+                <CheckCircle2 className="w-4 h-4" /> Tahapan Selanjutnya
+              </p>
+              <p className="text-[11px] leading-relaxed text-slate-300">
+                Hasil ujian dan kelulusan akan ditetapkan melalui Surat Keputusan (SK) Penerimaan oleh Panitia PMB. Silakan kembali ke Dashboard Portal PMB untuk memantau status SK Anda.
+              </p>
             </div>
 
             {result.flagged && (
               <div className="flex items-start gap-2 rounded-lg bg-amber-500/10 border border-amber-500/30 p-3 text-left">
                 <ShieldAlert className="w-4 h-4 text-amber-400 mt-0.5 shrink-0" />
                 <p className="text-xs text-amber-300">
-                  Ujian ditandai <b>mencurigakan</b> karena terdeteksi keluar layar penuh. Hubungi panitia PMB untuk token ujian ulang (retake) bila perlu.
+                  Ujian ditandai catatan toleransi layar penuh. Panitia PMB akan meninjau riwayat ujian Anda.
                 </p>
               </div>
             )}
 
-            <div className="flex flex-col gap-2">
-              <Button onClick={onExit} className="w-full bg-indigo-600 hover:bg-indigo-700 text-white font-bold">
-                Kembali ke Portal PMB
+            <div className="flex flex-col gap-2 pt-1">
+              <Button onClick={onExit} className="w-full bg-gradient-to-r from-emerald-600 to-teal-600 hover:from-emerald-500 hover:to-teal-500 text-white font-extrabold shadow-md py-5 text-xs">
+                Kembali ke Portal PMB (Cek Status SK) →
               </Button>
             </div>
           </CardContent>

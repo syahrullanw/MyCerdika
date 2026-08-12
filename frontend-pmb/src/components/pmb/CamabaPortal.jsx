@@ -29,7 +29,11 @@ import {
   Trophy,
   Check,
   Video,
-  Lock
+  Lock,
+  Printer,
+  MapPin,
+  FileCheck,
+  ChevronDown
 } from "lucide-react";
 import { ReferralRegistrationModal } from "./ReferralComponents";
 import { PmbExamPage } from "./PmbExamPage";
@@ -39,15 +43,14 @@ const api = axios.create({ baseURL: BACKEND_URL });
 
 const STEPS = [
   { id: 1, label: "Formulir", desc: "Data Diri & Asal Sekolah", icon: User },
-  { id: 2, label: "Pilih Kelas", desc: "Reguler / Khusus", icon: BookOpen },
-  { id: 3, label: "Pembayaran", desc: "Biaya Pendaftaran", icon: CreditCard },
-  { id: 4, label: "Grup WA", desc: "Gabung Grup Resmi", icon: MessageSquare },
-  { id: 5, label: "Pilih Tes", desc: "Online CBT / Offline", icon: Layers },
-  { id: 6, label: "Tes Offline", desc: "Jadwal & Hasil Kampus", icon: Building },
-  { id: 7, label: "Tes Online", desc: "CBT Mandiri & Hasil", icon: Video },
-  { id: 8, label: "Daftar Ulang", desc: "Pra-Studi & Ukuran Baju", icon: Shirt },
-  { id: 9, label: "Sibermaru", desc: "Informasi Orientasi", icon: Calendar },
-  { id: 10, label: "Masuk SIAKAD", desc: "NIM & SK Kelulusan", icon: Award },
+  { id: 2, label: "Pilihan Kelas", desc: "4 Jenis Kelas & Prodi", icon: BookOpen },
+  { id: 3, label: "Pembayaran", desc: "Biaya Formulir PMB", icon: CreditCard },
+  { id: 4, label: "Grup WA", desc: "Gabung Grup Resmi PMB", icon: MessageSquare },
+  { id: 5, label: "Pilih Tes", desc: "Online CBT / Offline Kampus", icon: Layers },
+  { id: 6, label: "Ujian Seleksi", desc: "Jadwal & Ruang CBT Ujian", icon: Building },
+  { id: 7, label: "SK Penerimaan", desc: "Approval & LoA Kelulusan", icon: Award },
+  { id: 8, label: "Daftar Ulang", desc: "Pra-Studi & Jas Almamater", icon: Shirt },
+  { id: 9, label: "Masuk SIAKAD", desc: "Sibermaru & Klaim NIM", icon: GraduationCap },
 ];
 
 function formatRupiah(num) {
@@ -68,6 +71,8 @@ export function CamabaPortal({ token, onLogout, onSwitchToStudent, branding }) {
   // Form edit states
   const [examSession, setExamSession] = useState(null);
   const [examSessionStatus, setExamSessionStatus] = useState(null);
+  const [examAttempts, setExamAttempts] = useState([]);
+  const [admissionLetter, setAdmissionLetter] = useState(null);
   const [examOpen, setExamOpen] = useState(false);
   const [examToken, setExamToken] = useState("");
   const [selectedShirtSize, setSelectedShirtSize] = useState("L");
@@ -79,6 +84,9 @@ export function CamabaPortal({ token, onLogout, onSwitchToStudent, branding }) {
   const [uploadingProof, setUploadingProof] = useState(false);
   const [praPayScheme, setPraPayScheme] = useState("full");
   const [praPayTerm, setPraPayTerm] = useState(1);
+  const [regPayMode, setRegPayMode] = useState("full");
+  const [regCustomAmount, setRegCustomAmount] = useState(250000);
+  const [praCustomAmount, setPraCustomAmount] = useState(500000);
 
   // Available payment methods computed dynamically from settings
   const availablePaymentMethods = useMemo(() => {
@@ -146,9 +154,10 @@ export function CamabaPortal({ token, onLogout, onSwitchToStudent, branding }) {
       const res = await api.get("/api/v1/pmb/cbt/session", {
         headers: { Authorization: `Bearer ${token}` },
       });
-      if (res.data.ok) {
+      if (res.data?.ok) {
         setExamSession(res.data.session || null);
         setExamSessionStatus(res.data.last_attempt || null);
+        setExamAttempts(Array.isArray(res.data.attempts) ? res.data.attempts : []);
       }
     } catch (_) {
       setExamSession(null);
@@ -157,6 +166,29 @@ export function CamabaPortal({ token, onLogout, onSwitchToStudent, branding }) {
 
   useEffect(() => {
     fetchExamSession();
+  }, [token]);
+
+  useEffect(() => {
+    if (activeStep === 6) {
+      fetchExamSession();
+    }
+  }, [activeStep]);
+
+  const fetchAdmissionLetter = async () => {
+    try {
+      const res = await api.get("/api/v1/pmb/admission-letter", {
+        headers: { Authorization: `Bearer ${token}` },
+      });
+      if (res.data?.ok) {
+        setAdmissionLetter(res.data);
+      }
+    } catch (_) {
+      setAdmissionLetter(null);
+    }
+  };
+
+  useEffect(() => {
+    fetchAdmissionLetter();
   }, [token]);
 
   const fetchPaymentQuote = async () => {
@@ -237,9 +269,14 @@ export function CamabaPortal({ token, onLogout, onSwitchToStudent, branding }) {
         }
         proof_url = await uploadProof(proofFile);
       }
+      const payload = {
+        payment_method: method,
+        payment_proof_url: proof_url,
+        custom_amount: regPayMode === "custom" ? Number(regCustomAmount) : null,
+      };
       const res = await api.post(
         "/api/v1/pmb/pay-registration",
-        { payment_method: method, payment_proof_url: proof_url },
+        payload,
         { headers: { Authorization: `Bearer ${token}` } }
       );
       if (res.data.ok) {
@@ -284,7 +321,8 @@ export function CamabaPortal({ token, onLogout, onSwitchToStudent, branding }) {
       if (res.data.ok) {
         toast.success(res.data.message);
         setApplicant(res.data.applicant);
-        setActiveStep(type === "online" ? 7 : 6);
+        await fetchExamSession();
+        setActiveStep(6);
       }
     } catch (err) {
       toast.error(apiErrorMessage(err, "Gagal memilih metode tes"));
@@ -292,11 +330,14 @@ export function CamabaPortal({ token, onLogout, onSwitchToStudent, branding }) {
   };
 
   const handleStartCbt = async () => {
-    if (settings?.online_test_enabled === false) {
+    if (!examSession?.id) {
+      toast.error("Belum ada sesi ujian CBT yang dijadwalkan panitia");
+      return;
+    }
+    if (applicant?.test_type === "online" && settings?.online_test_enabled === false) {
       toast.error("Ujian Online (CBT) saat ini dinonaktifkan oleh panitia PMB.");
       return;
     }
-    if (!examSession?.id) return;
     if (!examToken.trim()) {
       toast.error("Masukkan token ujian yang dibagikan panitia PMB");
       return;
@@ -308,6 +349,7 @@ export function CamabaPortal({ token, onLogout, onSwitchToStudent, branding }) {
     setExamOpen(false);
     await fetchExamSession();
     await fetchApplication();
+    await fetchAdmissionLetter();
   };
 
   const handlePayPraStudi = async (scheme = praPayScheme, term = praPayTerm) => {
@@ -321,9 +363,16 @@ export function CamabaPortal({ token, onLogout, onSwitchToStudent, branding }) {
         }
         proof_url = await uploadProof(proofFile);
       }
+      const payload = {
+        scheme,
+        term,
+        payment_method: method,
+        payment_proof_url: proof_url,
+        custom_amount: scheme === "custom" ? Number(praCustomAmount) : null,
+      };
       const res = await api.post(
         "/api/v1/pmb/reregister/pay",
-        { scheme, term, payment_method: method, payment_proof_url: proof_url },
+        payload,
         { headers: { Authorization: `Bearer ${token}` } }
       );
       if (res.data.ok) {
@@ -373,7 +422,7 @@ export function CamabaPortal({ token, onLogout, onSwitchToStudent, branding }) {
       if (res.data.ok) {
         toast.success(res.data.message);
         setApplicant(res.data.applicant);
-        setActiveStep(10);
+        setActiveStep(9);
       }
     } catch (err) {
       toast.error("Gagal menyimpan konfirmasi Sibermaru");
@@ -405,8 +454,8 @@ export function CamabaPortal({ token, onLogout, onSwitchToStudent, branding }) {
   return (
     <div className="min-h-screen bg-slate-50 flex flex-col font-sans pb-12">
       {/* Top Navbar */}
-      <header className="sticky top-0 z-30 bg-white/95 backdrop-blur border-b border-slate-200 px-4 py-3 sm:px-8 flex items-center justify-between">
-        <div className="flex items-center gap-3">
+      <header className="sticky top-0 z-30 bg-white/95 backdrop-blur border-b border-slate-200 px-4 py-3 sm:px-8 flex flex-col sm:flex-row items-start sm:items-center justify-between gap-3">
+        <div className="flex items-center gap-3 min-w-0 w-full sm:w-auto">
           {branding?.campus_logo_url || branding?.logo_url ? (
             <div className="w-10 h-10 rounded-xl bg-white p-1 flex items-center justify-center shadow-md border border-slate-200 overflow-hidden shrink-0">
               <img
@@ -424,24 +473,24 @@ export function CamabaPortal({ token, onLogout, onSwitchToStudent, branding }) {
               <GraduationCap className="w-6 h-6" />
             </div>
           )}
-          <div>
-            <h1 className="font-extrabold text-base sm:text-lg text-slate-900 leading-tight">
-              Portal Mahasiswa Baru {branding?.campus_name ? `• ${branding.campus_name}` : ""}
+          <div className="min-w-0 flex-1">
+            <h1 className="font-extrabold text-sm sm:text-base md:text-lg text-slate-900 leading-tight truncate">
+              Portal PMB {branding?.campus_name ? `• ${branding.campus_name}` : ""}
             </h1>
-            <p className="text-xs text-slate-500 font-medium">
-              No. Registrasi: <span className="font-mono font-bold text-indigo-600">{applicant?.registration_number}</span> • {applicant?.period_name}
+            <p className="text-[11px] text-slate-500 font-medium truncate">
+              No. Reg: <span className="font-mono font-bold text-indigo-600">{applicant?.registration_number}</span> • {applicant?.period_name}
             </p>
           </div>
         </div>
 
-        <div className="flex items-center gap-2 sm:gap-3">
+        <div className="flex items-center justify-between sm:justify-end gap-2 sm:gap-3 w-full sm:w-auto pt-1 sm:pt-0 border-t sm:border-t-0 border-slate-100">
           {settings?.referral_enabled !== false && (
             <Button
               type="button"
               variant="outline"
               size="sm"
               onClick={() => setShowReferralModal(true)}
-              className="text-xs border-indigo-200 text-indigo-700 hover:bg-indigo-50 font-bold hidden sm:flex items-center gap-1.5"
+              className="text-xs border-indigo-200 text-indigo-700 hover:bg-indigo-50 font-bold flex items-center gap-1.5"
             >
               <Gift className="w-3.5 h-3.5" /> Dapatkan Fee Referal
             </Button>
@@ -455,7 +504,7 @@ export function CamabaPortal({ token, onLogout, onSwitchToStudent, branding }) {
             variant="ghost"
             size="sm"
             onClick={onLogout}
-            className="text-xs text-rose-600 hover:bg-rose-50 font-semibold"
+            className="text-xs text-rose-600 hover:bg-rose-50 font-semibold ml-auto sm:ml-0"
           >
             Keluar
           </Button>
@@ -470,20 +519,20 @@ export function CamabaPortal({ token, onLogout, onSwitchToStudent, branding }) {
       />
 
       {/* Main Container */}
-      <main className="max-w-6xl mx-auto px-4 sm:px-6 w-full pt-6 space-y-6">
+      <main className="max-w-6xl mx-auto px-3 sm:px-6 w-full pt-4 sm:pt-6 space-y-5">
         {/* Banner Referral Promo */}
         {applicant?.referral_code ? (
-          <div className="p-3.5 bg-gradient-to-r from-indigo-50 to-sky-50 border border-indigo-200 rounded-xl flex items-center justify-between">
+          <div className="p-3.5 bg-gradient-to-r from-indigo-50 to-sky-50 border border-indigo-200 rounded-xl flex flex-col sm:flex-row items-start sm:items-center justify-between gap-3">
             <div className="flex items-center gap-2.5">
               <Handshake className="w-5 h-5 text-indigo-600 shrink-0" />
               <p className="text-xs text-indigo-900 font-medium">
                 Pendaftaran Anda terhubung dengan Kode Referal Promotor: <strong className="font-mono font-bold text-indigo-700">{applicant.referral_code}</strong> ({applicant.referrer_name || "Mitra Kampus"})
               </p>
             </div>
-            <Badge className="bg-indigo-600 text-white text-[10px]">Referal Aktif</Badge>
+            <Badge className="bg-indigo-600 text-white text-[10px] shrink-0">Referal Aktif</Badge>
           </div>
         ) : (
-          <div className="p-3.5 bg-gradient-to-r from-amber-50 to-orange-50 border border-amber-200 rounded-xl flex items-center justify-between">
+          <div className="p-3.5 bg-gradient-to-r from-amber-50 to-orange-50 border border-amber-200 rounded-xl flex flex-col sm:flex-row items-start sm:items-center justify-between gap-3">
             <div className="flex items-center gap-2.5">
               <Gift className="w-5 h-5 text-amber-500 shrink-0" />
               <p className="text-xs text-amber-900 font-medium">
@@ -494,7 +543,7 @@ export function CamabaPortal({ token, onLogout, onSwitchToStudent, branding }) {
               type="button"
               size="sm"
               onClick={() => setShowReferralModal(true)}
-              className="bg-amber-600 hover:bg-amber-700 text-white font-bold text-xs h-7 px-3"
+              className="bg-amber-600 hover:bg-amber-700 text-white font-bold text-xs h-8 px-3.5 w-full sm:w-auto shrink-0 shadow-xs"
             >
               Daftar Referal
             </Button>
@@ -502,35 +551,40 @@ export function CamabaPortal({ token, onLogout, onSwitchToStudent, branding }) {
         )}
 
         {/* 10-Step Progress Horizontal Stepper */}
-        <Card className="border-slate-200 shadow-sm overflow-hidden">
-          <CardHeader className="bg-slate-900 text-white py-3.5 px-5">
-            <div className="flex items-center justify-between">
+        <Card className="border-slate-800 bg-slate-900 text-white shadow-xl overflow-hidden">
+          <CardHeader className="bg-slate-950/90 border-b border-slate-800 py-3.5 px-4 sm:px-5">
+            <div className="flex items-center justify-between gap-2">
               <div>
-                <CardTitle className="text-sm font-bold flex items-center gap-2">
-                  <Sparkles className="w-4 h-4 text-amber-400" />
+                <CardTitle className="text-xs sm:text-sm font-bold flex items-center gap-2 text-white">
+                  <Sparkles className="w-4 h-4 text-amber-400 shrink-0" />
                   Alur Seleksi Penerimaan Mahasiswa Baru
                 </CardTitle>
-                <CardDescription className="text-slate-300 text-xs mt-0.5">
-                  Ikuti 10 tahapan resmi berikut untuk menjadi Mahasiswa Aktif
+                <CardDescription className="text-slate-300 text-[11px] sm:text-xs mt-0.5">
+                  Ikuti 9 tahapan resmi berikut untuk menjadi Mahasiswa Aktif
                 </CardDescription>
               </div>
-              <Badge className="bg-sky-500/20 text-sky-300 border border-sky-400/30 text-xs px-2.5 py-0.5 font-bold">
-                Langkah {activeStep} dari 10
+              <Badge className="bg-indigo-600/40 text-indigo-200 border border-indigo-500/50 text-[10px] sm:text-xs px-2.5 py-0.5 font-bold shrink-0">
+                Langkah {activeStep} / 9
               </Badge>
             </div>
           </CardHeader>
-          <CardContent className="p-3 sm:p-4 overflow-x-auto">
-            <div className="flex items-center justify-between min-w-[760px] gap-2">
+          <CardContent className="p-2.5 sm:p-4 overflow-x-auto bg-slate-900 touch-pan-x">
+            <div className="flex items-center justify-between min-w-[700px] sm:min-w-0 sm:w-full gap-1.5 sm:gap-2">
               {STEPS.map((st) => {
                 const currentStepNum = applicant?.current_step || 1;
-                const isPassed = currentStepNum > st.id;
+                const hasCompletedTest = Boolean(
+                  applicant?.test_completed_at ||
+                  (applicant?.test_status && !["pending", "not_started", "untested", ""].includes(applicant?.test_status)) ||
+                  examAttempts.some((att) => att.status === "submitted" || att.status === "auto_submitted" || Boolean(att.finished_at))
+                );
+                const isAccessible = st.id <= currentStepNum || (currentStepNum >= 5 && (st.id === 5 || st.id === 6)) || (hasCompletedTest && st.id === 7);
                 const isCurrent = activeStep === st.id;
-                const isLocked = currentStepNum < st.id;
+                const isTestStage = (st.id === 5 || st.id === 6) && !hasCompletedTest;
+                const isPassed = (st.id < currentStepNum && !isTestStage) || (hasCompletedTest && (st.id === 5 || st.id === 6));
+                const isLocked = !isAccessible;
 
                 const handleStepClick = () => {
-                  if (isPassed) {
-                    toast.info(`Alur ${st.id} (${st.label}) telah selesai dilewati dan terkunci.`);
-                  } else if (isLocked) {
+                  if (isLocked) {
                     toast.warning(`Alur ${st.id} (${st.label}) masih terkunci. Harap selesaikan tahapan sebelumnya terlebih dahulu.`);
                   } else {
                     setActiveStep(st.id);
@@ -542,28 +596,36 @@ export function CamabaPortal({ token, onLogout, onSwitchToStudent, branding }) {
                     key={st.id}
                     type="button"
                     onClick={handleStepClick}
-                    className={`flex-1 flex flex-col items-center text-center p-2 rounded-xl transition-all ${
+                    className={`flex-1 min-w-[92px] sm:min-w-0 shrink-0 sm:shrink flex flex-col items-center text-center p-2 rounded-xl transition-all ${
                       isCurrent
-                        ? "bg-indigo-50 border-2 border-indigo-600 shadow-sm cursor-pointer"
+                        ? "bg-indigo-600 text-white border-2 border-indigo-400 shadow-md cursor-pointer"
                         : isPassed
-                        ? "bg-emerald-50/60 border border-emerald-200 opacity-90 cursor-not-allowed"
-                        : "bg-slate-50 border border-slate-200 opacity-40 cursor-not-allowed"
+                        ? "bg-emerald-700/90 hover:bg-emerald-600 text-white border border-emerald-500/80 cursor-pointer"
+                        : isTestStage
+                        ? "bg-sky-600 hover:bg-sky-500 text-white border border-sky-400 cursor-pointer"
+                        : isAccessible
+                        ? "bg-emerald-700/90 hover:bg-emerald-600 text-white border border-emerald-500/80 cursor-pointer"
+                        : "bg-slate-800 text-slate-300 border border-slate-700/80 cursor-not-allowed opacity-60"
                     }`}
                   >
                     <div
-                      className={`w-7 h-7 rounded-full flex items-center justify-center text-xs font-bold mb-1 ${
+                      className={`w-6 h-6 sm:w-7 sm:h-7 rounded-full flex items-center justify-center text-[11px] sm:text-xs font-bold mb-1 ${
                         isCurrent
-                          ? "bg-indigo-600 text-white ring-4 ring-indigo-100"
+                          ? "bg-white text-indigo-700 ring-2 ring-indigo-300"
                           : isPassed
-                          ? "bg-emerald-600 text-white"
-                          : "bg-slate-200 text-slate-500"
+                          ? "bg-white text-emerald-700"
+                          : isTestStage
+                          ? "bg-white text-sky-700"
+                          : isAccessible
+                          ? "bg-white text-emerald-700"
+                          : "bg-slate-700 text-slate-300"
                       }`}
                     >
-                      {isPassed ? <Check className="w-4 h-4" /> : isLocked ? <Lock className="w-3.5 h-3.5" /> : st.id}
+                      {isPassed ? <Check className="w-3.5 h-3.5 sm:w-4 sm:h-4 stroke-[3]" /> : isLocked ? <Lock className="w-3 h-3 sm:w-3.5 sm:h-3.5" /> : st.id}
                     </div>
-                    <span className="text-[11px] font-bold text-slate-800 line-clamp-1">{st.label}</span>
-                    <span className="text-[9px] text-slate-500 line-clamp-1">
-                      {isPassed ? "Selesai ✓" : isCurrent ? "Sedang Berjalan" : "Terkunci 🔒"}
+                    <span className="text-[10px] sm:text-[11px] font-bold line-clamp-1 text-white">{st.label}</span>
+                    <span className="text-[8px] sm:text-[9px] line-clamp-1 font-medium opacity-90 text-slate-100">
+                      {isCurrent ? "Sedang Berjalan" : isTestStage ? "Bisa Diulang" : isPassed ? "Selesai" : "Terkunci"}
                     </span>
                   </button>
                 );
@@ -576,95 +638,95 @@ export function CamabaPortal({ token, onLogout, onSwitchToStudent, branding }) {
         <div className="space-y-6">
           {/* STEP 1: FORMULIR IDENTITAS & ASAL SEKOLAH */}
           {activeStep === 1 && (
-            <Card className="border-slate-200 shadow-sm">
-              <CardHeader className="border-b border-slate-100 pb-3">
+            <Card className="border border-slate-200 bg-white shadow-md rounded-2xl overflow-hidden">
+              <CardHeader className="bg-slate-900 text-white border-b border-slate-800 py-4 px-5 rounded-t-xl">
                 <div className="flex items-center justify-between">
-                  <CardTitle className="text-base font-bold text-slate-900 flex items-center gap-2">
-                    <User className="w-5 h-5 text-indigo-600" />
+                  <CardTitle className="text-base sm:text-lg font-black text-white flex items-center gap-2">
+                    <User className="w-5 h-5 text-indigo-400" />
                     Alur 1: Data Diri & Asal Sekolah Calon Mahasiswa
                   </CardTitle>
-                  <Badge className="bg-indigo-600 text-white text-xs font-bold">Langkah 1 / 10</Badge>
+                  <Badge className="bg-indigo-600 text-white text-xs font-bold px-3 py-1">Langkah 1 / 9</Badge>
                 </div>
-                <CardDescription className="text-xs">
+                <CardDescription className="text-xs font-medium text-slate-300 mt-1">
                   Periksa kelengkapan identitas pribadi dan riwayat pendidikan asal sekolah Anda sebelum melanjutkan.
                 </CardDescription>
               </CardHeader>
-              <CardContent className="p-6 space-y-5 text-xs">
+              <CardContent className="p-6 space-y-5 text-xs bg-white text-slate-900">
                 {/* 1. Identitas Lengkap */}
                 <div className="space-y-2">
-                  <p className="font-bold text-indigo-900 uppercase tracking-wider text-[11px]">1. Identitas Calon Mahasiswa</p>
+                  <p className="font-extrabold text-indigo-950 uppercase tracking-wider text-xs">1. Identitas Calon Mahasiswa</p>
                   <div className="grid sm:grid-cols-3 gap-3">
-                    <div className="p-3 bg-slate-50 rounded-lg border">
-                      <p className="text-slate-500 text-[10px]">Nama Lengkap</p>
-                      <p className="font-bold text-slate-800 mt-0.5 text-sm">{applicant?.name}</p>
+                    <div className="p-3 bg-slate-50/90 rounded-xl border border-slate-200">
+                      <p className="text-slate-700 font-extrabold text-[11px] uppercase">Nama Lengkap</p>
+                      <p className="font-black text-slate-950 mt-0.5 text-sm">{applicant?.name}</p>
                     </div>
-                    <div className="p-3 bg-slate-50 rounded-lg border">
-                      <p className="text-slate-500 text-[10px]">Tempat, Tanggal Lahir</p>
-                      <p className="font-bold text-slate-800 mt-0.5">{applicant?.tempat_lahir || "-"}, {applicant?.tanggal_lahir || "-"}</p>
+                    <div className="p-3 bg-slate-50/90 rounded-xl border border-slate-200">
+                      <p className="text-slate-700 font-extrabold text-[11px] uppercase">Tempat, Tanggal Lahir</p>
+                      <p className="font-black text-slate-950 mt-0.5">{applicant?.tempat_lahir || "-"}, {applicant?.tanggal_lahir || "-"}</p>
                     </div>
-                    <div className="p-3 bg-slate-50 rounded-lg border">
-                      <p className="text-slate-500 text-[10px]">No. HP / WhatsApp</p>
-                      <p className="font-mono font-bold text-slate-800 mt-0.5">{applicant?.whatsapp || "-"}</p>
+                    <div className="p-3 bg-slate-50/90 rounded-xl border border-slate-200">
+                      <p className="text-slate-700 font-extrabold text-[11px] uppercase">No. HP / WhatsApp</p>
+                      <p className="font-mono font-black text-slate-950 mt-0.5">{applicant?.whatsapp || "-"}</p>
                     </div>
                   </div>
 
                   <div className="grid sm:grid-cols-4 gap-3">
-                    <div className="p-3 bg-slate-50 rounded-lg border">
-                      <p className="text-slate-500 text-[10px]">NIK</p>
-                      <p className="font-mono font-bold text-slate-800 mt-0.5">{applicant?.nik || "-"}</p>
+                    <div className="p-3 bg-slate-50/90 rounded-xl border border-slate-200">
+                      <p className="text-slate-700 font-extrabold text-[11px] uppercase">NIK</p>
+                      <p className="font-mono font-black text-slate-950 mt-0.5">{applicant?.nik || "-"}</p>
                     </div>
-                    <div className="p-3 bg-slate-50 rounded-lg border">
-                      <p className="text-slate-500 text-[10px]">NISN</p>
-                      <p className="font-mono font-bold text-slate-800 mt-0.5">{applicant?.nisn || "-"}</p>
+                    <div className="p-3 bg-slate-50/90 rounded-xl border border-slate-200">
+                      <p className="text-slate-700 font-extrabold text-[11px] uppercase">NISN</p>
+                      <p className="font-mono font-black text-slate-950 mt-0.5">{applicant?.nisn || "-"}</p>
                     </div>
-                    <div className="p-3 bg-slate-50 rounded-lg border">
-                      <p className="text-slate-500 text-[10px]">Nama Ibu Kandung</p>
-                      <p className="font-bold text-slate-800 mt-0.5">{applicant?.nama_ibu_kandung || "-"}</p>
+                    <div className="p-3 bg-slate-50/90 rounded-xl border border-slate-200">
+                      <p className="text-slate-700 font-extrabold text-[11px] uppercase">Nama Ibu Kandung</p>
+                      <p className="font-black text-slate-950 mt-0.5">{applicant?.nama_ibu_kandung || "-"}</p>
                     </div>
-                    <div className="p-3 bg-slate-50 rounded-lg border">
-                      <p className="text-slate-500 text-[10px]">Tinggi / Berat Badan</p>
-                      <p className="font-bold text-slate-800 mt-0.5">{applicant?.tinggi_badan || "-"} cm / {applicant?.berat_badan || "-"} kg</p>
+                    <div className="p-3 bg-slate-50/90 rounded-xl border border-slate-200">
+                      <p className="text-slate-700 font-extrabold text-[11px] uppercase">Tinggi / Berat Badan</p>
+                      <p className="font-black text-slate-950 mt-0.5">{applicant?.tinggi_badan || "-"} cm / {applicant?.berat_badan || "-"} kg</p>
                     </div>
                   </div>
 
                   <div className="grid sm:grid-cols-2 gap-3">
-                    <div className="p-3 bg-slate-50 rounded-lg border">
-                      <p className="text-slate-500 text-[10px]">Email Aktif</p>
-                      <p className="font-bold text-slate-800 mt-0.5">{applicant?.email || "-"}</p>
+                    <div className="p-3 bg-slate-50/90 rounded-xl border border-slate-200">
+                      <p className="text-slate-700 font-extrabold text-[11px] uppercase">Email Aktif</p>
+                      <p className="font-black text-slate-950 mt-0.5">{applicant?.email || "-"}</p>
                     </div>
-                    <div className="p-3 bg-slate-50 rounded-lg border">
-                      <p className="text-slate-500 text-[10px]">Alamat Lengkap</p>
-                      <p className="font-medium text-slate-800 mt-0.5 line-clamp-2">{applicant?.alamat || "-"}</p>
+                    <div className="p-3 bg-slate-50/90 rounded-xl border border-slate-200">
+                      <p className="text-slate-700 font-extrabold text-[11px] uppercase">Alamat Lengkap</p>
+                      <p className="font-bold text-slate-950 mt-0.5 line-clamp-2">{applicant?.alamat || "-"}</p>
                     </div>
                   </div>
                 </div>
 
                 {/* 2. Data Asal Sekolah */}
-                <div className="space-y-2 pt-2 border-t border-slate-100">
-                  <p className="font-bold text-sky-900 uppercase tracking-wider text-[11px]">2. Data Asal Sekolah</p>
+                <div className="space-y-2 pt-2 border-t border-slate-200">
+                  <p className="font-extrabold text-indigo-950 uppercase tracking-wider text-xs">2. Data Asal Sekolah</p>
                   <div className="grid sm:grid-cols-3 gap-3">
-                    <div className="p-3 bg-slate-50 rounded-lg border">
-                      <p className="text-slate-500 text-[10px]">Nama Sekolah</p>
-                      <p className="font-bold text-slate-800 mt-0.5">{applicant?.asal_sekolah || "-"}</p>
+                    <div className="p-3 bg-slate-50/90 rounded-xl border border-slate-200">
+                      <p className="text-slate-700 font-extrabold text-[11px] uppercase">Nama Sekolah</p>
+                      <p className="font-black text-slate-950 mt-0.5">{applicant?.asal_sekolah || "-"}</p>
                     </div>
-                    <div className="p-3 bg-slate-50 rounded-lg border">
-                      <p className="text-slate-500 text-[10px]">NPSN Sekolah</p>
-                      <p className="font-mono font-bold text-slate-800 mt-0.5">{applicant?.npsn_sekolah || "-"}</p>
+                    <div className="p-3 bg-slate-50/90 rounded-xl border border-slate-200">
+                      <p className="text-slate-700 font-extrabold text-[11px] uppercase">NPSN Sekolah</p>
+                      <p className="font-mono font-black text-slate-950 mt-0.5">{applicant?.npsn_sekolah || "-"}</p>
                     </div>
-                    <div className="p-3 bg-slate-50 rounded-lg border">
-                      <p className="text-slate-500 text-[10px]">Alamat Sekolah</p>
-                      <p className="font-medium text-slate-800 mt-0.5">{applicant?.alamat_sekolah || "-"}</p>
+                    <div className="p-3 bg-slate-50/90 rounded-xl border border-slate-200">
+                      <p className="text-slate-700 font-extrabold text-[11px] uppercase">Alamat Sekolah</p>
+                      <p className="font-bold text-slate-950 mt-0.5">{applicant?.alamat_sekolah || "-"}</p>
                     </div>
                   </div>
 
                   <div className="grid sm:grid-cols-2 gap-3">
-                    <div className="p-3 bg-slate-50 rounded-lg border">
-                      <p className="text-slate-500 text-[10px]">Jurusan Saat Sekolah</p>
-                      <p className="font-bold text-slate-800 mt-0.5">{applicant?.jurusan_asal || "-"}</p>
+                    <div className="p-3 bg-slate-50/90 rounded-xl border border-slate-200">
+                      <p className="text-slate-700 font-extrabold text-[11px] uppercase">Jurusan Saat Sekolah</p>
+                      <p className="font-black text-slate-950 mt-0.5">{applicant?.jurusan_asal || "-"}</p>
                     </div>
-                    <div className="p-3 bg-slate-50 rounded-lg border">
-                      <p className="text-slate-500 text-[10px]">Tahun Lulus</p>
-                      <p className="font-bold text-slate-800 mt-0.5">{applicant?.tahun_lulus || "-"}</p>
+                    <div className="p-3 bg-slate-50/90 rounded-xl border border-slate-200">
+                      <p className="text-slate-700 font-extrabold text-[11px] uppercase">Tahun Lulus</p>
+                      <p className="font-black text-slate-950 mt-0.5">{applicant?.tahun_lulus || "-"}</p>
                     </div>
                   </div>
                 </div>
@@ -684,46 +746,65 @@ export function CamabaPortal({ token, onLogout, onSwitchToStudent, branding }) {
 
           {/* STEP 2: PILIHAN PROGRAM STUDI & KELAS */}
           {activeStep === 2 && (
-            <Card className="border-slate-200 shadow-sm">
-              <CardHeader className="border-b border-slate-100 pb-3">
+            <Card className="border border-slate-200 bg-white shadow-md rounded-2xl overflow-hidden">
+              <CardHeader className="bg-slate-900 text-white border-b border-slate-800 py-4 px-5 rounded-t-xl">
                 <div className="flex items-center justify-between">
-                  <CardTitle className="text-base font-bold text-slate-900 flex items-center gap-2">
-                    <BookOpen className="w-5 h-5 text-indigo-600" />
+                  <CardTitle className="text-base sm:text-lg font-black text-white flex items-center gap-2">
+                    <BookOpen className="w-5 h-5 text-indigo-400" />
                     Alur 2: Pilihan Program Studi & Tipe Perkuliahan
                   </CardTitle>
-                  <Badge className="bg-indigo-600 text-white text-xs font-bold">Langkah 2 / 10</Badge>
+                  <Badge className="bg-indigo-600 text-white text-xs font-bold px-3 py-1">Langkah 2 / 9</Badge>
                 </div>
-                <CardDescription className="text-xs">
+                <CardDescription className="text-xs font-medium text-slate-300 mt-1">
                   Pastikan pilihan program studi dan jenis kelas kuliah Anda sudah sesuai sebelum melanjutkan ke pembayaran biaya formulir.
                 </CardDescription>
               </CardHeader>
-              <CardContent className="p-6 space-y-5 text-xs">
+              <CardContent className="p-6 space-y-5 text-xs bg-white text-slate-900">
                 <div className="space-y-2">
-                  <p className="font-bold text-emerald-900 uppercase tracking-wider text-[11px]">Pilihan Program Studi Politeknik SCI</p>
+                  <p className="font-extrabold text-indigo-950 uppercase tracking-wider text-xs">Pilihan Program Studi Politeknik SCI</p>
                   <div className="grid sm:grid-cols-2 gap-3">
-                    <div className="p-4 bg-sky-50/80 rounded-xl border border-sky-200 space-y-1">
-                      <p className="text-sky-800 font-bold text-[10px]">PRODI PILIHAN 1 (UTAMA)</p>
-                      <p className="text-sm font-black text-sky-950">{applicant?.prodi_name}</p>
-                      <p className="text-[11px] text-sky-700">Kode: {applicant?.prodi_kode || "-"}</p>
+                    <div className="p-4 bg-sky-50/90 rounded-xl border border-sky-300 space-y-1">
+                      <p className="text-sky-900 font-extrabold text-[11px] uppercase">PRODI PILIHAN 1 (UTAMA)</p>
+                      <p className="text-base font-black text-sky-950">{applicant?.prodi_name}</p>
+                      <p className="text-xs text-sky-800 font-bold">Kode: {applicant?.prodi_kode || "-"}</p>
                     </div>
-                    <div className="p-4 bg-indigo-50/80 rounded-xl border border-indigo-200 space-y-1">
-                      <p className="text-indigo-800 font-bold text-[10px]">PRODI PILIHAN 2 (CADANGAN)</p>
-                      <p className="text-sm font-black text-indigo-950">{applicant?.prodi_2_name || "Tidak memilih cadangan"}</p>
+                    <div className="p-4 bg-indigo-50/90 rounded-xl border border-indigo-300 space-y-1">
+                      <p className="text-indigo-900 font-extrabold text-[11px] uppercase">PRODI PILIHAN 2 (CADANGAN)</p>
+                      <p className="text-base font-black text-indigo-950">{applicant?.prodi_2_name || "Tidak memilih cadangan"}</p>
                     </div>
                   </div>
 
-                  <div className="grid sm:grid-cols-3 gap-3 pt-2">
-                    <div className="p-3.5 bg-slate-50 rounded-lg border">
-                      <p className="text-slate-500 text-[10px]">Tipe Kelas</p>
-                      <p className="font-bold text-slate-800 mt-0.5 capitalize">Kelas {applicant?.class_type}</p>
+                  <div className="grid sm:grid-cols-2 gap-3 pt-2">
+                    <div className="p-4 bg-slate-50/90 rounded-xl border border-slate-200 space-y-1">
+                      <p className="text-slate-700 text-[11px] font-extrabold uppercase">PILIHAN JENIS KELAS & WAKTU KULIAH</p>
+                      <p className="font-black text-slate-950 text-sm">
+                        {applicant?.class_type === "khusus"
+                          ? "4. Kelas Khusus Offline (Kelas Eksekutif)"
+                          : applicant?.class_type === "weekend"
+                          ? "3. Kelas Weekend Online (Daring Akhir Pekan)"
+                          : applicant?.learning_mode === "online"
+                          ? "2. Kelas Reguler Online (Daring Penuh)"
+                          : "1. Kelas Reguler Offline (Tatap Muka di Kampus)"}
+                      </p>
+                      <p className="text-xs text-slate-700 font-semibold">
+                        {applicant?.class_type === "khusus"
+                          ? "Kurikulum Khusus Eksekutif & Tatap Muka di Kampus"
+                          : applicant?.class_type === "weekend"
+                          ? "Daring Fleksibel Akhir Pekan (Sabtu - Minggu)"
+                          : applicant?.learning_mode === "online"
+                          ? "Daring Penuh LMS & Video Conference (Senin - Jumat)"
+                          : "Tatap Muka di Ruang Kelas Kampus (Senin - Jumat)"}
+                      </p>
                     </div>
-                    <div className="p-3.5 bg-slate-50 rounded-lg border">
-                      <p className="text-slate-500 text-[10px]">Mode Perkuliahan</p>
-                      <p className="font-bold text-slate-800 mt-0.5 capitalize">{applicant?.learning_mode || "Hybrid (Online & Offline)"}</p>
-                    </div>
-                    <div className="p-3.5 bg-slate-50 rounded-lg border">
-                      <p className="text-slate-500 text-[10px]">Sumber Informasi Kampus</p>
-                      <p className="font-bold text-slate-800 mt-0.5">{applicant?.info_source || "Media Sosial"}</p>
+
+                    <div className="p-4 bg-slate-50/90 rounded-xl border border-slate-200 space-y-1">
+                      <p className="text-slate-700 text-[11px] font-extrabold uppercase">SUMBER INFORMASI PMB</p>
+                      <p className="font-black text-slate-950 text-sm">{applicant?.info_source || "Media Sosial"}</p>
+                      {applicant?.referrer_name && (
+                        <p className="text-xs text-emerald-800 font-extrabold pt-0.5">
+                          Promotor / Marketing: {applicant.referrer_name} ({applicant.referral_code})
+                        </p>
+                      )}
                     </div>
                   </div>
                 </div>
@@ -743,30 +824,30 @@ export function CamabaPortal({ token, onLogout, onSwitchToStudent, branding }) {
 
           {/* STEP 3: PEMBAYARAN FORMULIR */}
           {activeStep === 3 && (
-            <Card className="border-slate-200 shadow-sm">
-              <CardHeader className="border-b border-slate-100 pb-3">
+            <Card className="border border-slate-200 bg-white shadow-md rounded-2xl overflow-hidden">
+              <CardHeader className="bg-slate-900 text-white border-b border-slate-800 py-4 px-5 rounded-t-xl">
                 <div className="flex items-center justify-between">
-                  <CardTitle className="text-base font-bold text-slate-900 flex items-center gap-2">
-                    <CreditCard className="w-5 h-5 text-indigo-600" />
+                  <CardTitle className="text-base sm:text-lg font-black text-white flex items-center gap-2">
+                    <CreditCard className="w-5 h-5 text-indigo-400" />
                     Alur 3: Pembayaran Biaya Pendaftaran
                   </CardTitle>
-                  <Badge variant={applicant?.reg_payment_status === "verified" ? "default" : "destructive"} className="inline-flex items-center gap-1">
-                    {applicant?.reg_payment_status === "verified" ? <><Check className="w-3 h-3" /> Terverifikasi</> : "Menunggu Pembayaran"}
+                  <Badge variant={applicant?.reg_payment_status === "verified" ? "default" : "destructive"} className="inline-flex items-center gap-1 font-extrabold px-3 py-1">
+                    {applicant?.reg_payment_status === "verified" ? <><Check className="w-3.5 h-3.5" /> Terverifikasi</> : "Menunggu Pembayaran"}
                   </Badge>
                 </div>
-                <CardDescription className="text-xs">
+                <CardDescription className="text-xs font-medium text-slate-300 mt-1">
                   Pilih metode pembayaran yang didukung untuk melunasi biaya pendaftaran calon mahasiswa baru.
                 </CardDescription>
               </CardHeader>
-              <CardContent className="p-6 space-y-5 text-xs">
-                 <div className="p-4 bg-slate-50 rounded-2xl border border-slate-200 space-y-4">
+              <CardContent className="p-6 space-y-5 text-xs bg-white text-slate-900">
+                 <div className="p-4 bg-slate-50/90 rounded-2xl border border-slate-200 space-y-4">
                    {/* Rekening tujuan */}
                    <div className="flex flex-col sm:flex-row justify-between items-start sm:items-center gap-3">
                      <div className="space-y-0.5">
-                       <p className="text-[10px] uppercase tracking-widest text-slate-500 font-bold">Rekening Tujuan PMB</p>
-                       <p className="font-bold text-slate-900">{paymentQuote?.account?.bank_name || settings?.bank_account_name || "-"}</p>
-                       <p className="font-mono text-indigo-700 text-sm">{paymentQuote?.account?.bank_account_number || settings?.bank_account_number || "-"}</p>
-                       <p className="text-slate-600 text-xs">a.n. {paymentQuote?.account?.bank_account_holder || settings?.bank_account_holder || "-"}</p>
+                       <p className="text-[11px] uppercase tracking-widest text-slate-700 font-extrabold">Rekening Tujuan PMB</p>
+                       <p className="font-black text-slate-950 text-base">{paymentQuote?.account?.bank_name || settings?.bank_account_name || "-"}</p>
+                       <p className="font-mono text-indigo-700 text-base font-black">{paymentQuote?.account?.bank_account_number || settings?.bank_account_number || "-"}</p>
+                       <p className="text-slate-800 text-xs font-bold">a.n. {paymentQuote?.account?.bank_account_holder || settings?.bank_account_holder || "-"}</p>
                      </div>
                      {paymentQuote?.qris_image_url && paymentMethod === "QRIS" && (
                        <img src={paymentQuote.qris_image_url} alt="QRIS" className="w-24 h-24 object-contain" />
@@ -774,30 +855,35 @@ export function CamabaPortal({ token, onLogout, onSwitchToStudent, branding }) {
                    </div>
 
                    {/* Tagihan kode unik */}
-                   <div className="rounded-xl bg-white border border-slate-200 p-3 space-y-2">
-                     <p className="text-[10px] uppercase tracking-widest text-slate-500 font-bold">Total Tagihan yang Harus Dibayar</p>
-                     <p className="text-xs text-slate-500">Biaya pendaftaran: {formatRupiah(paymentQuote?.registration?.fee || 250000)}</p>
-                     <p className="font-mono font-black text-indigo-700 text-xl">Rp {(paymentQuote?.registration?.amount || 0).toLocaleString("id-ID")}</p>
-                     <p className="text-xs text-amber-700">Kode unik: <strong>{paymentQuote?.registration?.unique_code || "-"}</strong> (3 digit terakhir nominal untuk identifikasi otomatis)</p>
+                   <div className="rounded-xl bg-white border border-slate-200 p-3.5 space-y-2">
+                     <p className="text-[11px] uppercase tracking-widest text-slate-700 font-extrabold">Total Tagihan yang Harus Dibayar</p>
+                     <p className="text-xs text-slate-700 font-bold">Biaya pendaftaran: {formatRupiah(paymentQuote?.registration?.fee || 250000)}</p>
+                     <p className="font-mono font-black text-indigo-700 text-2xl">Rp {(paymentQuote?.registration?.amount || 0).toLocaleString("id-ID")}</p>
+                     <p className="text-xs text-amber-900 font-bold bg-amber-50 p-2 rounded-lg border border-amber-200 inline-block">Kode unik: <strong className="text-amber-950 font-black">{paymentQuote?.registration?.unique_code || "-"}</strong> (3 digit terakhir nominal untuk identifikasi otomatis)</p>
                    </div>
 
                    {/* Metode pembayaran pilihan */}
                    <div className="space-y-1.5">
-                     <Label className="text-[10px] font-bold text-slate-600">Pilih Metode Pembayaran yang Didukung</Label>
-                     {availablePaymentMethods.length > 0 ? (
-                       <select
-                         value={paymentMethod}
-                         onChange={(e) => { setPaymentMethod(e.target.value); setProofFile(null); }}
-                         className="w-full text-xs border border-slate-300 rounded-lg px-2.5 py-2 font-medium bg-white"
-                       >
-                         {availablePaymentMethods.map((m) => (
-                           <option key={m.id} value={m.id}>
-                             {m.label}
-                           </option>
-                         ))}
-                       </select>
-                     ) : (
-                       <div className="p-3 bg-amber-50 border border-amber-200 rounded-lg text-amber-800 text-xs">
+                      <Label className="text-xs font-extrabold text-slate-900">Pilih Metode Pembayaran yang Didukung</Label>
+                      {availablePaymentMethods.length > 0 ? (
+                        <div className="relative">
+                          <select
+                            value={paymentMethod}
+                            onChange={(e) => { setPaymentMethod(e.target.value); setProofFile(null); }}
+                            className="w-full text-xs sm:text-sm font-extrabold text-slate-900 border-2 border-indigo-500 rounded-xl px-3 py-2.5 bg-white shadow-xs focus:outline-none focus:ring-2 focus:ring-indigo-600 appearance-none"
+                          >
+                            {availablePaymentMethods.map((m) => (
+                              <option key={m.id} value={m.id} className="bg-white text-slate-900 font-extrabold py-1.5">
+                                {m.label}
+                              </option>
+                            ))}
+                          </select>
+                          <div className="pointer-events-none absolute inset-y-0 right-0 flex items-center px-3 text-indigo-700">
+                            <ChevronDown className="h-4 w-4" />
+                          </div>
+                        </div>
+                      ) : (
+                       <div className="p-3 bg-amber-50 border border-amber-200 rounded-lg text-amber-900 text-xs font-bold">
                          Metode pembayaran sedang dalam pengaturan panitia. Silakan hubungi panitia PMB.
                        </div>
                      )}
@@ -805,45 +891,123 @@ export function CamabaPortal({ token, onLogout, onSwitchToStudent, branding }) {
 
                    {/* Upload bukti (MANUAL) */}
                    {paymentMethod === "MANUAL" && (
-                     <div className="space-y-1.5 p-3 rounded-xl bg-sky-50/60 border border-sky-200">
-                       <Label className="text-[10px] font-bold text-slate-700">Unggah Bukti Transfer Bank</Label>
+                     <div className="space-y-1.5 p-3.5 rounded-xl bg-sky-50 border border-sky-300">
+                       <Label className="text-xs font-extrabold text-slate-900">Unggah Bukti Transfer Bank</Label>
                        <Input
                          type="file"
                          accept="image/png,image/jpeg,.pdf"
                          onChange={(e) => setProofFile(e.target.files?.[0] || null)}
-                         className="bg-white text-xs"
+                         className="bg-white text-xs text-slate-900 font-bold border border-sky-300 rounded-lg"
                        />
-                       <p className="text-[10px] text-slate-500">Format file PNG/JPG/PDF maks 5 MB. Bukti akan diverifikasi oleh panitia PMB.</p>
+                       <p className="text-[11px] text-slate-700 font-semibold">Format file PNG/JPG/PDF maks 5 MB. Bukti akan diverifikasi oleh panitia PMB.</p>
                      </div>
                    )}
                  </div>
 
-                 {applicant?.reg_payment_status !== "verified" && (
-                   <div className="flex flex-col sm:flex-row justify-between items-center gap-4">
-                     <div>
-                       <p className="text-xs text-slate-500">Total Biaya Pendaftaran</p>
-                       <h3 className="text-2xl font-black text-amber-400 mt-0.5">
-                         {formatRupiah(paymentQuote?.registration?.amount || applicant?.reg_payment_fee || 250000)}
-                       </h3>
-                     </div>
-                     <Button
-                       type="button"
-                       onClick={handlePayRegistration}
-                       disabled={uploadingProof || availablePaymentMethods.length === 0}
-                       className="bg-emerald-600 hover:bg-emerald-700 text-white font-bold text-xs px-6 py-2.5 shadow-lg"
-                     >
-                       {uploadingProof ? "Mengunggah..." : paymentMethod === "MANUAL" ? "Konfirmasi Bukti Transfer" : "Bayar Sekarang"}
-                     </Button>
-                   </div>
-                 )}
+                 {applicant?.reg_payment_status === "pending_verification" && (
+                    <div className="p-5 rounded-2xl bg-amber-50 border border-amber-200 space-y-3">
+                      <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-2">
+                        <h4 className="font-extrabold text-amber-950 text-sm flex items-center gap-2">
+                          <RefreshCw className="w-4 h-4 text-amber-600 animate-spin" />
+                          Menunggu Approval Pembayaran Pendaftaran oleh Admin PMB
+                        </h4>
+                        <Badge className="bg-amber-600 text-white text-[10px] font-bold w-fit">MENUNGGU VERIFIKASI ADMIN</Badge>
+                      </div>
+                      <p className="text-slate-800 text-xs font-bold leading-relaxed">
+                        Terima kasih, bukti pembayaran pendaftaran Anda telah berhasil dikirim. Panitia PMB sedang memverifikasi dan menyetujui pembayaran Anda. Anda akan dapat melanjutkan ke Alur 4 setelah pembayaran disetujui.
+                      </p>
+                      <div className="flex justify-end pt-1">
+                        <Button
+                          type="button"
+                          size="sm"
+                          variant="outline"
+                          onClick={async () => {
+                            await fetchApplication();
+                            toast.success("Status pembayaran diperbarui");
+                          }}
+                          className="text-xs border-amber-300 text-amber-900 hover:bg-amber-100 font-bold"
+                        >
+                          <RefreshCw className="w-3.5 h-3.5 mr-1.5" /> Muat Ulang Status Pembayaran
+                        </Button>
+                      </div>
+                    </div>
+                  )}
+
+                  {applicant?.reg_payment_status !== "verified" && applicant?.reg_payment_status !== "pending_verification" && (
+                    <div className="space-y-4 pt-3 border-t border-slate-200">
+                      {/* Skema Pendaftaran: Full vs Custom */}
+                      <div className="space-y-2">
+                        <Label className="text-xs font-extrabold text-slate-900">Skema Pembayaran Formulir Pendaftaran</Label>
+                        <div className="grid grid-cols-2 gap-2">
+                          <button
+                            type="button"
+                            onClick={() => setRegPayMode("full")}
+                            className={`py-2.5 px-3 rounded-xl border-2 font-black text-xs transition-all ${
+                              regPayMode === "full"
+                                ? "bg-indigo-600 text-white border-indigo-600 shadow-xs"
+                                : "bg-white border-slate-300 text-slate-700 hover:bg-slate-50"
+                            }`}
+                          >
+                            Lunas Full ({formatRupiah(paymentQuote?.registration?.fee || 250000)})
+                          </button>
+                          <button
+                            type="button"
+                            onClick={() => setRegPayMode("custom")}
+                            className={`py-2.5 px-3 rounded-xl border-2 font-black text-xs transition-all ${
+                              regPayMode === "custom"
+                                ? "bg-indigo-600 text-white border-indigo-600 shadow-xs"
+                                : "bg-white border-slate-300 text-slate-700 hover:bg-slate-50"
+                            }`}
+                          >
+                            Nominal Custom (DP/Bebas)
+                          </button>
+                        </div>
+                      </div>
+
+                      {regPayMode === "custom" && (
+                        <div className="space-y-1.5 p-3.5 rounded-xl bg-indigo-50/80 border border-indigo-200">
+                          <Label className="text-xs font-extrabold text-indigo-950">Masukkan Nominal Pembayaran Pendaftaran Custom (Rp)</Label>
+                          <Input
+                            type="number"
+                            min={10000}
+                            step={10000}
+                            value={regCustomAmount}
+                            onChange={(e) => setRegCustomAmount(e.target.value)}
+                            placeholder="Contoh: 50000"
+                            className="bg-white text-slate-900 font-black text-sm border-2 border-indigo-400 rounded-xl"
+                          />
+                          <p className="text-[11px] text-indigo-800 font-semibold">
+                            Nominal custom: <strong>{formatRupiah(regCustomAmount)}</strong>. Sisa pembayaran pendaftaran akan dicatat otomatis.
+                          </p>
+                        </div>
+                      )}
+
+                      <div className="flex flex-col sm:flex-row justify-between items-center gap-4 pt-2">
+                        <div>
+                          <p className="text-xs text-slate-700 font-bold">Total Nominal Ditagihkan</p>
+                          <h3 className="text-2xl font-black text-indigo-700 mt-0.5">
+                            {formatRupiah(regPayMode === "custom" ? regCustomAmount : (paymentQuote?.registration?.amount || applicant?.reg_payment_fee || 250000))}
+                          </h3>
+                        </div>
+                        <Button
+                          type="button"
+                          onClick={handlePayRegistration}
+                          disabled={uploadingProof || availablePaymentMethods.length === 0}
+                          className="bg-emerald-600 hover:bg-emerald-700 text-white font-extrabold text-xs px-6 py-3 rounded-xl shadow-lg w-full sm:w-auto"
+                        >
+                          {uploadingProof ? "Mengunggah..." : paymentMethod === "MANUAL" ? "Konfirmasi Bukti Transfer" : "Bayar Sekarang"}
+                        </Button>
+                      </div>
+                    </div>
+                  )}
 
                 {applicant?.reg_payment_status === "verified" && (
                   <div className="p-4 bg-emerald-50 border border-emerald-200 rounded-xl flex items-center justify-between">
                     <div className="flex items-center gap-3">
                       <div className="w-8 h-8 rounded-full bg-emerald-100 text-emerald-700 flex items-center justify-center font-bold"><Check className="w-4 h-4" /></div>
                       <div>
-                        <p className="font-bold text-emerald-900">Pembayaran Pendaftaran Selesai</p>
-                        <p className="text-[11px] text-emerald-700">Metode: {applicant?.reg_payment_method} • Status: Lunas & Terverifikasi</p>
+                        <p className="font-bold text-emerald-900">Pembayaran Pendaftaran Selesai & Disetujui</p>
+                        <p className="text-[11px] text-emerald-700">Metode: {applicant?.reg_payment_method} • Status: Lunas & Terverifikasi Admin</p>
                       </div>
                     </div>
                     <Button
@@ -861,24 +1025,24 @@ export function CamabaPortal({ token, onLogout, onSwitchToStudent, branding }) {
 
           {/* STEP 4: GABUNG GRUP WHATSAPP */}
           {activeStep === 4 && (
-            <Card className="border-slate-200 shadow-sm">
-              <CardHeader className="border-b border-slate-100 pb-3">
+            <Card className="border border-slate-200 bg-white shadow-md rounded-2xl overflow-hidden">
+              <CardHeader className="bg-slate-900 text-white border-b border-slate-800 py-4 px-5 rounded-t-xl">
                 <div className="flex items-center justify-between">
-                  <CardTitle className="text-base font-bold text-slate-900 flex items-center gap-2">
-                    <MessageSquare className="w-5 h-5 text-emerald-600" />
+                  <CardTitle className="text-base sm:text-lg font-black text-white flex items-center gap-2">
+                    <MessageSquare className="w-5 h-5 text-emerald-400" />
                     Alur 4: Bergabung ke Grup WhatsApp Calon Mahasiswa Baru
                   </CardTitle>
-                  <Badge className="bg-emerald-600 text-white text-xs font-bold">Langkah 4 / 10</Badge>
+                  <Badge className="bg-emerald-600 text-white text-xs font-bold px-3 py-1">Langkah 4 / 9</Badge>
                 </div>
-                <CardDescription className="text-xs">
+                <CardDescription className="text-xs font-medium text-slate-300 mt-1">
                   Dapatkan informasi penting mengenai jadwal tes, bimbingan her-registrasi, dan koordinasi panitia.
                 </CardDescription>
               </CardHeader>
-              <CardContent className="p-6 space-y-4 text-xs text-center sm:text-left">
+              <CardContent className="p-6 space-y-4 text-xs text-center sm:text-left bg-white text-slate-900">
                 <div className="p-5 rounded-2xl bg-emerald-50 border border-emerald-200 flex flex-col sm:flex-row items-center justify-between gap-4">
                   <div className="space-y-1">
-                    <h4 className="font-bold text-emerald-950 text-sm">{settings?.wa_group_name || "Grup Resmi PMB Kampus"}</h4>
-                    <p className="text-slate-600 text-xs">Klik tombol di samping untuk bergabung langsung via aplikasi WhatsApp dan melanjutkan ke Alur 5.</p>
+                    <h4 className="font-extrabold text-emerald-950 text-sm">{settings?.wa_group_name || "Grup Resmi PMB Kampus"}</h4>
+                    <p className="text-slate-800 font-semibold text-xs">Klik tombol di samping untuk bergabung langsung via aplikasi WhatsApp dan melanjutkan ke Alur 5.</p>
                   </div>
                   <Button
                     type="button"
@@ -894,16 +1058,16 @@ export function CamabaPortal({ token, onLogout, onSwitchToStudent, branding }) {
 
           {/* STEP 5: PILIH JALUR TES (ONLINE CBT / OFFLINE) */}
           {activeStep === 5 && (
-            <Card className="border-slate-200 shadow-sm">
-              <CardHeader className="border-b border-slate-100 pb-3">
+            <Card className="border border-slate-200 bg-white shadow-md rounded-2xl overflow-hidden">
+              <CardHeader className="bg-slate-900 text-white border-b border-slate-800 py-4 px-5 rounded-t-xl">
                 <div className="flex items-center justify-between">
-                  <CardTitle className="text-base font-bold text-slate-900 flex items-center gap-2">
-                    <Layers className="w-5 h-5 text-indigo-600" />
+                  <CardTitle className="text-base sm:text-lg font-black text-white flex items-center gap-2">
+                    <Layers className="w-5 h-5 text-sky-400" />
                     Alur 5: Pemilihan Jalur Tes Masuk
                   </CardTitle>
-                  <Badge className="bg-indigo-600 text-white text-xs font-bold">Langkah 5 / 10</Badge>
+                  <Badge className="bg-indigo-600 text-white text-xs font-bold px-3 py-1">Langkah 5 / 9</Badge>
                 </div>
-                <CardDescription className="text-xs">
+                <CardDescription className="text-xs font-medium text-slate-300 mt-1">
                   Pilih salah satu metode pelaksanaan evaluasi seleksi masuk yang tersedia.
                 </CardDescription>
               </CardHeader>
@@ -960,203 +1124,397 @@ export function CamabaPortal({ token, onLogout, onSwitchToStudent, branding }) {
             </Card>
           )}
 
-          {/* STEP 6: OFFLINE TEST INFORMATION */}
+          {/* STEP 6: PELAKSANAAN UJIAN SELEKSI CBT (ONLINE / OFFLINE) */}
           {activeStep === 6 && (
-            <Card className="border-slate-200 shadow-sm">
-              <CardHeader className="border-b border-slate-100 pb-3">
+            <Card className="border border-slate-200 bg-white shadow-md rounded-2xl overflow-hidden">
+              <CardHeader className="bg-slate-900 text-white border-b border-slate-800 py-4 px-5 rounded-t-xl">
                 <div className="flex items-center justify-between">
-                  <CardTitle className="text-base font-bold text-slate-900 flex items-center gap-2">
-                    <Building className="w-5 h-5 text-sky-600" />
-                    Alur 6: Jadwal & Pelaksanaan Tes Offline di Kampus
+                  <CardTitle className="text-base sm:text-lg font-black text-white flex items-center gap-2">
+                    <Building className="w-5 h-5 text-indigo-400" />
+                    Alur 6: Jadwal & Pelaksanaan Ujian Seleksi (CBT)
                   </CardTitle>
-                  <Badge className="bg-sky-600 text-white text-xs font-bold">Langkah 6 / 10</Badge>
+                  <Badge className="bg-indigo-600 text-white text-xs font-bold px-3 py-1">Langkah 6 / 9</Badge>
                 </div>
+                <CardDescription className="text-xs font-medium text-slate-300 mt-1">
+                  Jadwal dan ruang pelaksanaan ujian seleksi masuk calon mahasiswa baru berbasis Computer-Based Test (CBT).
+                </CardDescription>
               </CardHeader>
-              <CardContent className="p-6 space-y-4 text-xs">
-                <div className="grid sm:grid-cols-2 gap-4">
-                  <div className="p-4 bg-slate-50 rounded-xl border space-y-1">
-                    <p className="text-slate-500 text-[10px] font-bold">JADWAL TES OFFLINE</p>
-                    <p className="font-bold text-slate-900 text-sm">{applicant?.offline_test_schedule || settings?.offline_test_schedule_default}</p>
+              <CardContent className="p-6 space-y-5 text-xs bg-white text-slate-900">
+                {/* Switcher / Re-choose Option */}
+                {applicant?.test_status !== "passed" && (
+                  <div className="flex flex-col sm:flex-row items-start sm:items-center justify-between gap-3 p-3.5 bg-slate-100/90 rounded-xl border border-slate-200">
+                    <div className="text-slate-800 text-xs flex items-center gap-2">
+                      <span className="font-bold text-slate-900">Jalur Terpilih:</span>
+                      <Badge className={applicant?.test_type === "online" ? "bg-indigo-600 text-white text-xs px-2.5 py-0.5 font-bold" : "bg-sky-600 text-white text-xs px-2.5 py-0.5 font-bold"}>
+                        {applicant?.test_type === "online" ? "Ujian Online (CBT)" : "Ujian Offline (di Kampus)"}
+                      </Badge>
+                    </div>
+                    <div className="flex items-center gap-2 w-full sm:w-auto justify-end">
+                      <Button
+                        type="button"
+                        size="sm"
+                        onClick={() => setActiveStep(5)}
+                        className="text-xs bg-slate-200 hover:bg-slate-300 text-slate-900 font-bold border border-slate-300 shadow-xs"
+                      >
+                        <Layers className="w-3.5 h-3.5 mr-1.5 text-slate-700" /> Ubah Pilihan Jalur Tes (Alur 5)
+                      </Button>
+                      {applicant?.test_type === "online" ? (
+                        <Button
+                          type="button"
+                          size="sm"
+                          onClick={() => handleChooseTest("offline")}
+                          className="text-xs bg-sky-600 hover:bg-sky-700 text-white font-bold border border-sky-500 shadow-xs"
+                        >
+                          <Building className="w-3.5 h-3.5 mr-1.5" /> Ganti ke Ujian Offline
+                        </Button>
+                      ) : (
+                        <Button
+                          type="button"
+                          size="sm"
+                          onClick={() => handleChooseTest("online")}
+                          className="text-xs bg-indigo-600 hover:bg-indigo-700 text-white font-bold border border-indigo-500 shadow-xs"
+                        >
+                          <Monitor className="w-3.5 h-3.5 mr-1.5" /> Ganti ke Ujian Online
+                        </Button>
+                      )}
+                    </div>
                   </div>
-                  <div className="p-4 bg-slate-50 rounded-xl border space-y-1">
-                    <p className="text-slate-500 text-[10px] font-bold">LOKASI / RUANG UJIAN</p>
-                    <p className="font-bold text-slate-900 text-sm">{applicant?.offline_test_location || settings?.offline_test_location}</p>
+                )}
+
+                {/* Jadwal Pelaksanaan Ujian */}
+                <div className="grid sm:grid-cols-3 gap-3">
+                  <div className="p-4 bg-slate-50/90 rounded-xl border border-slate-200 space-y-1">
+                    <p className="text-indigo-900 text-[10px] font-extrabold uppercase tracking-wider">JADWAL PELAKSANAAN UJIAN</p>
+                    <p className="font-extrabold text-slate-900 text-sm sm:text-base">
+                      {examSession?.start_at
+                        ? new Date(examSession.start_at).toLocaleString("id-ID", { dateStyle: "medium", timeStyle: "short" })
+                        : (applicant?.offline_test_schedule || settings?.offline_test_schedule_default || "Sesuai Jadwal PMB")}
+                    </p>
+                    {examSession?.title && (
+                      <p className="text-[11px] text-indigo-700 font-bold truncate">
+                        Sesi: {examSession.title}
+                      </p>
+                    )}
+                  </div>
+                  <div className="p-4 bg-slate-50/90 rounded-xl border border-slate-200 space-y-1">
+                    <p className="text-indigo-900 text-[10px] font-extrabold uppercase tracking-wider">LOKASI & RUANG UJIAN</p>
+                    <p className="font-extrabold text-slate-900 text-sm sm:text-base">
+                      {applicant?.test_type === "online"
+                        ? "Sesi CBT Online (Virtual Room / Laptop / HP)"
+                        : (examSession?.room_name || settings?.offline_test_room_name || applicant?.offline_test_location || settings?.offline_test_location || "Laboratorium Komputer Kampus")}
+                    </p>
+                    {applicant?.test_type !== "online" && (examSession?.room_name || settings?.offline_test_room_name) && (
+                      <p className="text-[11px] text-emerald-700 font-bold truncate">
+                        Ruang: {examSession?.room_name || settings?.offline_test_room_name}
+                      </p>
+                    )}
+                  </div>
+                  <div className="p-4 bg-slate-50/90 rounded-xl border border-slate-200 space-y-1">
+                    <p className="text-indigo-900 text-[10px] font-extrabold uppercase tracking-wider">DURASI & PASSING GRADE</p>
+                    <p className="font-extrabold text-slate-900 text-sm sm:text-base">
+                      {examSession?.duration_minutes || 45} Menit <span className="text-xs font-semibold text-slate-600">(Passing Grade: {examSession?.passing_grade || settings?.passing_grade || 70})</span>
+                    </p>
                   </div>
                 </div>
 
-                <div className="p-4 rounded-xl border border-sky-200 bg-sky-50 space-y-2">
-                  <h4 className="font-bold text-sky-950 text-sm">Status Hasil Ujian Offline:</h4>
-                  <p className="text-slate-700">
-                    Nilai Ujian: <strong className="text-indigo-700 font-bold">{applicant?.test_score || 0} / 100</strong> • Status:{" "}
-                    <Badge variant={applicant?.test_status === "passed" ? "default" : "outline"} className="capitalize">
-                      {applicant?.test_status || "Menunggu Penilaian Penguji"}
-                    </Badge>
-                  </p>
-                </div>
+                {/* Status Ujian: Selesai / Ruang Ujian CBT */}
+                {(applicant?.test_completed_at || 
+                  (applicant?.test_status && !["pending", "not_started", "untested", ""].includes(applicant?.test_status)) || 
+                  examAttempts.some((att) => att.status === "submitted" || att.status === "auto_submitted" || Boolean(att.finished_at))
+                ) ? (
+                  <div className="p-5 rounded-2xl bg-indigo-50 border border-indigo-200 space-y-3">
+                    <div className="flex items-center justify-between">
+                      <h4 className="font-bold text-indigo-950 text-base inline-flex items-center gap-2">
+                        <Check className="w-5 h-5 text-indigo-600" /> Ujian Seleksi Selesai Dikerjakan
+                      </h4>
+                      <Badge className="bg-indigo-600 text-white text-xs font-bold px-3 py-1">SUDAH MENGERJAKAN</Badge>
+                    </div>
+                    <p className="text-slate-700 leading-relaxed text-xs">
+                      Terima kasih, Anda telah menyelesaikan ujian seleksi calon mahasiswa baru. Lembar jawaban Anda telah tersimpan dengan aman di sistem PMB. Saat ini berkas seleksi Anda sedang dalam proses verifikasi dan penetapan Surat Keputusan (SK) Penerimaan oleh Panitia PMB & BAAK.
+                    </p>
+                    <div className="flex justify-end pt-2">
+                      <Button
+                        type="button"
+                        onClick={() => setActiveStep(7)}
+                        className="bg-indigo-600 hover:bg-indigo-700 text-white font-bold text-xs px-6 py-2.5 shadow-md"
+                      >
+                        Lihat Status SK Penerimaan (Alur 7) <ArrowRight className="w-4 h-4 ml-1.5" />
+                      </Button>
+                    </div>
+                  </div>
+                ) : (
+                  <div className="p-5 rounded-2xl bg-indigo-50 border border-indigo-200 space-y-3">
+                    <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-2">
+                      <div>
+                        <h4 className="font-bold text-indigo-950 text-sm">Masuk ke Ruang Ujian Seleksi (CBT)</h4>
+                        <p className="text-slate-600 text-[11px]">Masukkan token ujian yang dibagikan panitia PMB untuk memulai ujian.</p>
+                      </div>
+                    </div>
+                    <div className="flex flex-col sm:flex-row items-stretch gap-2 pt-1">
+                      <Input
+                        type="text"
+                        value={examToken}
+                        onChange={(e) => setExamToken(e.target.value.toUpperCase())}
+                        placeholder="MASUKKAN TOKEN UJIAN"
+                        className="bg-white text-slate-900 font-extrabold text-sm placeholder:text-slate-400 border-2 border-indigo-400 focus:border-indigo-600 py-2.5 w-full sm:w-72 font-mono uppercase tracking-wider shadow-xs"
+                        autoComplete="off"
+                      />
+                      <Button
+                        type="button"
+                        onClick={handleStartCbt}
+                        className="bg-indigo-600 hover:bg-indigo-700 text-white font-bold text-xs px-6 py-2.5 shadow-md shrink-0"
+                      >
+                        <Rocket className="w-4 h-4 mr-1.5 inline" /> Mulai Ujian CBT Sekarang
+                      </Button>
+                    </div>
+                  </div>
+                )}
 
-                {applicant?.test_status === "passed" && (
-                  <div className="flex justify-end pt-2">
-                    <Button
-                      type="button"
-                      onClick={() => setActiveStep(8)}
-                      className="bg-emerald-600 hover:bg-emerald-700 text-white font-bold text-xs px-5 py-2.5 shadow-md"
-                    >
-                      Lanjut ke Daftar Ulang (Alur 8) <ArrowRight className="w-4 h-4 ml-1.5" />
-                    </Button>
+                {/* Attempt History Table (Tanpa Menampilkan Nilai ke Camaba) */}
+                {examAttempts.length > 0 && (
+                  <div className="space-y-2.5 pt-2">
+                    <p className="font-bold text-slate-900 uppercase tracking-wider text-[11px]">
+                      Riwayat Pelaksanaan Ujian Seleksi PMB
+                    </p>
+                    <div className="rounded-xl border border-slate-200 overflow-hidden bg-white shadow-xs">
+                      <table className="w-full text-xs text-left">
+                        <thead className="bg-slate-100 border-b border-slate-200 text-slate-700 font-bold">
+                          <tr>
+                            <th className="p-2.5">No. / Waktu Ujian</th>
+                            <th className="p-2.5">Tipe Jalur</th>
+                            <th className="p-2.5">Status Pengerjaan</th>
+                            <th className="p-2.5">Keterangan Evaluasi</th>
+                          </tr>
+                        </thead>
+                        <tbody className="divide-y divide-slate-100">
+                          {examAttempts.map((att, idx) => (
+                            <tr key={att.id || idx} className="hover:bg-slate-50/80 transition">
+                              <td className="p-2.5 font-mono text-[11px]">
+                                <p className="font-bold text-slate-800">Ujian #{examAttempts.length - idx}</p>
+                                <p className="text-[10px] text-slate-500">
+                                  {att.finished_at || att.started_at
+                                    ? new Date(att.finished_at || att.started_at).toLocaleString("id-ID", { dateStyle: "short", timeStyle: "short" })
+                                    : "-"}
+                                </p>
+                              </td>
+                              <td className="p-2.5">
+                                <Badge variant="outline" className="capitalize text-[10px]">
+                                  {att.test_type === "online" ? "Online CBT" : att.test_type === "offline" ? "Offline di Kampus" : (att.test_type || "CBT")}
+                                </Badge>
+                              </td>
+                              <td className="p-2.5">
+                                <Badge className="bg-emerald-600 text-white text-[10px]">
+                                  Selesai / Terkirim
+                                </Badge>
+                              </td>
+                              <td className="p-2.5 font-medium text-slate-600 text-[11px]">
+                                Jawaban tersimpan • Menunggu SK Penerimaan Panitia
+                              </td>
+                            </tr>
+                          ))}
+                        </tbody>
+                      </table>
+                    </div>
                   </div>
                 )}
               </CardContent>
             </Card>
           )}
 
-          {/* STEP 7: PELAKSANAAN TES ONLINE CBT */}
+          {/* STEP 7: SURAT KEPUTUSAN (SK) PENERIMAAN & KELULUSAN */}
           {activeStep === 7 && (
-            <Card className="border-slate-200 shadow-sm">
-              <CardHeader className="border-b border-slate-100 pb-3">
+            <Card className="border border-slate-200 bg-white shadow-md rounded-2xl overflow-hidden">
+              <CardHeader className="bg-slate-900 text-white border-b border-slate-800 py-4 px-5 rounded-t-xl">
                 <div className="flex items-center justify-between">
-                  <CardTitle className="text-base font-bold text-slate-900 flex items-center gap-2">
-                    <Monitor className="w-5 h-5 text-indigo-600" />
-                    Alur 7: Pelaksanaan Tes Online CBT (Resmi)
+                  <CardTitle className="text-base sm:text-lg font-black text-white flex items-center gap-2">
+                    <Award className="w-5 h-5 text-amber-400" />
+                    Alur 7: Surat Keputusan (SK) Penerimaan & Kelulusan
                   </CardTitle>
-                  <Badge className="bg-indigo-600 text-white text-xs font-bold">Langkah 7 / 10</Badge>
+                  <Badge className="bg-amber-400 text-slate-950 font-black text-xs px-3 py-1">Langkah 7 / 9</Badge>
                 </div>
-                <CardDescription className="text-xs">
-                  Ujian dilaksanakan pada sesi yang dijadwalkan panitia PMB. Gunakan token ujian yang dibagikan panitia untuk masuk ke ruang ujian layar penuh.
+                <CardDescription className="text-xs font-medium text-slate-300 mt-1">
+                  Surat Keputusan Resmi Penetapan Kelulusan Penerimaan Mahasiswa Baru dari Panitia PMB.
                 </CardDescription>
               </CardHeader>
-              <CardContent className="p-6 space-y-5 text-xs">
-                {!examSession && (
-                  <div className="p-5 rounded-2xl bg-slate-50 border border-slate-200 text-center space-y-2">
-                    <h4 className="font-bold text-slate-900 text-base">Belum Ada Sesi Ujian Terjadwal</h4>
-                    <p className="text-slate-600">
-                      Panitia PMB akan membagikan jadwal sesi ujian online beserta token ujian. Silakan pantau halaman ini secara berkala.
-                    </p>
-                  </div>
-                )}
-
-                {examSession && examSessionStatus?.status === "running" && (
-                  <div className="p-5 rounded-2xl bg-amber-50 border border-amber-200 space-y-3">
-                    <div className="flex items-center justify-between">
-                      <h4 className="font-bold text-amber-950 text-base inline-flex items-center gap-2">
-                        <RefreshCw className="w-4 h-4 text-amber-600 animate-spin" /> Ujian Sedang Berjalan
-                      </h4>
+              <CardContent className="p-6 space-y-6 text-xs bg-white text-slate-900">
+                {!applicant?.sk_approved ? (
+                  <div className="p-6 rounded-2xl bg-amber-50 border border-amber-200 space-y-4 text-center sm:text-left">
+                    <div className="flex flex-col sm:flex-row items-center gap-4">
+                      <div className="w-14 h-14 rounded-2xl bg-amber-100 text-amber-800 flex items-center justify-center font-bold text-2xl shrink-0">
+                        <RefreshCw className="w-7 h-7 text-amber-600 animate-spin" />
+                      </div>
+                      <div className="space-y-1">
+                        <div className="flex flex-wrap items-center gap-2 justify-center sm:justify-start">
+                          <h4 className="font-bold text-amber-950 text-base">Menunggu Proses Approval SK Penerimaan</h4>
+                          <Badge className="bg-amber-600 text-white text-[10px]">VERIFIKASI PANITIA PMB</Badge>
+                        </div>
+                        <p className="text-slate-700 text-xs leading-relaxed">
+                          Ujian seleksi Anda telah selesai dikerjakan. Berkas pendaftaran dan hasil evaluasi seleksi Anda saat ini sedang dalam proses review dan approval Surat Keputusan (SK) Penerimaan oleh Panitia PMB & BAAK.
+                        </p>
+                      </div>
                     </div>
-                    <p className="text-amber-800">Anda memiliki ujian yang belum dikumpulkan pada sesi <b>{examSession.title}</b>. Lanjutkan atau kumpulkan sebelum waktu habis.</p>
-                    <div className="flex flex-col sm:flex-row gap-2">
-                      <Input
-                        type="text"
-                        value={examToken}
-                        onChange={(e) => setExamToken(e.target.value)}
-                        placeholder="Token ujian (dari panitia PMB)"
-                        className="bg-white border-amber-300 text-xs py-2.5"
-                        autoComplete="off"
-                      />
+
+                    <div className="pt-2 border-t border-amber-200/80 flex flex-col sm:flex-row items-center justify-between gap-3">
+                      <p className="text-[11px] text-amber-800">
+                        Panitia akan menerbitkan SK Penerimaan resmi dalam 1x24 jam kerja.
+                      </p>
                       <Button
                         type="button"
-                        onClick={handleStartCbt}
-                        className="bg-amber-600 hover:bg-amber-700 text-white font-bold text-xs px-6 py-2.5 shadow-md shrink-0"
+                        variant="outline"
+                        onClick={async () => {
+                          await fetchApplication();
+                          await fetchAdmissionLetter();
+                          toast.success("Status SK Penerimaan diperbarui");
+                        }}
+                        className="text-xs border-amber-300 text-amber-900 hover:bg-amber-100 font-bold"
                       >
-                        <Rocket className="w-4 h-4 mr-1.5 inline" /> Lanjutkan Ujian
+                        <RefreshCw className="w-3.5 h-3.5 mr-1.5" /> Muat Ulang Status SK
                       </Button>
                     </div>
                   </div>
-                )}
-
-                {examSession && examSessionStatus?.status !== "running" && (
-                  <div className="p-5 rounded-2xl bg-indigo-50 border border-indigo-200 space-y-4">
-                    <div className="flex flex-col sm:flex-row sm:items-center sm:justify-between gap-3">
-                      <div>
-                        <h4 className="font-bold text-indigo-950 text-base">{examSession.title}</h4>
-                        <p className="text-slate-600 text-xs mt-0.5">{examSession.description || "Sesi ujian seleksi masuk CBT online"}</p>
-                      </div>
-                      <Badge className={`text-white text-xs font-bold px-3 py-1 ${
-                        examSession.state === "open" ? "bg-emerald-600" :
-                        examSession.state === "not_started" ? "bg-amber-600" :
-                        examSession.state === "expired" ? "bg-slate-500" : "bg-slate-400"
-                      }`}>
-                        {examSession.state_label}
-                      </Badge>
-                    </div>
-                    <div className="grid grid-cols-1 sm:grid-cols-3 gap-3">
-                      <div className="rounded-xl bg-white border border-indigo-100 p-3 text-center">
-                        <p className="text-[10px] uppercase tracking-wide text-slate-500 font-semibold">Jadwal</p>
-                        <p className="font-bold text-indigo-950 text-xs mt-1">
-                          {examSession.start_at
-                            ? new Date(examSession.start_at).toLocaleString("id-ID", { dateStyle: "medium", timeStyle: "short" })
-                            : "-"}
-                        </p>
-                      </div>
-                      <div className="rounded-xl bg-white border border-indigo-100 p-3 text-center">
-                        <p className="text-[10px] uppercase tracking-wide text-slate-500 font-semibold">Durasi</p>
-                        <p className="font-bold text-indigo-950 text-xs mt-1">{examSession.duration_minutes} Menit</p>
-                      </div>
-                      <div className="rounded-xl bg-white border border-indigo-100 p-3 text-center">
-                        <p className="text-[10px] uppercase tracking-wide text-slate-500 font-semibold">Passing Grade</p>
-                        <p className="font-bold text-indigo-950 text-xs mt-1">{examSession.passing_grade}</p>
-                      </div>
-                    </div>
-
-                    {examSession.state !== "open" ? (
-                      <p className="text-slate-600 bg-white border border-indigo-100 rounded-lg p-3">
-                        Ujian belum dibuka / telah berakhir. Mohon menunggu jadwal sesi berikutnya dari panitia PMB.
-                      </p>
-                    ) : (
-                      <>
-                        {examSessionStatus?.flagged && (
-                          <div className="rounded-lg bg-amber-100 border border-amber-300 p-3 text-amber-800">
-                            Ujian sebelumnya ditandai <b>mencurigakan</b>. Gunakan token <b>ujian ulang (retake)</b> yang diberikan panitia untuk mengikuti ujian kembali.
+                ) : (
+                  /* OFFICIAL LETTER OF ACCEPTANCE (LoA / SK PENERIMAAN) */
+                  <div className="space-y-6">
+                    {/* Printable Official Document */}
+                    <div id="sk-penerimaan-document" className="bg-white border border-slate-300 rounded-2xl p-4 sm:p-8 shadow-sm space-y-5 text-slate-800">
+                      {/* Letterhead (Kop Surat) */}
+                      <div className="flex flex-col sm:flex-row items-center text-center sm:text-left gap-3.5 pb-4 border-b-2 border-slate-900">
+                        {branding?.campus_logo_url || branding?.logo_url ? (
+                          <img
+                            src={resolveMediaUrl(branding.campus_logo_url || branding.logo_url)}
+                            alt="Logo"
+                            className="w-14 h-14 sm:w-16 sm:h-16 object-contain shrink-0"
+                          />
+                        ) : (
+                          <div className="w-14 h-14 sm:w-16 sm:h-16 rounded-xl bg-gradient-to-tr from-sky-600 to-indigo-700 text-white flex items-center justify-center font-bold text-xl sm:text-2xl shrink-0">
+                            <GraduationCap className="w-8 h-8 sm:w-9 sm:h-9" />
                           </div>
                         )}
-                        <div className="flex flex-col sm:flex-row sm:items-center gap-3 sm:justify-between bg-white border border-indigo-100 rounded-lg p-4">
-                          <div className="flex-1">
-                            <p className="font-semibold text-slate-900">Ruang Ujian Layar Penuh</p>
-                            <p className="text-slate-500 text-[11px]">
-                              {examSessionStatus ? "Kumpulkan ujian berjalan atau ikuti sesi berikutnya dengan token baru." : "Masukkan token ujian dari panitia PMB sebelum mulai."}
-                            </p>
+                        <div className="flex-1 min-w-0">
+                          <h3 className="font-extrabold text-base sm:text-lg uppercase tracking-wider text-slate-900 leading-tight">
+                            {branding?.campus_name || "POLITEKNIK SCI"}
+                          </h3>
+                          <p className="text-[10px] sm:text-[11px] text-slate-600 font-medium mt-0.5">
+                            PANITIA PENERIMAAN MAHASISWA BARU (PMB) TAHUN AKADEMIK {settings?.active_period_name || "2026/2027"}
+                          </p>
+                          <p className="text-[9px] sm:text-[10px] text-slate-500 mt-0.5">
+                            {branding?.campus_address || "Kampus Utama Politeknik SCI"} • Telp: {branding?.campus_phone || "(021) 8888-9999"} • Web: {branding?.campus_website || "https://sci.ac.id"}
+                          </p>
+                        </div>
+                      </div>
+
+                      {/* Letter Title */}
+                      <div className="text-center space-y-1 py-1">
+                        <h4 className="font-black text-xs sm:text-sm uppercase tracking-widest text-slate-900 underline underline-offset-4">
+                          SURAT KEPUTUSAN PENERIMAAN MAHASISWA BARU
+                        </h4>
+                        <p className="font-mono text-[11px] sm:text-xs font-bold text-slate-700">
+                          Nomor: {admissionLetter?.letter_number || applicant?.sk_number || `SK-PMB/2026/${applicant?.registration_number}`}
+                        </p>
+                        <p className="text-[10px] sm:text-[11px] text-slate-500">Tanggal Penetapan: {admissionLetter?.date || applicant?.sk_date || new Date().toLocaleDateString("id-ID")}</p>
+                      </div>
+
+                      {/* Decision statement */}
+                      <p className="text-xs leading-relaxed text-justify text-slate-700">
+                        Berdasarkan hasil evaluasi seleksi Computer Based Test (CBT) dan verifikasi kelengkapan dokumen administrasi Calon Mahasiswa Baru Tahun Akademik {settings?.active_period_name || "2026/2027"}, Panitia Penerimaan Mahasiswa Baru dengan ini menetapkan bahwa:
+                      </p>
+
+                      {/* Student details table wrapper for responsiveness */}
+                      <div className="bg-slate-50 rounded-xl border border-slate-200 overflow-x-auto text-xs">
+                        <table className="w-full text-left border-collapse min-w-[320px]">
+                          <tbody>
+                            <tr className="border-b border-slate-200">
+                              <td className="p-2.5 font-bold text-slate-600 w-2/5 sm:w-1/3 bg-slate-100/80">Nama Lengkap</td>
+                              <td className="p-2.5 font-bold text-slate-900">{applicant?.name}</td>
+                            </tr>
+                            <tr className="border-b border-slate-200">
+                              <td className="p-2.5 font-mono font-bold text-indigo-700 bg-slate-100/80">Nomor Registrasi PMB</td>
+                              <td className="p-2.5 font-mono font-bold text-indigo-700">{applicant?.registration_number}</td>
+                            </tr>
+                            <tr className="border-b border-slate-200">
+                              <td className="p-2.5 font-bold text-slate-600 bg-slate-100/80">Nomor Induk Kependudukan (NIK)</td>
+                              <td className="p-2.5 font-mono">{applicant?.nik || "-"}</td>
+                            </tr>
+                            <tr className="border-b border-slate-200">
+                              <td className="p-2.5 font-bold text-slate-600 bg-slate-100/80">Program Studi Diterima</td>
+                              <td className="p-2.5 font-extrabold text-emerald-800">{applicant?.prodi_name}</td>
+                            </tr>
+                            <tr className="border-b border-slate-200">
+                              <td className="p-2.5 font-bold text-slate-600 bg-slate-100/80">Pilihan Jenis Kelas</td>
+                              <td className="p-2.5 font-bold text-slate-800 capitalize">
+                                {applicant?.class_type === "khusus"
+                                  ? "Kelas Khusus Offline (Eksekutif - Kurikulum Khusus)"
+                                  : applicant?.class_type === "weekend"
+                                  ? "Kelas Weekend Online (Daring Akhir Pekan)"
+                                  : applicant?.learning_mode === "online"
+                                  ? "Kelas Reguler Online (Daring Penuh)"
+                                  : "Kelas Reguler Offline (Tatap Muka di Kampus)"}
+                              </td>
+                            </tr>
+                            <tr className="border-b border-slate-200">
+                              <td className="p-2.5 font-bold text-slate-600 bg-slate-100/80">Status Evaluasi Seleksi</td>
+                              <td className="p-2.5 font-bold text-emerald-700">MEMENUHI SYARAT (LULUS SELEKSI PMB)</td>
+                            </tr>
+                            <tr>
+                              <td className="p-2.5 font-bold text-slate-600 bg-slate-100/80">Keputusan Akhir Seleksi</td>
+                              <td className="p-2.5">
+                                <Badge className="bg-emerald-600 text-white font-black text-xs px-3 py-1">
+                                  DITERIMA SEBAGAI MAHASISWA BARU
+                                </Badge>
+                              </td>
+                            </tr>
+                          </tbody>
+                        </table>
+                      </div>
+
+                      {/* Statement and Signatory */}
+                      <div className="space-y-4 pt-2">
+                        <p className="text-xs text-slate-700 leading-relaxed">
+                          Keputusan ini bersifat mutlak dan mengikat. Calon mahasiswa diwajibkan untuk menyelesaikan tahapan <strong>Daftar Ulang (Uang Pra-Studi & Ukuran Jaket Almamater)</strong> pada Alur 8 sebelum batas waktu yang ditentukan.
+                        </p>
+
+                        <div className="flex flex-col sm:flex-row items-center sm:items-end justify-between gap-4 pt-4 border-t border-slate-100">
+                          <div className="p-3 bg-emerald-50 rounded-xl border border-emerald-200 inline-flex items-center gap-2.5 w-full sm:w-auto justify-center sm:justify-start">
+                            <div className="w-9 h-9 bg-emerald-600 text-white rounded-lg flex items-center justify-center font-bold text-xs shrink-0">
+                              QR
+                            </div>
+                            <div className="text-[10px] text-emerald-950 leading-tight">
+                              <p className="font-bold">Digital Signature Verified</p>
+                              <p className="text-emerald-700 font-mono">{applicant?.sk_number || "SK-PMB-OFFICIAL"}</p>
+                            </div>
                           </div>
-                          <div className="flex flex-col sm:flex-row items-stretch gap-2">
-                            <Input
-                              type="text"
-                              value={examToken}
-                              onChange={(e) => setExamToken(e.target.value)}
-                              placeholder="Token ujian"
-                              className="bg-white border-indigo-200 text-xs py-2.5 w-full sm:w-48"
-                              autoComplete="off"
-                            />
-                            <Button
-                              type="button"
-                              onClick={handleStartCbt}
-                              className="bg-indigo-600 hover:bg-indigo-700 text-white font-bold text-xs px-6 py-2.5 shadow-md shrink-0"
-                            >
-                              <Rocket className="w-4 h-4 mr-1.5 inline" />
-                              {examSessionStatus ? "Masuk Ruang Ujian" : "Mulai Ujian Sekarang"}
-                            </Button>
+
+                          <div className="text-center sm:text-right space-y-1 w-full sm:w-auto">
+                            <p className="text-[11px] text-slate-600">{branding?.campus_city || "Jakarta"}, {admissionLetter?.date || applicant?.sk_date || new Date().toLocaleDateString("id-ID")}</p>
+                            <p className="text-[11px] font-bold text-slate-900">Ketua Panitia PMB,</p>
+                            <div className="h-12 flex items-center justify-center sm:justify-end">
+                              <span className="font-serif italic text-sm font-bold text-indigo-900 border-b border-dashed border-indigo-300 pb-0.5">
+                                {applicant?.sk_approved_by || "Panitia PMB & BAAK"}
+                              </span>
+                            </div>
+                            <p className="text-[10px] text-slate-500">NIP/NIDN. Official PMB Verified</p>
                           </div>
                         </div>
-                      </>
-                    )}
-                  </div>
-                )}
-
-                {/* Hasil Nilai CBT */}
-                {applicant?.test_status === "passed" && (
-                  <div className="p-5 rounded-2xl bg-emerald-50 border border-emerald-200 space-y-3">
-                    <div className="flex items-center justify-between">
-                      <h4 className="font-bold text-emerald-950 text-base inline-flex items-center gap-2">
-                        <Check className="w-5 h-5 text-emerald-600" /> Selamat! Anda Dinyatakan LULUS
-                      </h4>
-                      <Badge className="bg-emerald-600 text-white text-xs font-bold px-3 py-1">LULUS SELEKSI</Badge>
+                      </div>
                     </div>
-                    <p className="text-slate-700">
-                      Nilai Ujian CBT Anda: <strong className="text-emerald-800 text-base font-black">{applicant?.test_score} / 100</strong> (Passing Grade: {examSession?.passing_grade || settings?.passing_grade || 70})
-                    </p>
-                    <div className="flex justify-end pt-2">
+
+                    {/* Actions */}
+                    <div className="flex flex-col sm:flex-row items-stretch sm:items-center justify-between gap-3 pt-2">
+                      <Button
+                        type="button"
+                        variant="outline"
+                        onClick={() => window.print()}
+                        className="text-xs font-bold border-slate-300 text-slate-700 hover:bg-slate-100 flex items-center justify-center gap-1.5 py-2.5 w-full sm:w-auto"
+                      >
+                        <Printer className="w-4 h-4 text-indigo-600" /> Cetak / Unduh Dokumen SK
+                      </Button>
+
                       <Button
                         type="button"
                         onClick={() => setActiveStep(8)}
-                        className="bg-emerald-700 text-white font-bold text-xs px-5 py-2.5 shadow-md"
+                        className="bg-gradient-to-r from-emerald-600 to-teal-600 hover:from-emerald-500 hover:to-teal-500 text-white font-black text-xs px-6 py-2.5 shadow-md flex items-center justify-center gap-1.5 w-full sm:w-auto"
                       >
-                        Lanjut ke Daftar Ulang & Ukuran Baju (Alur 8) <ArrowRight className="w-4 h-4 ml-1.5" />
+                        <Shirt className="w-4 h-4" /> Lanjut ke Daftar Ulang & Ukuran Jas (Alur 8) <ArrowRight className="w-4 h-4 ml-1" />
                       </Button>
                     </div>
                   </div>
@@ -1167,33 +1525,35 @@ export function CamabaPortal({ token, onLogout, onSwitchToStudent, branding }) {
 
           {/* STEP 8: DAFTAR ULANG (UANG PRA-STUDI & UKURAN BAJU) */}
           {activeStep === 8 && (
-            <Card className="border-slate-200 shadow-sm">
-              <CardHeader className="border-b border-slate-100 pb-3">
+            <Card className="border border-slate-200 bg-white shadow-md rounded-2xl overflow-hidden">
+              <CardHeader className="bg-slate-900 text-white border-b border-slate-800 py-4 px-5 rounded-t-xl">
                 <div className="flex items-center justify-between">
-                  <CardTitle className="text-base font-bold text-slate-900 flex items-center gap-2">
-                    <Shirt className="w-5 h-5 text-indigo-600" />
-                    Alur 8: Daftar Ulang (Pembayaran Uang Pra-Studi & Ukuran Baju)
+                  <CardTitle className="text-base sm:text-lg font-black text-white flex items-center gap-2">
+                    <Shirt className="w-5 h-5 text-indigo-400" />
+                    Alur 8: Daftar Ulang (Pembayaran Uang Pra-Studi & Ukuran Jas Almamater)
                   </CardTitle>
-                  <Badge className="bg-indigo-600 text-white text-xs font-bold">Langkah 8 / 10</Badge>
+                  <Badge className="bg-indigo-600 text-white text-xs font-bold px-3 py-1">Langkah 8 / 9</Badge>
                 </div>
-                <CardDescription className="text-xs">
+                <CardDescription className="text-xs font-medium text-slate-300 mt-1">
                   Selesaikan her-registrasi dengan skema pembayaran fleksibel serta penentuan ukuran jaket almamater.
                 </CardDescription>
               </CardHeader>
-              <CardContent className="p-6 space-y-6 text-xs">
+              <CardContent className="p-6 space-y-6 text-xs bg-white text-slate-900">
                 {/* 8.1 Skema Cicilan / Lunas Uang Pra-Studi */}
                 <div className="space-y-4">
-                  <h4 className="font-bold text-slate-900 text-xs uppercase tracking-wider">
+                  <h4 className="font-extrabold text-indigo-950 text-xs sm:text-sm uppercase tracking-wider">
                     8.1 Pembayaran Uang Pra-Studi ({formatRupiah(applicant?.pra_studi_fee || 3500000)})
                   </h4>
 
-                  {/* Pilih Lunas vs Cicilan */}
-                  <div className="flex gap-2">
+                  {/* Pilih Lunas vs Cicilan vs Custom */}
+                  <div className="flex flex-wrap gap-2">
                     <button
                       type="button"
                       onClick={() => setPraPayScheme("full")}
-                      className={`px-4 py-2 rounded-xl border font-bold text-xs transition ${
-                        praPayScheme === "full" ? "bg-indigo-600 text-white border-indigo-600" : "bg-white border-slate-300 text-slate-700 hover:bg-slate-100"
+                      className={`px-4 py-2.5 rounded-xl border-2 font-extrabold text-xs transition-all shadow-xs ${
+                        praPayScheme === "full"
+                          ? "bg-indigo-600 text-white border-indigo-600 shadow-sm"
+                          : "bg-white border-slate-300 text-slate-900 hover:bg-slate-100"
                       }`}
                     >
                       Bayar Lunas (Full)
@@ -1201,66 +1561,142 @@ export function CamabaPortal({ token, onLogout, onSwitchToStudent, branding }) {
                     <button
                       type="button"
                       onClick={() => setPraPayScheme("installment")}
-                      className={`px-4 py-2 rounded-xl border font-bold text-xs transition ${
-                        praPayScheme === "installment" ? "bg-indigo-600 text-white border-indigo-600" : "bg-white border-slate-300 text-slate-700 hover:bg-slate-100"
+                      className={`px-4 py-2.5 rounded-xl border-2 font-extrabold text-xs transition-all shadow-xs ${
+                        praPayScheme === "installment"
+                          ? "bg-indigo-600 text-white border-indigo-600 shadow-sm"
+                          : "bg-white border-slate-300 text-slate-900 hover:bg-slate-100"
                       }`}
                     >
                       Cicil {applicant?.installments?.length || 3}x
+                    </button>
+                    <button
+                      type="button"
+                      onClick={() => setPraPayScheme("custom")}
+                      className={`px-4 py-2.5 rounded-xl border-2 font-extrabold text-xs transition-all shadow-xs ${
+                        praPayScheme === "custom"
+                          ? "bg-indigo-600 text-white border-indigo-600 shadow-sm"
+                          : "bg-white border-slate-300 text-slate-900 hover:bg-slate-100"
+                      }`}
+                    >
+                      Nominal Custom (DP / Bebas)
                     </button>
                   </div>
 
                   {/* Metode & Rekening (shared) */}
                   <div className="grid sm:grid-cols-2 gap-4">
+                    {/* Metode pembayaran pilihan */}
                     <div className="space-y-1.5">
-                      <Label className="text-[10px] font-bold text-slate-600">Pilih Metode Pembayaran</Label>
+                      <Label className="text-xs font-extrabold text-slate-900">Pilih Metode Pembayaran yang Didukung</Label>
                       {availablePaymentMethods.length > 0 ? (
-                        <select
-                          value={paymentMethod}
-                          onChange={(e) => { setPaymentMethod(e.target.value); setProofFile(null); }}
-                          className="w-full text-xs border border-slate-300 rounded-lg px-2.5 py-2 font-medium bg-white"
-                        >
-                          {availablePaymentMethods.map((m) => (
-                            <option key={m.id} value={m.id}>
-                              {m.label}
-                            </option>
-                          ))}
-                        </select>
+                        <div className="relative">
+                          <select
+                            value={paymentMethod}
+                            onChange={(e) => { setPaymentMethod(e.target.value); setProofFile(null); }}
+                            className="w-full text-xs sm:text-sm font-extrabold text-slate-900 border-2 border-indigo-500 rounded-xl px-3 py-2.5 bg-white shadow-xs focus:outline-none focus:ring-2 focus:ring-indigo-600 appearance-none"
+                          >
+                            {availablePaymentMethods.map((m) => (
+                              <option key={m.id} value={m.id} className="bg-white text-slate-900 font-extrabold py-1.5">
+                                {m.label}
+                              </option>
+                            ))}
+                          </select>
+                          <div className="pointer-events-none absolute inset-y-0 right-0 flex items-center px-3 text-indigo-700">
+                            <ChevronDown className="h-4 w-4" />
+                          </div>
+                        </div>
                       ) : (
                         <div className="p-3 bg-amber-50 border border-amber-200 rounded-lg text-amber-800 text-xs">
-                          Metode pembayaran sedang dalam pengaturan panitia.
+                          Metode pembayaran sedang dalam pengaturan panitia. Silakan hubungi panitia PMB.
                         </div>
                       )}
                     </div>
-                    <div className="space-y-1">
-                      <p className="text-[10px] uppercase tracking-widest text-slate-500 font-bold">Rekening Tujuan</p>
-                      <p className="font-mono font-bold text-indigo-700 text-sm">{paymentQuote?.account?.bank_account_number || "-"}</p>
-                      <p className="text-xs text-slate-600">a.n. {paymentQuote?.account?.bank_account_holder || "-"}</p>
+                    <div className="p-3.5 bg-indigo-50/80 rounded-xl border border-indigo-200 space-y-1">
+                      <p className="text-[10px] uppercase tracking-widest text-indigo-900 font-extrabold">REKENING TUJUAN</p>
+                      <p className="font-mono font-extrabold text-indigo-700 text-sm sm:text-base">{paymentQuote?.account?.bank_account_number || "138-00-9876543-2"}</p>
+                      <p className="text-xs font-bold text-slate-700">a.n. {paymentQuote?.account?.bank_account_holder || "YAYASAN KAMPUS HEBAT"}</p>
                     </div>
                   </div>
                   {paymentMethod === "MANUAL" && (
-                    <div className="space-y-1 p-3 rounded-xl bg-sky-50/60 border border-sky-200">
-                      <Label className="text-[10px] font-bold text-slate-700">Bukti Transfer Pra-Studi</Label>
+                    <div className="space-y-1 p-3.5 rounded-xl bg-sky-50 border border-sky-200">
+                      <Label className="text-xs font-extrabold text-slate-800">Bukti Transfer Pra-Studi</Label>
                       <Input
                         type="file"
                         accept="image/png,image/jpeg,.pdf"
                         onChange={(e) => setProofFile(e.target.files?.[0] || null)}
-                        className="bg-white text-xs"
+                        className="bg-white text-slate-900 text-xs border border-sky-300 rounded-lg"
                       />
                     </div>
                   )}
 
+                  {(applicant?.pra_studi_payment_status === "pending_verification" || applicant?.reregistration_status === "pending_verification") && (
+                    <div className="p-5 rounded-2xl bg-amber-50 border border-amber-200 space-y-3 shadow-xs">
+                      <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-2">
+                        <h4 className="font-extrabold text-amber-950 text-sm flex items-center gap-2">
+                          <RefreshCw className="w-4 h-4 text-amber-600 animate-spin" />
+                          Menunggu Approval Pembayaran Uang Pra-Studi oleh Admin PMB
+                        </h4>
+                        <Badge className="bg-amber-600 text-white text-[10px] font-bold w-fit">MENUNGGU VERIFIKASI ADMIN</Badge>
+                      </div>
+                      <p className="text-slate-700 text-xs leading-relaxed">
+                        Bukti transfer/pembayaran Uang Pra-Studi Anda telah kami terima. Panitia PMB & Keuangan sedang memverifikasi pembayaran Anda. Status her-registrasi akan aktif setelah disetujui admin.
+                      </p>
+                      <div className="flex justify-end pt-1">
+                        <Button
+                          type="button"
+                          size="sm"
+                          variant="outline"
+                          onClick={async () => {
+                            await fetchApplication();
+                            toast.success("Status pembayaran diperbarui");
+                          }}
+                          className="text-xs border-amber-300 text-amber-900 hover:bg-amber-100 font-bold"
+                        >
+                          <RefreshCw className="w-3.5 h-3.5 mr-1.5" /> Muat Ulang Status Pembayaran
+                        </Button>
+                      </div>
+                    </div>
+                  )}
+
                   {/* Tagihan per opsi */}
-                  {praPayScheme === "full" ? (
-                    <div className="rounded-xl bg-indigo-50 border border-indigo-200 p-4 space-y-2">
-                      <p className="text-[10px] uppercase tracking-widest text-indigo-700 font-bold">Tagihan Lunas (Full Payment)</p>
-                      <p className="font-mono font-black text-indigo-700 text-xl">Rp {(paymentQuote?.pra_studi?.full_amount || applicant?.pra_studi_fee || 3500000).toLocaleString("id-ID")}</p>
-                      <p className="text-xs text-amber-700">Kode unik: <strong>{paymentQuote?.pra_studi?.full_code || "-"}</strong></p>
+                  {praPayScheme === "custom" ? (
+                    <div className="rounded-2xl bg-indigo-50/90 border border-indigo-200 p-5 space-y-3 shadow-xs">
+                      <p className="text-[10px] uppercase tracking-widest text-indigo-900 font-extrabold">PEMBAYARAN NOMINAL CUSTOM (DP / PARSIAL)</p>
+                      <div className="space-y-1.5">
+                        <Label className="text-xs font-extrabold text-indigo-950">Masukkan Nominal Pembayaran (Rp)</Label>
+                        <Input
+                          type="number"
+                          min={50000}
+                          step={50000}
+                          value={praCustomAmount}
+                          onChange={(e) => setPraCustomAmount(e.target.value)}
+                          placeholder="Contoh: 500000"
+                          className="bg-white text-slate-900 font-black text-sm border-2 border-indigo-400 rounded-xl py-2.5"
+                        />
+                      </div>
+                      <p className="text-xs text-indigo-800 font-bold">
+                        Nominal yang dibayar: <strong className="text-indigo-950 font-black">{formatRupiah(praCustomAmount)}</strong>
+                      </p>
+                      <Button
+                        type="button"
+                        size="sm"
+                        onClick={() => handlePayPraStudi("custom")}
+                        disabled={uploadingProof}
+                        className="w-full bg-indigo-600 hover:bg-indigo-700 text-white font-extrabold text-xs sm:text-sm py-2.5 rounded-xl shadow-md mt-2"
+                      >
+                        {uploadingProof ? "Mengunggah..." : "Bayar Custom Nominal & Lanjutkan"}
+                      </Button>
+                    </div>
+                  ) : praPayScheme === "full" ? (
+                    <div className="rounded-2xl bg-indigo-50/90 border border-indigo-200 p-5 space-y-3 shadow-xs">
+                      <p className="text-[10px] uppercase tracking-widest text-indigo-900 font-extrabold">TAGIHAN LUNAS (FULL PAYMENT)</p>
+                      <p className="font-mono font-black text-indigo-700 text-2xl sm:text-3xl">Rp {(paymentQuote?.pra_studi?.full_amount || applicant?.pra_studi_fee || 3500000).toLocaleString("id-ID")}</p>
+                      <p className="text-xs text-amber-800 font-bold bg-amber-50 px-3 py-1.5 rounded-lg border border-amber-200 inline-block">Kode unik: <span className="font-mono font-black text-amber-900">{paymentQuote?.pra_studi?.full_code || "596"}</span></p>
                       <Button
                         type="button"
                         size="sm"
                         onClick={() => handlePayPraStudi("full")}
                         disabled={uploadingProof}
-                        className="w-full bg-indigo-600 hover:bg-indigo-700 text-white font-bold text-xs mt-2"
+                        className="w-full bg-indigo-600 hover:bg-indigo-700 text-white font-extrabold text-xs sm:text-sm py-2.5 rounded-xl shadow-md mt-2"
                       >
                         {uploadingProof ? "Mengunggah..." : "Bayar Lunas & Lanjutkan"}
                       </Button>
@@ -1274,25 +1710,25 @@ export function CamabaPortal({ token, onLogout, onSwitchToStudent, branding }) {
                         return (
                           <div
                             key={inst.term}
-                            className={`p-3.5 rounded-xl border space-y-2 ${
-                              isPaid ? "bg-emerald-50 border-emerald-300" : activeT ? "bg-indigo-50/50 border-indigo-400" : "bg-slate-50 border-slate-200"
+                            className={`p-4 rounded-xl border space-y-2 ${
+                              isPaid ? "bg-emerald-50 border-emerald-300" : activeT ? "bg-indigo-50/80 border-indigo-400" : "bg-slate-50 border-slate-200"
                             }`}
                           >
                             <div className="flex justify-between items-center">
-                              <span className="font-bold text-slate-800 text-[11px]">{inst.name || `Cicilan ${inst.term}`}</span>
-                              <Badge variant={isPaid ? "default" : "outline"} className="text-[9px]">
+                              <span className="font-extrabold text-slate-900 text-xs">{inst.name || `Cicilan ${inst.term}`}</span>
+                              <Badge variant={isPaid ? "default" : "outline"} className={isPaid ? "bg-emerald-600 text-white font-bold text-[10px]" : "border-slate-300 text-slate-700 font-bold text-[10px]"}>
                                 {isPaid ? "Lunas" : "Belum Bayar"}
                               </Badge>
                             </div>
                             <p className="text-xl font-black text-indigo-700 font-mono">Rp {(quote?.amount || inst.amount).toLocaleString("id-ID")}</p>
-                            {!isPaid && <p className="text-xs text-amber-700">Kode unik: <strong>{quote?.unique_code || "-"}</strong></p>}
+                            {!isPaid && <p className="text-xs text-amber-800 font-semibold">Kode unik: <strong className="text-amber-900">{quote?.unique_code || "-"}</strong></p>}
                             {!isPaid && (
                               <Button
                                 type="button"
                                 size="sm"
                                 onClick={() => { setPraPayTerm(inst.term); handlePayPraStudi("installment", inst.term); }}
                                 disabled={uploadingProof}
-                                className="w-full bg-indigo-600 text-white font-bold text-[10px] h-7"
+                                className="w-full bg-indigo-600 hover:bg-indigo-700 text-white font-extrabold text-xs h-8 rounded-lg mt-1"
                               >
                                 {uploadingProof && activeT ? "Mengunggah..." : "Bayar"}
                               </Button>
@@ -1305,172 +1741,173 @@ export function CamabaPortal({ token, onLogout, onSwitchToStudent, branding }) {
                 </div>
 
                 {/* 8.2 Pengisian Ukuran Baju Almamater */}
-                <div className="p-4 rounded-xl border border-slate-200 bg-slate-50/50 space-y-3">
-                  <h4 className="font-bold text-slate-900 text-xs uppercase tracking-wider">
-                    8.2 Pengisian Informasi Ukuran Baju / Seragam Almamater
+                <div className="p-4 sm:p-5 rounded-2xl border border-slate-200 bg-slate-50/90 space-y-4 shadow-xs overflow-hidden">
+                  <h4 className="font-extrabold text-indigo-950 text-xs sm:text-sm uppercase tracking-wider">
+                    8.2 Pengisian Informasi Ukuran Jas / Seragam Almamater
                   </h4>
-                  <div className="flex flex-wrap gap-2">
+                  <div className="grid grid-cols-3 sm:grid-cols-6 gap-2 w-full">
                     {["S", "M", "L", "XL", "XXL", "XXXL"].map((sz) => (
                       <button
                         key={sz}
                         type="button"
                         onClick={() => setSelectedShirtSize(sz)}
-                        className={`w-12 h-10 rounded-lg border font-bold text-xs transition-all ${
+                        className={`w-full h-11 rounded-xl border-2 font-black text-sm transition-all shadow-xs flex items-center justify-center ${
                           selectedShirtSize === sz
-                            ? "bg-indigo-600 text-white border-indigo-600 shadow-sm"
-                            : "bg-white border-slate-300 text-slate-700 hover:bg-slate-100"
+                            ? "bg-indigo-600 text-white border-indigo-600 shadow-md scale-[1.02]"
+                            : "bg-white border-slate-300 text-slate-900 hover:bg-slate-100"
                         }`}
                       >
                         {sz}
                       </button>
                     ))}
                   </div>
-                  <div>
-                    <Label className="text-[11px] font-semibold text-slate-600">Catatan Khusus Ukuran / Panjang Lengan (Opsional)</Label>
+                  <div className="space-y-1 w-full">
+                    <Label className="text-xs font-extrabold text-slate-800">Catatan Khusus Ukuran / Panjang Lengan (Opsional)</Label>
                     <Input
                       value={shirtNotes}
                       onChange={(e) => setShirtNotes(e.target.value)}
                       placeholder="Contoh: Tinggi 175cm, berat 68kg, minta lengan sedikit lebih panjang"
-                      className="text-xs mt-1"
+                      className="bg-white text-slate-900 font-bold text-xs placeholder:text-slate-400 border-2 border-slate-300 focus:border-indigo-600 py-2.5 rounded-xl mt-1 shadow-xs w-full"
                     />
                   </div>
                   <Button
                     type="button"
                     onClick={handleSaveShirtSize}
-                    className="bg-indigo-600 hover:bg-indigo-700 text-white font-bold text-xs"
+                    className="w-full max-w-full bg-indigo-600 hover:bg-indigo-700 text-white font-extrabold text-xs sm:text-sm py-3 px-4 rounded-xl shadow-md whitespace-normal h-auto leading-relaxed text-center"
                   >
-                    Simpan Ukuran Baju & Lanjut ke Sibermaru
+                    Simpan Ukuran Jas & Lanjut ke Sibermaru (Alur 9)
                   </Button>
                 </div>
               </CardContent>
             </Card>
           )}
 
-          {/* STEP 9: INFORMASI SIBERMARU (ORIENTASI) */}
+          {/* STEP 9: INFORMASI SIBERMARU & MASUK SISTEM SIAKAD */}
           {activeStep === 9 && (
-            <Card className="border-slate-200 shadow-sm">
-              <CardHeader className="border-b border-slate-100 pb-3">
-                <div className="flex items-center justify-between">
-                  <CardTitle className="text-base font-bold text-slate-900 flex items-center gap-2">
-                    <Calendar className="w-5 h-5 text-indigo-600" />
-                    Alur 9: Pengisian & Informasi SIBERMARU 2026
-                  </CardTitle>
-                  <Badge className="bg-indigo-600 text-white text-xs font-bold">Langkah 9 / 10</Badge>
-                </div>
-                <CardDescription className="text-xs">
-                  Orientasi & Pengenalan Kehidupan Kampus bagi Mahasiswa Baru.
-                </CardDescription>
-              </CardHeader>
-              <CardContent className="p-6 space-y-5 text-xs">
-                <div className="grid sm:grid-cols-2 gap-4">
-                  <div className="p-4 bg-slate-50 rounded-xl border space-y-1">
-                    <p className="text-slate-500 text-[10px] font-bold">WAKTU PELAKSANAAN</p>
-                    <p className="font-bold text-slate-900 text-sm">{settings?.sibermaru_schedule || "25 - 27 Agustus 2026"}</p>
+            <div className="space-y-6">
+              {/* Orientasi Card */}
+              <Card className="border border-slate-200 bg-white shadow-md rounded-2xl overflow-hidden">
+                <CardHeader className="bg-slate-900 text-white border-b border-slate-800 py-4 px-5 rounded-t-xl">
+                  <div className="flex items-center justify-between">
+                    <CardTitle className="text-base sm:text-lg font-black text-white flex items-center gap-2">
+                      <Calendar className="w-5 h-5 text-indigo-400" />
+                      Alur 9.1: Pengisian & Informasi SIBERMARU 2026
+                    </CardTitle>
+                    <Badge className="bg-indigo-600 text-white text-xs font-bold px-3 py-1">Langkah 9 / 9</Badge>
                   </div>
-                  <div className="p-4 bg-slate-50 rounded-xl border space-y-1">
-                    <p className="text-slate-500 text-[10px] font-bold">LOKASI & METODE</p>
-                    <p className="font-bold text-slate-900 text-sm">{settings?.sibermaru_location || "Auditorium Kampus & Hybrid Zoom"}</p>
+                  <CardDescription className="text-xs font-medium text-slate-300 mt-1">
+                    Orientasi & Pengenalan Kehidupan Kampus bagi Mahasiswa Baru.
+                  </CardDescription>
+                </CardHeader>
+                <CardContent className="p-6 space-y-5 text-xs">
+                  <div className="grid sm:grid-cols-2 gap-4">
+                    <div className="p-4 bg-slate-50 rounded-xl border space-y-1">
+                      <p className="text-slate-500 text-[10px] font-bold">WAKTU PELAKSANAAN</p>
+                      <p className="font-bold text-slate-900 text-sm">{settings?.sibermaru_schedule || "25 - 27 Agustus 2026"}</p>
+                    </div>
+                    <div className="p-4 bg-slate-50 rounded-xl border space-y-1">
+                      <p className="text-slate-500 text-[10px] font-bold">LOKASI & METODE</p>
+                      <p className="font-bold text-slate-900 text-sm">{settings?.sibermaru_location || "Auditorium Kampus & Hybrid Zoom"}</p>
+                    </div>
                   </div>
-                </div>
 
-                <div className="p-4 bg-slate-50 rounded-xl border space-y-1">
-                  <p className="text-slate-500 text-[10px] font-bold">DRESSCODE RESMI</p>
-                  <p className="font-medium text-slate-800">{settings?.sibermaru_dresscode || "Kemeja Putih, Celana/Rok Hitam, Jas Almamater"}</p>
-                </div>
+                  <div className="p-4 bg-slate-50 rounded-xl border space-y-1">
+                    <p className="text-slate-500 text-[10px] font-bold">DRESSCODE RESMI</p>
+                    <p className="font-medium text-slate-800">{settings?.sibermaru_dresscode || "Kemeja Putih, Celana/Rok Hitam, Jas Almamater"}</p>
+                  </div>
 
-                {/* Form Kontak Darurat */}
-                <div className="p-4 rounded-xl border border-indigo-200 bg-indigo-50/50 space-y-3">
-                  <h4 className="font-bold text-indigo-950 text-xs uppercase tracking-wider">
-                    Konfirmasi Kehadiran & Kontak Darurat (Orang Tua/Wali)
-                  </h4>
-                  <div className="grid sm:grid-cols-2 gap-3">
+                  {/* Form Kontak Darurat */}
+                  <div className="p-4 rounded-xl border border-indigo-200 bg-indigo-50/50 space-y-3">
+                    <h4 className="font-bold text-indigo-950 text-xs uppercase tracking-wider">
+                      Konfirmasi Kehadiran & Kontak Darurat (Orang Tua/Wali)
+                    </h4>
+                    <div className="grid sm:grid-cols-2 gap-3">
+                      <div>
+                        <Label className="text-[11px] font-bold">Nama Kontak Darurat *</Label>
+                        <Input
+                          value={sibermaruContact.name}
+                          onChange={(e) => setSibermaruContact({ ...sibermaruContact, name: e.target.value })}
+                          placeholder="Contoh: Bambang (Ayah)"
+                          className="text-xs mt-1 bg-white"
+                          required
+                        />
+                      </div>
+                      <div>
+                        <Label className="text-[11px] font-bold">No. HP / WhatsApp Darurat *</Label>
+                        <Input
+                          value={sibermaruContact.phone}
+                          onChange={(e) => setSibermaruContact({ ...sibermaruContact, phone: e.target.value })}
+                          placeholder="081298765432"
+                          className="text-xs mt-1 font-mono bg-white"
+                          required
+                        />
+                      </div>
+                    </div>
                     <div>
-                      <Label className="text-[11px] font-bold">Nama Kontak Darurat *</Label>
+                      <Label className="text-[11px] font-bold">Catatan Riwayat Kesehatan / Alergi (Opsional)</Label>
                       <Input
-                        value={sibermaruContact.name}
-                        onChange={(e) => setSibermaruContact({ ...sibermaruContact, name: e.target.value })}
-                        placeholder="Contoh: Bambang (Ayah)"
+                        value={sibermaruContact.notes}
+                        onChange={(e) => setSibermaruContact({ ...sibermaruContact, notes: e.target.value })}
+                        placeholder="Contoh: Asma ringan, alergi dingin"
                         className="text-xs mt-1 bg-white"
-                        required
                       />
+                    </div>
+                    <div className="flex justify-end pt-2">
+                      <Button
+                        type="button"
+                        onClick={handleConfirmSibermaru}
+                        className="bg-indigo-600 hover:bg-indigo-700 text-white font-bold text-xs px-6 py-2.5 shadow-md"
+                      >
+                        Simpan Konfirmasi Sibermaru
+                      </Button>
+                    </div>
+                  </div>
+                </CardContent>
+              </Card>
+
+              {/* SIAKAD Access Card */}
+              <Card className="border-slate-200 shadow-sm overflow-hidden">
+                <div className="bg-gradient-to-r from-slate-950 via-indigo-950 to-slate-900 p-6 text-white text-center space-y-2">
+                  <div className="w-14 h-14 bg-amber-400 text-slate-950 rounded-2xl flex items-center justify-center font-black text-2xl mx-auto shadow-lg">
+                    <Trophy className="w-8 h-8" />
+                  </div>
+                  <h3 className="text-xl font-extrabold text-amber-300">Aktivasi SIAKAD & Penerbitan NIM Resmi</h3>
+                  <p className="text-xs text-slate-300 max-w-md mx-auto">
+                    Selamat atas keberhasilan Anda menyelesaikan seluruh tahapan seleksi PMB 2026/2027!
+                  </p>
+                </div>
+                <CardContent className="p-6 space-y-5 text-xs">
+                  <div className="p-4 bg-slate-50 rounded-xl border border-slate-200 grid sm:grid-cols-3 gap-3 text-center sm:text-left">
+                    <div>
+                      <p className="text-[10px] text-slate-500 font-bold">NIM RESMI ANDA</p>
+                      <p className="font-mono font-black text-lg text-indigo-700 mt-0.5">
+                        {applicant?.generated_nim || "2026010042"}
+                      </p>
                     </div>
                     <div>
-                      <Label className="text-[11px] font-bold">No. HP / WhatsApp Darurat *</Label>
-                      <Input
-                        value={sibermaruContact.phone}
-                        onChange={(e) => setSibermaruContact({ ...sibermaruContact, phone: e.target.value })}
-                        placeholder="081298765432"
-                        className="text-xs mt-1 font-mono bg-white"
-                        required
-                      />
+                      <p className="text-[10px] text-slate-500 font-bold">PROGRAM STUDI</p>
+                      <p className="font-bold text-slate-900 mt-0.5 text-sm">{applicant?.prodi_name}</p>
+                    </div>
+                    <div>
+                      <p className="text-[10px] text-slate-500 font-bold">STATUS AKUN SIAKAD</p>
+                      <Badge className="bg-emerald-600 text-white text-xs mt-1 inline-flex items-center gap-1"><Check className="w-3 h-3" /> Mahasiswa Aktif</Badge>
                     </div>
                   </div>
-                  <div>
-                    <Label className="text-[11px] font-bold">Catatan Riwayat Kesehatan / Alergi (Opsional)</Label>
-                    <Input
-                      value={sibermaruContact.notes}
-                      onChange={(e) => setSibermaruContact({ ...sibermaruContact, notes: e.target.value })}
-                      placeholder="Contoh: Asma ringan, alergi dingin"
-                      className="text-xs mt-1 bg-white"
-                    />
-                  </div>
-                  <div className="flex justify-end pt-2">
+
+                  <div className="flex flex-col sm:flex-row justify-end gap-3 pt-2">
                     <Button
                       type="button"
-                      onClick={handleConfirmSibermaru}
-                      className="bg-indigo-600 hover:bg-indigo-700 text-white font-bold text-xs px-6 py-2.5 shadow-md"
+                      onClick={() => {
+                        if (onSwitchToStudent) onSwitchToStudent(applicant);
+                      }}
+                      className="bg-gradient-to-r from-emerald-600 to-teal-600 hover:from-emerald-500 hover:to-teal-500 text-white font-black text-xs px-6 py-3 shadow-lg"
                     >
-                      Konfirmasi Kehadiran & Lanjut ke Alur 10 <ArrowRight className="w-4 h-4 ml-1.5" />
+                      <Rocket className="w-4 h-4 mr-1.5 inline" /> Masuk ke Portal Mahasiswa SIAKAD
                     </Button>
                   </div>
-                </div>
-              </CardContent>
-            </Card>
-          )}
-
-          {/* STEP 10: PENGUMUMAN MASUK SISTEM & NIM RESMI */}
-          {activeStep === 10 && (
-            <Card className="border-slate-200 shadow-sm overflow-hidden">
-              <div className="bg-gradient-to-r from-slate-950 via-indigo-950 to-slate-900 p-6 text-white text-center space-y-2">
-                <div className="w-14 h-14 bg-amber-400 text-slate-950 rounded-2xl flex items-center justify-center font-black text-2xl mx-auto shadow-lg">
-                  <Trophy className="w-8 h-8" />
-                </div>
-                <h3 className="text-xl font-extrabold text-amber-300">Surat Keputusan Penerimaan Mahasiswa Baru</h3>
-                <p className="text-xs text-slate-300 max-w-md mx-auto">
-                  Selamat atas keberhasilan Anda menyelesaikan seluruh tahapan seleksi PMB 2026/2027!
-                </p>
-              </div>
-              <CardContent className="p-6 space-y-5 text-xs">
-                <div className="p-4 bg-slate-50 rounded-xl border border-slate-200 grid sm:grid-cols-3 gap-3 text-center sm:text-left">
-                  <div>
-                    <p className="text-[10px] text-slate-500 font-bold">NIM RESMI ANDA</p>
-                    <p className="font-mono font-black text-lg text-indigo-700 mt-0.5">
-                      {applicant?.generated_nim || "2026010042"}
-                    </p>
-                  </div>
-                  <div>
-                    <p className="text-[10px] text-slate-500 font-bold">PROGRAM STUDI</p>
-                    <p className="font-bold text-slate-900 mt-0.5 text-sm">{applicant?.prodi_name}</p>
-                  </div>
-                  <div>
-                    <p className="text-[10px] text-slate-500 font-bold">STATUS AKUN SIAKAD</p>
-                    <Badge className="bg-emerald-600 text-white text-xs mt-1 inline-flex items-center gap-1"><Check className="w-3 h-3" /> Mahasiswa Aktif</Badge>
-                  </div>
-                </div>
-
-                <div className="flex flex-col sm:flex-row justify-end gap-3 pt-2">
-                  <Button
-                    type="button"
-                    onClick={() => {
-                      if (onSwitchToStudent) onSwitchToStudent(applicant);
-                    }}
-                    className="bg-gradient-to-r from-emerald-600 to-teal-600 hover:from-emerald-500 hover:to-teal-500 text-white font-black text-xs px-6 py-3 shadow-lg"
-                  >
-                    <Rocket className="w-4 h-4 mr-1.5 inline" /> Masuk ke Portal Mahasiswa SIAKAD
-                  </Button>
-                </div>
-              </CardContent>
-            </Card>
+                </CardContent>
+              </Card>
+            </div>
           )}
         </div>
       </main>

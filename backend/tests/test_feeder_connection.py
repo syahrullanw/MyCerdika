@@ -1,9 +1,10 @@
 """Regression checks for Neo Feeder configuration and sandbox routing."""
 
 import asyncio
+import io
 
 import pytest
-from fastapi import HTTPException
+from fastapi import HTTPException, UploadFile
 from pydantic import ValidationError
 
 from routers import feeder
@@ -23,6 +24,35 @@ class FakeCollection:
 class FakeDatabase:
     def __init__(self, document=None):
         self.feeder_config = FakeCollection(document)
+
+
+class FakeCursor:
+    def __init__(self, documents):
+        self.documents = documents
+
+    async def to_list(self, _limit):
+        return [dict(document) for document in self.documents]
+
+
+class FakeImportCollection:
+    def __init__(self, documents=None):
+        self.documents = [dict(document) for document in (documents or [])]
+
+    def find(self, *_args, **_kwargs):
+        return FakeCursor(self.documents)
+
+    async def insert_one(self, document):
+        self.documents.append(dict(document))
+
+
+class FakeImportDatabase:
+    def __init__(self):
+        self.collections = {}
+
+    def __getattr__(self, name):
+        if name.startswith("__"):
+            raise AttributeError(name)
+        return self.collections.setdefault(name, FakeImportCollection())
 
 
 class FakeResponse:
@@ -113,6 +143,57 @@ def test_save_keeps_existing_password_and_normalizes_sandbox():
     assert database.feeder_config.document["password"] == "already-saved"
     assert database.feeder_config.document["feeder_url"] == "http://feeder.test:8100"
     assert database.feeder_config.document["feeder_path"] == "/ws/sandbox2.php"
+
+
+def test_old_import_preview_continues_when_feeder_is_unavailable(monkeypatch):
+    import old_siakad_migration
+    import old_siakad_finance_migration
+
+    monkeypatch.setattr(
+        old_siakad_migration,
+        "parse_old_tables",
+        lambda _path: {name: [] for name in ("mhsw", "pegawai", "mk", "jadwal", "krs", "khs")},
+    )
+
+    async def unavailable_feeder(_db, _period):
+        raise RuntimeError("Periksa Koneksi Internet Anda")
+
+    monkeypatch.setattr(old_siakad_migration, "fetch_live_feeder", unavailable_feeder)
+    monkeypatch.setattr(
+        old_siakad_migration,
+        "build_three_way_grade_summary",
+        lambda *_args, **_kwargs: pytest.fail("Audit tiga arah tidak boleh berjalan tanpa Feeder"),
+    )
+    captured = {}
+
+    def offline_plan(**kwargs):
+        captured["feeder_available"] = kwargs["feeder_available"]
+        return [], {"changed_krs_documents": 0, "changed_khs_documents": 0}
+
+    monkeypatch.setattr(old_siakad_migration, "build_plan", offline_plan)
+    monkeypatch.setattr(
+        old_siakad_finance_migration,
+        "build_finance_plan",
+        lambda _tables, _filename: ({}, {"finance_migration_exceptions": 0}),
+    )
+    upload = UploadFile(filename="old-siakad.json", file=io.BytesIO(b"{}"))
+    database = FakeImportDatabase()
+
+    result = asyncio.run(
+        feeder.preview_old_siakad_import(
+            period="20252",
+            file=upload,
+            db=database,
+            user={"id": "admin-test"},
+        )
+    )
+
+    assert result["ok"] is True
+    assert captured["feeder_available"] is False
+    assert result["migration_report"]["feeder"]["available"] is False
+    assert "Periksa Koneksi Internet Anda" in result["migration_report"]["feeder"]["error"]
+    assert result["migration_report"]["three_way_grades"] is None
+    assert len(database.old_siakad_import_previews.documents) == 1
 
 
 @pytest.mark.parametrize("client_class", [FakeFeederClient, FakeOnlineFeederClient])

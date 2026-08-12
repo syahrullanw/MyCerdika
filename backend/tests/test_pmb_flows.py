@@ -296,47 +296,215 @@ def test_payment_methods_and_online_test_switches():
     assert inp.payment_method_manual is False
 
 
-def test_strict_10_step_progression():
-    # Simulasi 10 tahapan seleksi calon mahasiswa
-    # Step 1: Formulir Data Diri
+def test_haversine_distance_calculation():
+    from routers.pmb import calculate_haversine_distance
+
+    # Campus Room: Monas (-6.175392, 106.827153)
+    campus_lat = -6.175392
+    campus_lng = 106.827153
+
+    # Student at same spot -> 0 meters
+    dist_same = calculate_haversine_distance(campus_lat, campus_lng, campus_lat, campus_lng)
+    assert dist_same == 0.0
+
+    # Student ~50 meters away
+    # 0.00045 deg latitude is approx 50m
+    dist_near = calculate_haversine_distance(campus_lat, campus_lng, campus_lat + 0.00045, campus_lng)
+    assert 40 <= dist_near <= 60
+
+    # Student far away (Bandung: -6.917464, 107.619123)
+    dist_far = calculate_haversine_distance(campus_lat, campus_lng, -6.917464, 107.619123)
+    assert dist_far > 100000  # > 100 km
+
+
+def test_four_class_options_and_learning_modes():
+    # 1. Reguler Offline
+    c1 = PmbRegisterInput(
+        name="Reguler Offline Candidate",
+        whatsapp="0812000001",
+        nik="3201010000000001",
+        nisn="0070000001",
+        email="reg.offline@example.com",
+        asal_sekolah="SMKN 1 Jakarta",
+        prodi_id="prog_ti",
+        class_type="reguler",
+        learning_mode="offline",
+        password="Password123!"
+    )
+    assert c1.class_type == "reguler"
+    assert c1.learning_mode == "offline"
+
+    # 2. Reguler Online
+    c2 = PmbRegisterInput(
+        name="Reguler Online Candidate",
+        whatsapp="0812000002",
+        nik="3201010000000002",
+        nisn="0070000002",
+        email="reg.online@example.com",
+        asal_sekolah="SMKN 2 Jakarta",
+        prodi_id="prog_ti",
+        class_type="reguler",
+        learning_mode="online",
+        password="Password123!"
+    )
+    assert c2.class_type == "reguler"
+    assert c2.learning_mode == "online"
+
+    # 3. Weekend Online
+    c3 = PmbRegisterInput(
+        name="Weekend Online Candidate",
+        whatsapp="0812000003",
+        nik="3201010000000003",
+        nisn="0070000003",
+        email="weekend.online@example.com",
+        asal_sekolah="SMA 1 Bandung",
+        prodi_id="prog_ti",
+        class_type="weekend",
+        learning_mode="online",
+        password="Password123!"
+    )
+    assert c3.class_type == "weekend"
+    assert c3.learning_mode == "online"
+
+    # 4. Khusus Offline
+    c4 = PmbRegisterInput(
+        name="Khusus Offline Candidate",
+        whatsapp="0812000004",
+        nik="3201010000000004",
+        nisn="0070000004",
+        email="khusus.offline@example.com",
+        asal_sekolah="SMKN 5 Surabaya",
+        prodi_id="prog_ti",
+        class_type="khusus",
+        learning_mode="offline",
+        password="Password123!"
+    )
+    assert c4.class_type == "khusus"
+    assert c4.learning_mode == "offline"
+
+
+def test_sk_approval_and_revised_step_progression():
+    # Step 1: Data Diri
     applicant = {"current_step": 1, "name": "Budi", "prodi_id": "prog_ti"}
     assert applicant["current_step"] == 1
 
     # Step 2: Konfirmasi Pilihan Kelas
     applicant["current_step"] = 2
-    assert applicant["current_step"] == 2
 
-    # Step 3: Pembayaran Pendaftaran
-    applicant["current_step"] = 3
+    # Step 3: Pembayaran Pendaftaran Lunas
     applicant["reg_payment_status"] = "verified"
-    applicant["current_step"] = 4  # Setelah bayar terverifikasi -> maju ke step 4
+    applicant["current_step"] = 4
 
     # Step 4: Gabung Grup WhatsApp
     applicant["wa_group_joined"] = True
-    applicant["current_step"] = 5  # Setelah join WA -> maju ke step 5
+    applicant["current_step"] = 5
 
     # Step 5: Pilih Jalur Ujian
     applicant["test_type"] = "online"
-    applicant["current_step"] = 7  # Jalur online -> step 7
+    applicant["current_step"] = 6
 
-    # Step 7: Lulus Ujian
-    applicant["test_score"] = 85.0
+    # Step 6: Selesai CBT & Lulus -> Maju ke Step 7 (SK Penerimaan)
+    applicant["test_score"] = 88.0
     applicant["test_status"] = "passed"
-    applicant["current_step"] = 8  # Setelah lulus -> maju ke step 8
+    applicant["current_step"] = 7
 
-    # Step 8: Daftar Ulang (Pra-studi & Ukuran Baju)
+    # Step 7: SK Penerimaan membutuhkan approval admin sebelum lanjut ke Step 8
+    applicant["sk_approved"] = False
+    assert applicant["current_step"] == 7
+
+    # Admin approves SK
+    applicant["sk_approved"] = True
+    applicant["sk_number"] = "SK-PMB/2026/REG-0042"
+    applicant["sk_date"] = "12/08/2026"
+    assert applicant["sk_approved"] is True
+
+    # Step 8: Daftar Ulang (Uang Pra-Studi & Ukuran Jas)
     applicant["reregistration_status"] = "partial"
-    applicant["shirt_size"] = "XL"
-    applicant["current_step"] = 9  # Setelah pra-studi & ukuran baju -> maju ke step 9
+    applicant["shirt_size"] = "L"
+    applicant["current_step"] = 8
 
-    # Step 9: Konfirmasi Sibermaru
+    # Step 9: SIBERMARU & SIAKAD
     applicant["sibermaru_confirmed"] = True
-    applicant["current_step"] = 10  # Setelah konfirmasi Sibermaru -> maju ke step 10
-
-    # Step 10: Pengumuman Masuk SIAKAD & Penerbitan NIM
     applicant["is_converted_to_student"] = True
     applicant["generated_nim"] = "2026010042"
-    assert applicant["current_step"] == 10
+    applicant["current_step"] = 9
+
+    assert applicant["current_step"] == 9
     assert applicant["generated_nim"] == "2026010042"
+    assert applicant["sk_number"] == "SK-PMB/2026/REG-0042"
 
 
+def test_cbt_test_session_online_offline_options():
+    from routers.pmb import PmbTestSessionInput
+    
+    # Sesi Ujian Online
+    s_online = PmbTestSessionInput(
+        title="Test Gelombang 1 Online",
+        description="Sesi CBT Daring",
+        test_type="online",
+        start_at="2026-08-09T13:57:00.000Z",
+        end_at="2026-08-11T13:57:00.000Z",
+        duration_minutes=45,
+        passing_grade=70,
+    )
+    assert s_online.test_type == "online"
+    assert s_online.room_name == ""
+
+    # Sesi Ujian Offline dengan Lokasi Ruangan
+    s_offline = PmbTestSessionInput(
+        title="Test Gelombang 1 Offline Kampus",
+        description="Sesi CBT di Laboratorium Kampus",
+        test_type="offline",
+        room_name="Lab Komputer Kampus Gedung B Lt. 2",
+        start_at="2026-08-09T13:57:00.000Z",
+        end_at="2026-08-11T13:57:00.000Z",
+        duration_minutes=45,
+        passing_grade=70,
+    )
+    assert s_offline.test_type == "offline"
+    assert s_offline.room_name == "Lab Komputer Kampus Gedung B Lt. 2"
+
+    # Sesi Ujian Hybrid / All
+    s_all = PmbTestSessionInput(
+        title="Test Gelombang 1 Terbuka (Online & Offline)",
+        test_type="all",
+        start_at="2026-08-09T13:57:00.000Z",
+        end_at="2026-08-11T13:57:00.000Z",
+    )
+    assert s_all.test_type == "all"
+def test_custom_amount_payment_and_balance_tracking():
+    from routers.pmb import compute_applicant_balances
+
+    applicant = {
+        "id": "app_test_custom_123",
+        "reg_payment_fee": 250000,
+        "pra_studi_fee": 3500000,
+        "payment_history": [
+            {
+                "id": "pay_1",
+                "category": "registration",
+                "custom_amount": 50000,
+                "billed_amount": 50596,
+                "status": "verified",
+            },
+            {
+                "id": "pay_2",
+                "category": "pra_studi",
+                "custom_amount": 500000,
+                "billed_amount": 500596,
+                "status": "verified",
+            }
+        ]
+    }
+    settings = {"registration_fee": 250000, "pra_studi_total_fee": 3500000}
+    balances = compute_applicant_balances(applicant, settings)
+
+    assert balances["reg_fee_total"] == 250000
+    assert balances["reg_fee_paid"] == 50000
+    assert balances["reg_fee_remaining"] == 200000
+
+    assert balances["pra_fee_total"] == 3500000
+    assert balances["pra_fee_paid"] == 500000
+    assert balances["pra_fee_remaining"] == 3000000
+
+    assert balances["total_remaining_balance"] == 3200000

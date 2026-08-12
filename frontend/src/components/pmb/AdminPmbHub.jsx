@@ -7,7 +7,7 @@ import { Badge } from "@/components/ui/badge";
 import { Card, CardContent, CardHeader, CardTitle, CardDescription } from "@/components/ui/card";
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table";
 import { toast } from "@/components/ui/sonner";
-import { apiErrorMessage } from "@/lib/utils";
+import { apiErrorMessage, resolveMediaUrl } from "@/lib/utils";
 import {
   User,
   CreditCard,
@@ -39,7 +39,13 @@ import {
   X,
   ClipboardList,
   MonitorSmartphone,
-  FileUp
+  FileUp,
+  Award,
+  MapPin,
+  UserCheck,
+  Search,
+  Phone,
+  ExternalLink
 } from "lucide-react";
 import { PmbAnalyticsTab } from "./PmbAnalyticsTab";
 import { PmbReferralsTab } from "./PmbReferralsTab";
@@ -73,12 +79,25 @@ export function AdminPmbHub({ token: propToken, user, programs: initialPrograms 
   const [prodiFilter, setProdiFilter] = useState("");
   const [statusFilter, setStatusFilter] = useState("");
   const [classFilter, setClassFilter] = useState("");
+  const [skFilter, setSkFilter] = useState("");
 
   // Modals
   const [selectedApplicant, setSelectedApplicant] = useState(null);
   const [offlineScoreModal, setOfflineScoreModal] = useState(null);
   const [offlineScore, setOfflineScore] = useState(80);
   const [offlineNotes, setOfflineNotes] = useState("");
+
+  // SK Approval Modal State
+  const [skApprovalModal, setSkApprovalModal] = useState(null);
+  const [skNumber, setSkNumber] = useState("");
+  const [skApprover, setSkApprover] = useState("Panitia PMB & BAAK");
+  const [skDate, setSkDate] = useState(new Date().toLocaleDateString("id-ID"));
+
+  // Payment History & Remaining Balance Modal State
+  const [paymentHistoryModal, setPaymentHistoryModal] = useState(null);
+
+  // Proof Preview Modal State
+  const [previewProofModal, setPreviewProofModal] = useState(null);
 
   // Question Form Modal
   const [showQuestionModal, setShowQuestionModal] = useState(false);
@@ -166,17 +185,71 @@ export function AdminPmbHub({ token: propToken, user, programs: initialPrograms 
     fetchData();
   }, [token]);
 
-  const handleVerifyPayment = async (applicantId) => {
+  const handleVerifyPayment = async (applicantId, action = "approve") => {
     try {
-      const res = await api.post(`/api/v1/pmb/admin/applicants/${applicantId}/verify-payment`, {}, {
-        headers: { Authorization: `Bearer ${token}` },
-      });
+      const res = await api.post(
+        `/api/v1/pmb/admin/applicants/${applicantId}/verify-payment`,
+        { action },
+        { headers: { Authorization: `Bearer ${token}` } }
+      );
       if (res.data.ok) {
-        toast.success(res.data.message || "Pembayaran formulir berhasil diverifikasi");
+        toast.success(res.data.message || `Pembayaran formulir ${action === "approve" ? "disetujui" : "ditolak"}`);
         fetchData();
       }
     } catch (err) {
-      toast.error("Gagal verifikasi pembayaran");
+      toast.error(err.response?.data?.detail || "Gagal memverifikasi pembayaran formulir");
+    }
+  };
+
+  const handleVerifyPraStudiPayment = async (applicantId, action = "approve", term = null) => {
+    try {
+      const res = await api.post(
+        `/api/v1/pmb/admin/applicants/${applicantId}/verify-pra-studi-payment`,
+        { action, term },
+        { headers: { Authorization: `Bearer ${token}` } }
+      );
+      if (res.data.ok) {
+        toast.success(res.data.message || `Pembayaran Uang Pra-Studi ${action === "approve" ? "disetujui" : "ditolak"}`);
+        fetchData();
+      }
+    } catch (err) {
+      toast.error(err.response?.data?.detail || "Gagal memverifikasi Uang Pra-Studi");
+    }
+  };
+
+  const fetchApplicantPaymentSummary = async (applicantId) => {
+    try {
+      const res = await api.get(`/api/v1/pmb/admin/applicants/${applicantId}/payment-summary`, {
+        headers: { Authorization: `Bearer ${token}` }
+      });
+      if (res.data.ok) {
+        setPaymentHistoryModal({
+          applicant: res.data.applicant,
+          balances: res.data.balances,
+        });
+      }
+    } catch (err) {
+      toast.error("Gagal memuat histori pembayaran");
+    }
+  };
+
+  const handleVerifyTransaction = async (applicantId, paymentId, action = "approve") => {
+    try {
+      const res = await api.post(
+        `/api/v1/pmb/admin/applicants/${applicantId}/payments/${paymentId}/verify`,
+        { action },
+        { headers: { Authorization: `Bearer ${token}` } }
+      );
+      if (res.data.ok) {
+        toast.success(res.data.message);
+        setPaymentHistoryModal({
+          applicant: res.data.applicant,
+          balances: res.data.balances,
+        });
+        fetchData();
+      }
+    } catch (err) {
+      toast.error(err.response?.data?.detail || "Gagal memverifikasi transaksi");
     }
   };
 
@@ -210,6 +283,68 @@ export function AdminPmbHub({ token: propToken, user, programs: initialPrograms 
     } catch (err) {
       toast.error(apiErrorMessage(err, "Gagal konversi ke SIAKAD"));
     }
+  };
+
+  const handleApproveAdmission = async (applicantId, customNumber = "", customDate = "", customApprover = "") => {
+    try {
+      const res = await api.post(
+        `/api/v1/pmb/admin/applicants/${applicantId}/approve-admission`,
+        {
+          sk_number: customNumber || undefined,
+          sk_date: customDate || undefined,
+          approved_by: customApprover || undefined,
+        },
+        { headers: { Authorization: `Bearer ${token}` } }
+      );
+      if (res.data.ok) {
+        toast.success(res.data.message || "SK Penerimaan berhasil disetujui!");
+        setSkApprovalModal(null);
+        fetchData();
+      }
+    } catch (err) {
+      toast.error(apiErrorMessage(err, "Gagal menyetujui SK Penerimaan"));
+    }
+  };
+
+  const handleBulkApproveAdmission = async () => {
+    if (!window.confirm("Setujui (Approve) SK Penerimaan secara massal untuk seluruh calon mahasiswa yang telah LULUS ujian seleksi?")) return;
+    try {
+      const res = await api.post(
+        "/api/v1/pmb/admin/applicants/bulk-approve-admission",
+        {},
+        { headers: { Authorization: `Bearer ${token}` } }
+      );
+      if (res.data.ok) {
+        toast.success(res.data.message || "Approval massal SK Penerimaan berhasil!");
+        fetchData();
+      }
+    } catch (err) {
+      toast.error(apiErrorMessage(err, "Gagal approval massal SK"));
+    }
+  };
+
+  const handleGetCurrentLocationForGps = () => {
+    if (!navigator.geolocation) {
+      toast.error("Browser tidak mendukung fitur geolokasi GPS");
+      return;
+    }
+    toast.info("Mengambil titik koordinat GPS saat ini...");
+    navigator.geolocation.getCurrentPosition(
+      (pos) => {
+        const lat = parseFloat(pos.coords.latitude.toFixed(6));
+        const lng = parseFloat(pos.coords.longitude.toFixed(6));
+        setSettings((prev) => ({
+          ...prev,
+          offline_test_lat: lat,
+          offline_test_lng: lng,
+        }));
+        toast.success(`Koordinat GPS tersimpan: ${lat}, ${lng} (Akurasi: ±${Math.round(pos.coords.accuracy)}m)`);
+      },
+      (err) => {
+        toast.error("Gagal mendapatkan lokasi GPS: " + err.message);
+      },
+      { enableHighAccuracy: true, timeout: 10000 }
+    );
   };
 
   const handleBulkConvert = async () => {
@@ -285,7 +420,23 @@ export function AdminPmbHub({ token: propToken, user, programs: initialPrograms 
   const filteredApplicants = useMemo(() => {
     return applicants.filter((a) => {
       if (prodiFilter && a.prodi_id !== prodiFilter) return false;
-      if (classFilter && a.class_type !== classFilter) return false;
+      if (classFilter) {
+        if (classFilter === "reguler_offline") {
+          if (a.class_type !== "reguler" || a.learning_mode === "online") return false;
+        } else if (classFilter === "reguler_online") {
+          if (a.class_type !== "reguler" || a.learning_mode !== "online") return false;
+        } else if (classFilter === "weekend_online") {
+          if (a.class_type !== "weekend") return false;
+        } else if (classFilter === "khusus_offline") {
+          if (a.class_type !== "khusus") return false;
+        } else if (a.class_type !== classFilter) {
+          return false;
+        }
+      }
+      if (skFilter) {
+        if (skFilter === "approved" && !a.sk_approved) return false;
+        if (skFilter === "pending" && (a.sk_approved || (!a.test_completed_at && a.test_status !== "passed" && a.test_score === null && !a.cbt_attempt_id))) return false;
+      }
       if (statusFilter) {
         if (statusFilter === "verified_payment" && a.reg_payment_status !== "verified") return false;
         if (statusFilter === "passed" && a.test_status !== "passed") return false;
@@ -298,12 +449,13 @@ export function AdminPmbHub({ token: propToken, user, programs: initialPrograms 
           (a.registration_number || "").toLowerCase().includes(s) ||
           (a.email || "").toLowerCase().includes(s) ||
           (a.whatsapp || "").toLowerCase().includes(s) ||
-          (a.referral_code || "").toLowerCase().includes(s);
+          (a.referral_code || "").toLowerCase().includes(s) ||
+          (a.sk_number || "").toLowerCase().includes(s);
         if (!match) return false;
       }
       return true;
     });
-  }, [applicants, prodiFilter, classFilter, statusFilter, search]);
+  }, [applicants, prodiFilter, classFilter, skFilter, statusFilter, search]);
 
   return (
     <div className="space-y-6">
@@ -501,79 +653,186 @@ export function AdminPmbHub({ token: propToken, user, programs: initialPrograms 
       {/* Sub-tab 5: Applicants Table */}
       {activeTab === "applicants" && (
         <div className="space-y-4">
-          <Card className="border-slate-200">
-            <CardHeader className="pb-3">
-              <div className="flex flex-col sm:flex-row justify-between sm:items-center gap-3">
-                <CardTitle className="text-base font-bold">Daftar Calon Mahasiswa Baru</CardTitle>
-                <div className="flex flex-wrap gap-2">
+          <Card className="border border-slate-200 bg-white shadow-md rounded-2xl overflow-hidden">
+            <CardHeader className="p-5 bg-slate-50/90 border-b border-slate-200 space-y-4">
+              <div className="flex flex-col md:flex-row md:items-center justify-between gap-3">
+                <div>
+                  <CardTitle className="text-lg font-black text-slate-900 flex items-center gap-2">
+                    <UserCheck className="w-5 h-5 text-indigo-600" />
+                    Daftar Calon Mahasiswa Baru (PMB)
+                  </CardTitle>
+                  <CardDescription className="text-xs text-slate-500 font-semibold mt-0.5">
+                    Total <span className="font-extrabold text-indigo-700">{filteredApplicants.length}</span> pendaftar ditemukan
+                  </CardDescription>
+                </div>
+                <Button
+                  type="button"
+                  size="sm"
+                  onClick={handleBulkApproveAdmission}
+                  className="bg-emerald-600 hover:bg-emerald-700 text-white font-extrabold text-xs px-4 h-9 rounded-xl shadow-xs shrink-0 self-start md:self-auto flex items-center gap-1.5"
+                >
+                  <Award className="w-4 h-4" /> 1-Click Approve SK Lulus
+                </Button>
+              </div>
+
+              {/* Filters bar */}
+              <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-2.5 pt-1">
+                <div className="relative">
+                  <Search className="w-4 h-4 text-slate-400 absolute left-3 top-2.5 pointer-events-none" />
                   <Input
                     placeholder="Cari nama, NIK, no reg, WA..."
                     value={search}
                     onChange={(e) => setSearch(e.target.value)}
-                    className="w-48 text-xs"
+                    className="w-full text-xs pl-9 h-9 bg-white border-slate-300 rounded-xl font-medium focus:ring-2 focus:ring-indigo-500 shadow-2xs"
                   />
-                  <select
-                    value={prodiFilter}
-                    onChange={(e) => setProdiFilter(e.target.value)}
-                    className="border border-slate-300 rounded-md p-1.5 text-xs bg-white"
-                  >
-                    <option value="">Semua Program Studi</option>
-                    {programsList.map((p) => (
-                      <option key={p.id} value={p.id}>{p.nama}</option>
-                    ))}
-                  </select>
                 </div>
+                <select
+                  value={prodiFilter}
+                  onChange={(e) => setProdiFilter(e.target.value)}
+                  className="w-full h-9 border border-slate-300 rounded-xl px-3 text-xs bg-white font-semibold text-slate-700 shadow-2xs focus:ring-2 focus:ring-indigo-500"
+                >
+                  <option value="">Semua Prodi</option>
+                  {programsList.map((p) => (
+                    <option key={p.id} value={p.id}>{p.nama}</option>
+                  ))}
+                </select>
+                <select
+                  value={classFilter}
+                  onChange={(e) => setClassFilter(e.target.value)}
+                  className="w-full h-9 border border-slate-300 rounded-xl px-3 text-xs bg-white font-semibold text-slate-700 shadow-2xs focus:ring-2 focus:ring-indigo-500"
+                >
+                  <option value="">Semua Jenis Kelas</option>
+                  <option value="reguler_offline">1. Kelas Reguler Offline</option>
+                  <option value="reguler_online">2. Kelas Reguler Online</option>
+                  <option value="weekend_online">3. Kelas Weekend Online</option>
+                  <option value="khusus_offline">4. Kelas Khusus Offline</option>
+                </select>
+                <select
+                  value={skFilter}
+                  onChange={(e) => setSkFilter(e.target.value)}
+                  className="w-full h-9 border border-slate-300 rounded-xl px-3 text-xs bg-white font-semibold text-slate-700 shadow-2xs focus:ring-2 focus:ring-indigo-500"
+                >
+                  <option value="">Semua Status SK</option>
+                  <option value="pending">Menunggu Approval SK</option>
+                  <option value="approved">SK Disetujui (Approved)</option>
+                </select>
               </div>
             </CardHeader>
-            <CardContent className="p-0">
-              <Table>
-                <TableHeader className="bg-slate-50">
+            <CardContent className="p-0 overflow-x-auto">
+              <Table className="w-full min-w-[960px]">
+                <TableHeader className="bg-slate-100/90 border-b border-slate-200">
                   <TableRow>
-                    <TableHead className="text-xs font-bold">No. Registrasi</TableHead>
-                    <TableHead className="text-xs font-bold">Nama Pendaftar</TableHead>
-                    <TableHead className="text-xs font-bold">Prodi & Kelas</TableHead>
-                    <TableHead className="text-xs font-bold">Bayar Form</TableHead>
-                    <TableHead className="text-xs font-bold text-center">Hasil Tes</TableHead>
-                    <TableHead className="text-xs font-bold text-center">Daftar Ulang</TableHead>
-                    <TableHead className="text-xs font-bold text-center">Aksi</TableHead>
+                    <TableHead className="text-[11px] font-extrabold text-slate-700 uppercase tracking-wider py-3.5 px-4 w-32">No. Registrasi</TableHead>
+                    <TableHead className="text-[11px] font-extrabold text-slate-700 uppercase tracking-wider py-3.5 px-4 min-w-[180px]">Nama Pendaftar</TableHead>
+                    <TableHead className="text-[11px] font-extrabold text-slate-700 uppercase tracking-wider py-3.5 px-4 min-w-[180px]">Prodi & Kelas</TableHead>
+                    <TableHead className="text-[11px] font-extrabold text-slate-700 uppercase tracking-wider py-3.5 px-4 text-center min-w-[150px]">Bayar Form</TableHead>
+                    <TableHead className="text-[11px] font-extrabold text-slate-700 uppercase tracking-wider py-3.5 px-4 text-center min-w-[140px]">Hasil Tes</TableHead>
+                    <TableHead className="text-[11px] font-extrabold text-slate-700 uppercase tracking-wider py-3.5 px-4 text-center min-w-[150px]">SK Penerimaan</TableHead>
+                    <TableHead className="text-[11px] font-extrabold text-slate-700 uppercase tracking-wider py-3.5 px-4 text-center min-w-[120px]">Daftar Ulang</TableHead>
+                    <TableHead className="text-[11px] font-extrabold text-slate-700 uppercase tracking-wider py-3.5 px-4 text-center min-w-[140px]">Aksi</TableHead>
                   </TableRow>
                 </TableHeader>
-                <TableBody>
+                <TableBody className="divide-y divide-slate-100">
                   {filteredApplicants.length > 0 ? (
                     filteredApplicants.map((a) => (
-                      <TableRow key={a.id} className="text-xs hover:bg-slate-50">
-                        <TableCell className="font-mono font-bold text-indigo-700">
+                      <TableRow key={a.id} className="hover:bg-slate-50/80 transition-colors">
+                        <TableCell className="align-middle py-3.5 px-4 font-mono font-black text-indigo-700 text-xs">
                           {a.registration_number}
                         </TableCell>
-                        <TableCell>
-                          <p className="font-bold text-slate-900">{a.name}</p>
-                          <p className="text-[10px] text-slate-500 font-mono">{a.whatsapp || a.email}</p>
-                        </TableCell>
-                        <TableCell>
-                          <p className="font-semibold text-slate-800">{a.prodi_name}</p>
-                          <Badge variant="outline" className="capitalize text-[9px] mt-0.5">
-                            {a.class_type} ({a.learning_mode})
-                          </Badge>
-                        </TableCell>
-                        <TableCell>
-                          {a.reg_payment_status === "verified" ? (
-                            <Badge className="bg-emerald-600 text-white text-[9px]"><Check className="w-3 h-3 mr-1 inline" /> Lunas</Badge>
-                          ) : (
-                            <Button
-                              type="button"
-                              size="sm"
-                              onClick={() => handleVerifyPayment(a.id)}
-                              className="bg-indigo-600 hover:bg-indigo-700 text-white text-[9px] h-6 px-2 font-bold"
-                            >
-                              Verifikasi
-                            </Button>
+                        <TableCell className="align-middle py-3.5 px-4">
+                          <p className="font-extrabold text-slate-900 text-xs leading-snug">{a.name}</p>
+                          <p className="text-[11px] text-slate-500 font-mono flex items-center gap-1 mt-0.5">
+                            <Phone className="w-3 h-3 text-slate-400 shrink-0" />
+                            {a.whatsapp || a.email}
+                          </p>
+                          {a.referrer_name && (
+                            <span className="text-[9px] text-emerald-800 font-extrabold bg-emerald-50 px-2 py-0.5 rounded-md border border-emerald-200 inline-block mt-1">
+                              Promotor: {a.referrer_name}
+                            </span>
                           )}
                         </TableCell>
-                        <TableCell className="text-center">
-                          <Badge variant={a.test_status === "passed" ? "default" : "outline"} className="capitalize text-[9px]">
-                            {a.test_score ? `${a.test_score} (${a.test_status})` : a.test_type ? `${a.test_type}` : "Belum Tes"}
+                        <TableCell className="align-middle py-3.5 px-4">
+                          <p className="font-bold text-slate-900 text-xs leading-snug">{a.prodi_name}</p>
+                          <Badge className="mt-1 bg-indigo-50 text-indigo-700 border border-indigo-200 text-[10px] font-bold px-2 py-0.5 rounded-md">
+                            {a.class_type === "khusus"
+                              ? "Khusus Offline"
+                              : a.class_type === "weekend"
+                              ? "Weekend Online"
+                              : a.learning_mode === "online"
+                              ? "Reguler Online"
+                              : "Reguler Offline"}
                           </Badge>
-                          {a.test_type === "offline" && (
+                        </TableCell>
+                        <TableCell className="align-middle py-3.5 px-4 text-center">
+                          {a.reg_payment_status === "verified" ? (
+                            <div className="space-y-1 flex flex-col items-center">
+                              <Badge className="bg-emerald-100 text-emerald-800 border border-emerald-300 text-[10px] font-black px-2.5 py-1 rounded-lg inline-flex items-center justify-center gap-1">
+                                <Check className="w-3 h-3 text-emerald-600" /> Lunas (Verified)
+                              </Badge>
+                              {a.reg_payment_proof && (
+                                <button
+                                  type="button"
+                                  onClick={() => setPreviewProofModal({ url: resolveMediaUrl(a.reg_payment_proof), title: `Bukti Transfer Form Pendaftaran - ${a.name}` })}
+                                  className="text-[10px] text-indigo-600 font-bold hover:underline inline-flex items-center gap-1 mt-0.5 cursor-pointer"
+                                >
+                                  <Eye className="w-3 h-3" /> Bukti Transfer
+                                </button>
+                              )}
+                            </div>
+                          ) : (
+                            <div className="space-y-1.5 flex flex-col items-center">
+                              <Badge className="bg-amber-500 text-white text-[10px] font-bold px-2.5 py-1 rounded-lg">
+                                Verifikasi Pendaftaran
+                              </Badge>
+                              {a.reg_payment_proof && (
+                                <button
+                                  type="button"
+                                  onClick={() => setPreviewProofModal({ url: resolveMediaUrl(a.reg_payment_proof), title: `Bukti Transfer Form Pendaftaran - ${a.name}` })}
+                                  className="text-[10px] text-indigo-600 font-bold hover:underline inline-flex items-center gap-1 cursor-pointer"
+                                >
+                                  <Eye className="w-3 h-3" /> Bukti Transfer
+                                </button>
+                              )}
+                              <div className="flex items-center justify-center gap-1.5 pt-0.5">
+                                <Button
+                                  type="button"
+                                  size="sm"
+                                  onClick={() => handleVerifyPayment(a.id, "approve")}
+                                  className="bg-emerald-600 hover:bg-emerald-700 text-white text-[10px] h-6 px-2.5 font-bold rounded-md shadow-2xs"
+                                >
+                                  Approve
+                                </Button>
+                                <Button
+                                  type="button"
+                                  size="sm"
+                                  variant="destructive"
+                                  onClick={() => handleVerifyPayment(a.id, "reject")}
+                                  className="text-[10px] h-6 px-2.5 font-bold rounded-md shadow-2xs"
+                                >
+                                  Tolak
+                                </Button>
+                              </div>
+                            </div>
+                          )}
+                        </TableCell>
+                        <TableCell className="align-middle py-3.5 px-4 text-center">
+                          {a.test_score !== null && a.test_score !== undefined ? (
+                            <div className="space-y-1 flex flex-col items-center">
+                              <Badge className="bg-indigo-600 text-white font-mono text-[11px] font-black px-2.5 py-0.5 rounded-lg shadow-2xs">
+                                Skor: {a.test_score}
+                              </Badge>
+                              <span className="text-[10px] text-slate-600 font-extrabold uppercase tracking-tight">
+                                {a.test_type === "offline" ? "Offline Kampus" : "Online CBT"}
+                              </span>
+                            </div>
+                          ) : a.test_type ? (
+                            <Badge variant="outline" className="border-slate-300 text-slate-700 text-[10px] font-bold px-2 py-0.5 rounded-md">
+                              {a.test_type === "offline" ? "Offline (Belum Dinilai)" : "Online CBT (Belum Tes)"}
+                            </Badge>
+                          ) : (
+                            <span className="text-slate-400 text-xs font-medium">Belum Tes</span>
+                          )}
+                          {a.test_type === "offline" && !a.sk_approved && (
                             <Button
                               type="button"
                               size="sm"
@@ -583,38 +842,117 @@ export function AdminPmbHub({ token: propToken, user, programs: initialPrograms 
                                 setOfflineScore(a.test_score || 80);
                                 setOfflineNotes(a.test_notes || "");
                               }}
-                              className="text-[9px] text-indigo-600 font-bold block mx-auto mt-0.5 h-5 p-0"
+                              className="text-[10px] text-indigo-600 font-bold hover:bg-indigo-50 mt-1 h-6 px-2 rounded-md"
                             >
-                              <Pencil className="w-3 h-3 inline mr-1" /> Input Nilai
+                              <Pencil className="w-3 h-3 inline mr-1" /> {a.test_score !== null && a.test_score !== undefined ? "Ubah Nilai" : "Input Nilai"}
                             </Button>
                           )}
                         </TableCell>
-                        <TableCell className="text-center">
-                          <Badge variant={["partial", "completed"].includes(a.reregistration_status) ? "default" : "outline"} className="text-[9px]">
-                            {a.reregistration_status === "completed" ? "Lunas" : a.reregistration_status === "partial" ? "Cicilan" : "Belum"}
-                          </Badge>
+                        <TableCell className="align-middle py-3.5 px-4 text-center">
+                          {a.sk_approved ? (
+                            <div className="space-y-1 flex flex-col items-center">
+                              <Badge className="bg-emerald-100 text-emerald-800 border border-emerald-300 text-[10px] font-black px-2.5 py-1 rounded-lg inline-flex items-center gap-1">
+                                <Check className="w-3 h-3 text-emerald-600" /> Approved
+                              </Badge>
+                              <p className="font-mono text-[9px] text-indigo-600 font-extrabold truncate max-w-[120px]">
+                                {a.sk_number || "SK-PMB"}
+                              </p>
+                            </div>
+                          ) : (a.test_status === "passed" || a.test_completed_at || a.test_score !== null || a.cbt_attempt_id) ? (
+                            <Button
+                              type="button"
+                              size="sm"
+                              onClick={() => {
+                                setSkApprovalModal(a);
+                                setSkNumber(a.sk_number || `SK-PMB/2026/${a.registration_number}`);
+                                setSkApprover("Panitia PMB & BAAK");
+                                setSkDate(new Date().toLocaleDateString("id-ID"));
+                              }}
+                              className="bg-amber-500 hover:bg-amber-600 text-white text-[10px] h-7 px-3 font-extrabold shadow-2xs rounded-lg inline-flex items-center justify-center gap-1 mx-auto"
+                            >
+                              <Award className="w-3.5 h-3.5" /> Approve SK
+                            </Button>
+                          ) : (
+                            <span className="text-slate-400 text-xs font-medium">-</span>
+                          )}
                         </TableCell>
-                        <TableCell className="text-center">
-                          <div className="flex items-center justify-center gap-1">
+                        <TableCell className="align-middle py-3.5 px-4 text-center">
+                          {a.pra_studi_payment_status === "pending_verification" || a.reregistration_status === "pending_verification" ? (
+                            <div className="space-y-1 flex flex-col items-center">
+                              <Badge className="bg-amber-500 text-white text-[10px] font-bold px-2 py-0.5 rounded-lg">Verifikasi Pra-Studi</Badge>
+                              {a.pra_studi_payment_proof && (
+                                <button
+                                  type="button"
+                                  onClick={() => setPreviewProofModal({ url: resolveMediaUrl(a.pra_studi_payment_proof), title: `Bukti Transfer Uang Pra-Studi - ${a.name}` })}
+                                  className="text-[10px] text-indigo-600 font-bold hover:underline inline-flex items-center gap-1 cursor-pointer"
+                                >
+                                  <Eye className="w-3 h-3" /> Bukti Transfer
+                                </button>
+                              )}
+                              <div className="flex items-center justify-center gap-1 mt-1">
+                                <Button
+                                  type="button"
+                                  size="sm"
+                                  onClick={() => handleVerifyPraStudiPayment(a.id, "approve")}
+                                  className="bg-emerald-600 hover:bg-emerald-700 text-white text-[10px] h-5 px-2 font-bold"
+                                >
+                                  Approve
+                                </Button>
+                                <Button
+                                  type="button"
+                                  size="sm"
+                                  variant="destructive"
+                                  onClick={() => handleVerifyPraStudiPayment(a.id, "reject")}
+                                  className="text-[10px] h-5 px-2 font-bold"
+                                >
+                                  Tolak
+                                </Button>
+                              </div>
+                            </div>
+                          ) : (
+                            <Badge
+                              className={
+                                a.reregistration_status === "completed"
+                                  ? "bg-emerald-100 text-emerald-800 border border-emerald-300 font-black text-[10px] px-2.5 py-1 rounded-lg"
+                                  : a.reregistration_status === "partial"
+                                  ? "bg-sky-100 text-sky-800 border border-sky-300 font-black text-[10px] px-2.5 py-1 rounded-lg"
+                                  : "bg-slate-100 text-slate-600 border border-slate-200 font-bold text-[10px] px-2.5 py-1 rounded-lg"
+                              }
+                            >
+                              {a.reregistration_status === "completed" ? "Lunas" : a.reregistration_status === "partial" ? "Cicilan" : "Belum"}
+                            </Badge>
+                          )}
+                        </TableCell>
+                        <TableCell className="align-middle py-3.5 px-4 text-center">
+                          <div className="flex flex-col items-center justify-center gap-1.5 min-w-[110px]">
+                            <Button
+                              type="button"
+                              size="sm"
+                              variant="outline"
+                              onClick={() => fetchApplicantPaymentSummary(a.id)}
+                              className="w-full text-[10px] text-emerald-800 font-extrabold h-7 px-2.5 border-emerald-300 hover:bg-emerald-100 bg-emerald-50 rounded-lg inline-flex items-center justify-center gap-1 shadow-2xs"
+                            >
+                              <CreditCard className="w-3.5 h-3.5 text-emerald-600" /> Histori Bayar
+                            </Button>
                             <Button
                               type="button"
                               size="sm"
                               variant="outline"
                               onClick={() => setSelectedApplicant(a)}
-                              className="text-[9px] text-indigo-700 font-bold h-6 px-1.5 border-indigo-200 hover:bg-indigo-50"
+                              className="w-full text-[10px] text-indigo-800 font-extrabold h-7 px-2.5 border-indigo-300 hover:bg-indigo-100 bg-indigo-50 rounded-lg inline-flex items-center justify-center gap-1 shadow-2xs"
                             >
-                              <Eye className="w-3 h-3 mr-0.5" /> Detail
+                              <Eye className="w-3.5 h-3.5 text-indigo-600" /> Detail
                             </Button>
                             {a.is_converted_to_student ? (
-                              <Badge className="bg-teal-600 text-white text-[9px] font-mono">NIM: {a.generated_nim}</Badge>
+                              <Badge className="w-full bg-teal-600 text-white text-[9px] font-mono justify-center py-1 rounded-lg">NIM: {a.generated_nim}</Badge>
                             ) : a.test_status === "passed" ? (
                               <Button
                                 type="button"
                                 size="sm"
                                 onClick={() => handleConvertToStudent(a.id)}
-                                className="bg-teal-600 hover:bg-teal-700 text-white font-bold text-[9px] h-6 px-2"
+                                className="w-full bg-teal-600 hover:bg-teal-700 text-white font-extrabold text-[10px] h-7 px-2 rounded-lg shadow-2xs inline-flex items-center justify-center gap-1"
                               >
-                                Aktivasi SIAKAD
+                                <Rocket className="w-3 h-3" /> Aktivasi SIAKAD
                               </Button>
                             ) : null}
                           </div>
@@ -623,7 +961,7 @@ export function AdminPmbHub({ token: propToken, user, programs: initialPrograms 
                     ))
                   ) : (
                     <TableRow>
-                      <TableCell colSpan={7} className="text-center py-6 text-slate-500">
+                      <TableCell colSpan={8} className="text-center py-8 text-slate-500 font-medium">
                         Tidak ada pendaftar yang sesuai filter.
                       </TableCell>
                     </TableRow>
@@ -950,6 +1288,114 @@ export function AdminPmbHub({ token: propToken, user, programs: initialPrograms 
                     }`}
                   />
                 </button>
+              </div>
+            </CardContent>
+          </Card>
+
+          {/* Card: Pengaturan Ruangan Ujian Offline & Validasi Koordinat GPS */}
+          <Card className="border-slate-200 shadow-sm overflow-hidden">
+            <CardHeader className="bg-gradient-to-r from-sky-900 via-indigo-950 to-slate-900 text-white py-4 px-6">
+              <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3">
+                <div>
+                  <CardTitle className="text-base font-bold flex items-center gap-2 text-white">
+                    <MapPin className="w-5 h-5 text-sky-400" />
+                    Pengaturan Ruangan CBT Offline & Validasi Geolocation GPS
+                  </CardTitle>
+                  <CardDescription className="text-slate-300 text-xs mt-0.5">
+                    Tentukan titik koordinat GPS laboratorium CBT kampus dan radius toleransi jarak meter untuk memvalidasi kehadiran fisik camaba yang memilih ujian offline.
+                  </CardDescription>
+                </div>
+                <Badge className={`text-xs font-bold px-3 py-1 ${
+                  settings.offline_test_enforce_gps !== false ? "bg-emerald-500 text-white" : "bg-slate-700 text-slate-300 border border-slate-600"
+                }`}>
+                  {settings.offline_test_enforce_gps !== false ? "Validasi GPS AKTIF" : "Validasi GPS NONAKTIF"}
+                </Badge>
+              </div>
+            </CardHeader>
+            <CardContent className="p-6 space-y-4">
+              <div className="flex flex-col sm:flex-row items-start sm:items-center justify-between gap-4 p-4 rounded-xl border border-slate-200 bg-slate-50">
+                <div className="space-y-1">
+                  <h4 className="font-bold text-slate-900 text-sm">Wajibkan Verifikasi Radius GPS Ruangan untuk Ujian Offline</h4>
+                  <p className="text-xs text-slate-600 leading-relaxed max-w-2xl">
+                    Ketika aktif, calon mahasiswa yang memilih ujian offline wajib berada dalam radius ruangan yang ditentukan saat menekan tombol Mulai Ujian CBT di browser mereka.
+                  </p>
+                </div>
+                <button
+                  type="button"
+                  onClick={() => setSettings({ ...settings, offline_test_enforce_gps: settings.offline_test_enforce_gps === false })}
+                  className={`relative inline-flex h-7 w-14 shrink-0 cursor-pointer rounded-full border-2 border-transparent transition-colors duration-200 ease-in-out focus:outline-none ${
+                    settings.offline_test_enforce_gps !== false ? "bg-sky-600" : "bg-slate-300"
+                  }`}
+                >
+                  <span
+                    className={`pointer-events-none inline-block h-6 w-6 transform rounded-full bg-white shadow-md ring-0 transition duration-200 ease-in-out ${
+                      settings.offline_test_enforce_gps !== false ? "translate-x-7" : "translate-x-0"
+                    }`}
+                  />
+                </button>
+              </div>
+
+              <div className="grid sm:grid-cols-2 gap-4">
+                <div>
+                  <Label className="text-xs font-bold">Nama Ruangan / Laboratorium Ujian</Label>
+                  <Input
+                    value={settings.offline_test_room_name || ""}
+                    onChange={(e) => setSettings({ ...settings, offline_test_room_name: e.target.value })}
+                    placeholder="Lab Komputer Gedung B Lt. 3"
+                    className="text-xs mt-1"
+                  />
+                </div>
+                <div>
+                  <Label className="text-xs font-bold">Radius Jarak yang Diizinkan (Meter)</Label>
+                  <Input
+                    type="number"
+                    min={10}
+                    max={5000}
+                    value={settings.offline_test_radius_meters || 100}
+                    onChange={(e) => setSettings({ ...settings, offline_test_radius_meters: parseInt(e.target.value) || 100 })}
+                    placeholder="100"
+                    className="text-xs mt-1"
+                  />
+                </div>
+              </div>
+
+              <div className="grid sm:grid-cols-2 gap-4 p-4 rounded-xl bg-sky-50/50 border border-sky-200">
+                <div>
+                  <Label className="text-xs font-bold text-sky-950">Latitude Ruangan (Contoh: -6.208800)</Label>
+                  <Input
+                    type="number"
+                    step="any"
+                    value={settings.offline_test_lat ?? ""}
+                    onChange={(e) => setSettings({ ...settings, offline_test_lat: parseFloat(e.target.value) || null })}
+                    placeholder="-6.208800"
+                    className="text-xs mt-1 font-mono bg-white"
+                  />
+                </div>
+                <div>
+                  <Label className="text-xs font-bold text-sky-950">Longitude Ruangan (Contoh: 106.845600)</Label>
+                  <Input
+                    type="number"
+                    step="any"
+                    value={settings.offline_test_lng ?? ""}
+                    onChange={(e) => setSettings({ ...settings, offline_test_lng: parseFloat(e.target.value) || null })}
+                    placeholder="106.845600"
+                    className="text-xs mt-1 font-mono bg-white"
+                  />
+                </div>
+                <div className="sm:col-span-2 flex flex-col sm:flex-row items-center justify-between gap-3 pt-2">
+                  <p className="text-[11px] text-sky-800">
+                    Bisa mengisi koordinat manual dari Google Maps atau klik tombol otomatis di sebelah kanan:
+                  </p>
+                  <Button
+                    type="button"
+                    variant="outline"
+                    size="sm"
+                    onClick={handleGetCurrentLocationForGps}
+                    className="bg-white border-sky-300 text-sky-800 hover:bg-sky-100 text-xs font-bold shrink-0"
+                  >
+                    <MapPin className="w-3.5 h-3.5 mr-1.5 text-sky-600" /> Ambil Koordinat GPS Saya Saat Ini
+                  </Button>
+                </div>
               </div>
             </CardContent>
           </Card>
@@ -1424,6 +1870,85 @@ export function AdminPmbHub({ token: propToken, user, programs: initialPrograms 
         </div>
       )}
 
+      {/* SK Approval Modal */}
+      {skApprovalModal && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-slate-900/60 p-4 backdrop-blur-sm">
+          <div className="w-full max-w-md bg-white rounded-2xl shadow-2xl border border-slate-200 overflow-hidden animate-fade-in">
+            <div className="bg-gradient-to-r from-amber-600 to-indigo-700 p-4 text-white flex justify-between items-center">
+              <h4 className="font-bold text-sm flex items-center gap-1.5">
+                <Award className="w-4 h-4 text-amber-300" /> Penerbitan SK Penerimaan Mahasiswa Baru
+              </h4>
+              <button
+                onClick={() => setSkApprovalModal(null)}
+                className="w-7 h-7 rounded-full bg-white/10 hover:bg-white/20 flex items-center justify-center text-white"
+              >
+                <X className="w-4 h-4" />
+              </button>
+            </div>
+            <div className="p-5 space-y-3.5 text-xs">
+              <div className="p-3.5 bg-slate-50 border border-slate-200 rounded-xl space-y-1">
+                <p className="text-[10px] text-slate-500 font-bold uppercase">Calon Mahasiswa:</p>
+                <p className="font-bold text-slate-900 text-sm">{skApprovalModal.name}</p>
+                <p className="text-slate-600 font-mono text-[11px]">{skApprovalModal.registration_number} • {skApprovalModal.prodi_name}</p>
+                <div className="flex items-center gap-2 pt-1">
+                  <Badge className="bg-emerald-600 text-white text-[9px]">Skor CBT: {skApprovalModal.test_score || 0}</Badge>
+                  <Badge variant="outline" className="text-[9px] capitalize">{skApprovalModal.class_type} ({skApprovalModal.learning_mode})</Badge>
+                </div>
+              </div>
+
+              <div>
+                <Label className="text-xs font-bold">Nomor SK Penerimaan (LoA) *</Label>
+                <Input
+                  value={skNumber}
+                  onChange={(e) => setSkNumber(e.target.value)}
+                  placeholder={`SK-PMB/2026/${skApprovalModal.registration_number}`}
+                  className="mt-1 text-xs font-mono font-bold text-indigo-700 bg-white"
+                />
+              </div>
+
+              <div className="grid grid-cols-2 gap-3">
+                <div>
+                  <Label className="text-xs font-bold">Tanggal SK Penetapan</Label>
+                  <Input
+                    value={skDate}
+                    onChange={(e) => setSkDate(e.target.value)}
+                    placeholder="12/08/2026"
+                    className="mt-1 text-xs bg-white"
+                  />
+                </div>
+                <div>
+                  <Label className="text-xs font-bold">Pejabat / Penandatangan</Label>
+                  <Input
+                    value={skApprover}
+                    onChange={(e) => setSkApprover(e.target.value)}
+                    placeholder="Panitia PMB & BAAK"
+                    className="mt-1 text-xs bg-white"
+                  />
+                </div>
+              </div>
+
+              <p className="text-[11px] text-slate-500 leading-relaxed">
+                Setelah disetujui, Calon Mahasiswa dapat langsung mencetak Surat Keputusan Penerimaan resmi pada Alur 8 dan melanjutkan ke Daftar Ulang (Alur 9).
+              </p>
+
+              <div className="flex justify-end gap-2 pt-2 border-t">
+                <Button type="button" variant="outline" size="sm" onClick={() => setSkApprovalModal(null)}>
+                  Batal
+                </Button>
+                <Button
+                  type="button"
+                  size="sm"
+                  onClick={() => handleApproveAdmission(skApprovalModal.id, skNumber, skDate, skApprover)}
+                  className="bg-gradient-to-r from-amber-600 to-indigo-600 hover:from-amber-500 hover:to-indigo-500 text-white font-bold"
+                >
+                  <Check className="w-3.5 h-3.5 mr-1 inline" /> Setujui & Terbitkan SK
+                </Button>
+              </div>
+            </div>
+          </div>
+        </div>
+      )}
+
       {/* CBT Question Modal */}
       {showQuestionModal && (
         <div className="fixed inset-0 z-50 flex items-center justify-center bg-slate-900/60 p-4 backdrop-blur-sm">
@@ -1683,6 +2208,37 @@ export function AdminPmbHub({ token: propToken, user, programs: initialPrograms 
                   </div>
                 </div>
               </div>
+
+              {/* 5. Bukti Transfer & Status Pembayaran */}
+              <div className="space-y-2">
+                <h5 className="font-bold text-indigo-900 uppercase text-[11px] border-b pb-1">5. Bukti Transfer & Status Pembayaran Form</h5>
+                <div className="grid sm:grid-cols-2 gap-2.5">
+                  <div className="p-3 bg-slate-50 rounded-xl border space-y-1">
+                    <span className="text-[10px] text-slate-500 font-extrabold uppercase">Status Pendaftaran:</span>
+                    <div>
+                      <Badge className={selectedApplicant.reg_payment_status === "verified" ? "bg-emerald-100 text-emerald-800 border border-emerald-300 font-extrabold text-[10px]" : "bg-amber-500 text-white font-bold text-[10px]"}>
+                        {selectedApplicant.reg_payment_status === "verified" ? "Lunas & Terverifikasi" : "Menunggu Verifikasi Admin"}
+                      </Badge>
+                    </div>
+                  </div>
+                  <div className="p-3 bg-slate-50 rounded-xl border space-y-1">
+                    <span className="text-[10px] text-slate-500 font-extrabold uppercase">Dokumen Bukti Transfer:</span>
+                    <div>
+                      {selectedApplicant.reg_payment_proof ? (
+                        <button
+                          type="button"
+                          onClick={() => setPreviewProofModal({ url: resolveMediaUrl(selectedApplicant.reg_payment_proof), title: `Bukti Transfer Form Pendaftaran - ${selectedApplicant.name}` })}
+                          className="text-xs text-indigo-600 font-extrabold hover:underline inline-flex items-center gap-1 bg-indigo-50 px-2.5 py-1 rounded-lg border border-indigo-200 mt-0.5 cursor-pointer"
+                        >
+                          <Eye className="w-3.5 h-3.5" /> Preview Bukti Transfer Bank
+                        </button>
+                      ) : (
+                        <span className="text-slate-400 text-xs italic">Belum ada unggahan bukti</span>
+                      )}
+                    </div>
+                  </div>
+                </div>
+              </div>
             </div>
 
             <div className="p-4 bg-slate-50 border-t flex justify-between items-center">
@@ -1696,6 +2252,216 @@ export function AdminPmbHub({ token: propToken, user, programs: initialPrograms 
               <Button type="button" size="sm" onClick={() => setSelectedApplicant(null)} className="text-xs">
                 Tutup
               </Button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* Payment History & Remaining Balance Modal */}
+      {paymentHistoryModal && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-slate-900/60 p-4 backdrop-blur-sm">
+          <div className="w-full max-w-3xl bg-white rounded-2xl shadow-2xl border border-slate-200 overflow-hidden max-h-[90vh] flex flex-col animate-fade-in">
+            <div className="bg-gradient-to-r from-indigo-900 via-indigo-800 to-indigo-900 p-4 text-white flex justify-between items-center shrink-0">
+              <div>
+                <h4 className="font-extrabold text-sm sm:text-base flex items-center gap-2">
+                  <CreditCard className="w-5 h-5 text-indigo-300" /> Histori Pembayaran & Sisa Kurang Bayar PMB
+                </h4>
+                <p className="text-xs text-indigo-200 font-semibold mt-0.5">
+                  {paymentHistoryModal.applicant.name} • No. Reg: {paymentHistoryModal.applicant.registration_number} • Prodi: {paymentHistoryModal.applicant.prodi_name}
+                </p>
+              </div>
+              <button
+                onClick={() => setPaymentHistoryModal(null)}
+                className="w-8 h-8 rounded-full bg-white/10 hover:bg-white/20 flex items-center justify-center text-white font-bold"
+              >
+                <X className="w-4 h-4" />
+              </button>
+            </div>
+
+            <div className="p-5 space-y-5 overflow-y-auto">
+              {/* Summary Cards */}
+              <div className="grid grid-cols-1 sm:grid-cols-3 gap-3">
+                <div className="p-4 rounded-xl bg-slate-50 border border-slate-200 space-y-1">
+                  <p className="text-[10px] font-extrabold uppercase text-slate-500">Formulir Pendaftaran</p>
+                  <p className="text-xs font-bold text-slate-800">Total: {formatRupiah(paymentHistoryModal.balances.reg_fee_total)}</p>
+                  <p className="text-xs font-semibold text-emerald-700">Terbayar: {formatRupiah(paymentHistoryModal.balances.reg_fee_paid)}</p>
+                  <p className={`text-xs font-extrabold ${paymentHistoryModal.balances.reg_fee_remaining > 0 ? "text-rose-600" : "text-emerald-600"}`}>
+                    Sisa: {formatRupiah(paymentHistoryModal.balances.reg_fee_remaining)}
+                  </p>
+                </div>
+
+                <div className="p-4 rounded-xl bg-slate-50 border border-slate-200 space-y-1">
+                  <p className="text-[10px] font-extrabold uppercase text-slate-500">Biaya Pra-Studi</p>
+                  <p className="text-xs font-bold text-slate-800">Total: {formatRupiah(paymentHistoryModal.balances.pra_fee_total)}</p>
+                  <p className="text-xs font-semibold text-emerald-700">Terbayar: {formatRupiah(paymentHistoryModal.balances.pra_fee_paid)}</p>
+                  <p className={`text-xs font-extrabold ${paymentHistoryModal.balances.pra_fee_remaining > 0 ? "text-rose-600" : "text-emerald-600"}`}>
+                    Sisa: {formatRupiah(paymentHistoryModal.balances.pra_fee_remaining)}
+                  </p>
+                </div>
+
+                <div className="p-4 rounded-xl bg-indigo-50 border border-indigo-200 space-y-1">
+                  <p className="text-[10px] font-extrabold uppercase text-indigo-900">Total Sisa Kurang Bayar PMB</p>
+                  <p className="text-xl font-black text-rose-600 font-mono">
+                    {formatRupiah(paymentHistoryModal.balances.total_remaining_balance)}
+                  </p>
+                  <Badge className={paymentHistoryModal.balances.total_remaining_balance <= 0 ? "bg-emerald-600 text-white text-[9px] font-bold" : "bg-amber-600 text-white text-[9px] font-bold"}>
+                    {paymentHistoryModal.balances.total_remaining_balance <= 0 ? "LUNAS KESELURUHAN" : "MASIH ADA TUNGGAKAN"}
+                  </Badge>
+                </div>
+              </div>
+
+              {/* Transactions Table */}
+              <div className="space-y-2">
+                <h5 className="font-extrabold text-slate-900 text-xs uppercase tracking-wider">Histori Seluruh Transaksi Pembayaran</h5>
+                {paymentHistoryModal.balances.payment_history?.length > 0 ? (
+                  <div className="border border-slate-200 rounded-xl overflow-x-auto">
+                    <Table className="text-xs">
+                      <TableHeader className="bg-slate-50">
+                        <TableRow>
+                          <TableHead className="font-bold">Tanggal</TableHead>
+                          <TableHead className="font-bold">Kategori & Skema</TableHead>
+                          <TableHead className="font-bold">Nominal Custom</TableHead>
+                          <TableHead className="font-bold">Total Ditagih</TableHead>
+                          <TableHead className="font-bold">Metode & Bukti</TableHead>
+                          <TableHead className="font-bold">Status</TableHead>
+                          <TableHead className="text-center font-bold">Aksi Admin</TableHead>
+                        </TableRow>
+                      </TableHeader>
+                      <TableBody>
+                        {paymentHistoryModal.balances.payment_history.map((tx, idx) => (
+                          <TableRow key={tx.id || idx}>
+                            <TableCell className="font-mono text-[10px] whitespace-nowrap">{tx.created_at ? new Date(tx.created_at).toLocaleString("id-ID") : "-"}</TableCell>
+                            <TableCell className="capitalize font-bold">
+                              {tx.category === "registration" ? "Pendaftaran" : "Pra-Studi"}
+                              <span className="block text-[9px] text-slate-500 font-normal">Skema: {tx.scheme || "full"}</span>
+                            </TableCell>
+                            <TableCell className="font-mono font-bold text-indigo-700">{formatRupiah(tx.custom_amount || tx.billed_amount)}</TableCell>
+                            <TableCell className="font-mono text-slate-600">{formatRupiah(tx.billed_amount)} <span className="text-[9px] text-amber-700 block font-bold">Kode: {tx.unique_code || "-"}</span></TableCell>
+                            <TableCell>
+                              <span className="font-bold block">{tx.payment_method}</span>
+                              {tx.payment_proof && (
+                                <button
+                                  type="button"
+                                  onClick={() => setPreviewProofModal({ url: resolveMediaUrl(tx.payment_proof), title: `Bukti Transfer (${tx.category === "registration" ? "Pendaftaran" : "Pra-Studi"}) - ${paymentHistoryModal.applicant?.name || "Pendaftar"}` })}
+                                  className="text-[10px] text-indigo-600 font-bold hover:underline flex items-center gap-0.5 cursor-pointer mt-0.5"
+                                >
+                                  <Eye className="w-3 h-3" /> Preview Bukti
+                                </button>
+                              )}
+                            </TableCell>
+                            <TableCell>
+                              <Badge className={tx.status === "verified" ? "bg-emerald-600 text-white text-[9px] font-bold" : tx.status === "rejected" ? "bg-rose-600 text-white text-[9px] font-bold" : "bg-amber-600 text-white text-[9px] font-bold"}>
+                                {tx.status === "verified" ? "Disetujui" : tx.status === "rejected" ? "Ditolak" : "Pending"}
+                              </Badge>
+                            </TableCell>
+                            <TableCell className="text-center">
+                              {tx.status !== "verified" ? (
+                                <div className="flex items-center justify-center gap-1">
+                                  <Button
+                                    type="button"
+                                    size="sm"
+                                    onClick={() => handleVerifyTransaction(paymentHistoryModal.applicant.id, tx.id, "approve")}
+                                    className="bg-emerald-600 hover:bg-emerald-700 text-white text-[9px] h-5 px-2 font-bold"
+                                  >
+                                    Setujui
+                                  </Button>
+                                  <Button
+                                    type="button"
+                                    size="sm"
+                                    variant="destructive"
+                                    onClick={() => handleVerifyTransaction(paymentHistoryModal.applicant.id, tx.id, "reject")}
+                                    className="text-[9px] h-5 px-2 font-bold"
+                                  >
+                                    Tolak
+                                  </Button>
+                                </div>
+                              ) : (
+                                <span className="text-emerald-700 font-extrabold text-[10px]">Verified</span>
+                              )}
+                            </TableCell>
+                          </TableRow>
+                        ))}
+                      </TableBody>
+                    </Table>
+                  </div>
+                ) : (
+                  <p className="text-xs text-slate-500 italic p-3 bg-slate-50 rounded-xl border border-slate-200">Belum ada transaksi pembayaran custom/reguler yang tercatat.</p>
+                )}
+              </div>
+            </div>
+
+            <div className="p-3 bg-slate-100 border-t border-slate-200 flex justify-end shrink-0">
+              <Button type="button" variant="outline" size="sm" onClick={() => setPaymentHistoryModal(null)}>
+                Tutup
+              </Button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* Interactive Proof Preview Modal */}
+      {previewProofModal && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-slate-900/70 p-4 backdrop-blur-sm animate-fade-in">
+          <div className="w-full max-w-4xl bg-white rounded-2xl shadow-2xl border border-slate-200 overflow-hidden flex flex-col max-h-[90vh]">
+            <div className="bg-slate-900 px-5 py-4 text-white flex justify-between items-center shrink-0">
+              <div>
+                <h4 className="font-extrabold text-sm sm:text-base flex items-center gap-2">
+                  <Eye className="w-5 h-5 text-sky-400" /> {previewProofModal.title || "Preview Bukti Transfer"}
+                </h4>
+              </div>
+              <div className="flex items-center gap-2">
+                <a
+                  href={previewProofModal.url}
+                  download
+                  target="_blank"
+                  rel="noreferrer"
+                  className="text-xs bg-white/10 hover:bg-white/20 text-white font-bold px-3 py-1.5 rounded-lg flex items-center gap-1 transition-colors"
+                >
+                  <ExternalLink className="w-3.5 h-3.5" /> Open / Download File
+                </a>
+                <button
+                  type="button"
+                  onClick={() => setPreviewProofModal(null)}
+                  className="w-8 h-8 rounded-full bg-white/10 hover:bg-white/20 flex items-center justify-center text-white font-bold transition-colors"
+                >
+                  <X className="w-4 h-4" />
+                </button>
+              </div>
+            </div>
+
+            <div className="p-6 overflow-y-auto flex-1 bg-slate-100 flex items-center justify-center min-h-[350px]">
+              {previewProofModal.url?.toLowerCase().endsWith(".pdf") ? (
+                <iframe
+                  src={previewProofModal.url}
+                  className="w-full h-[70vh] rounded-xl border border-slate-300 shadow-xs"
+                  title="Preview PDF Bukti Transfer"
+                />
+              ) : (
+                <div className="relative max-h-[75vh] flex items-center justify-center">
+                  <img
+                    src={previewProofModal.url}
+                    alt="Preview Bukti Transfer"
+                    className="max-h-[72vh] max-w-full object-contain rounded-xl shadow-lg border border-slate-200"
+                    onError={(e) => {
+                      e.target.style.display = 'none';
+                      const fallback = e.target.nextSibling;
+                      if (fallback) fallback.style.display = 'block';
+                    }}
+                  />
+                  <div style={{ display: 'none' }} className="text-center space-y-3 p-8 bg-white rounded-2xl shadow-sm border border-slate-200">
+                    <FileText className="w-12 h-12 text-slate-400 mx-auto" />
+                    <p className="text-sm font-bold text-slate-700">Preview dokumen tidak dapat ditampilkan langsung sebagai gambar.</p>
+                    <a
+                      href={previewProofModal.url}
+                      target="_blank"
+                      rel="noreferrer"
+                      className="inline-flex items-center gap-2 bg-indigo-600 hover:bg-indigo-700 text-white text-xs font-bold px-4 py-2 rounded-xl shadow-xs"
+                    >
+                      <ExternalLink className="w-4 h-4" /> Buka Berkas di Tab Baru
+                    </a>
+                  </div>
+                </div>
+              )}
             </div>
           </div>
         </div>

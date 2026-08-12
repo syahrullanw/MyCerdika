@@ -28,34 +28,37 @@ import { WhatsAppOfficialIcon } from "./PmbWhatsAppFloatingWidget";
 
 const api = axios.create({ baseURL: BACKEND_URL });
 
+const createInitialFormData = (defaultProdiId = "") => ({
+  name: "",
+  gender: "L",
+  tempat_lahir: "",
+  tanggal_lahir: "",
+  whatsapp: "",
+  alamat: "",
+  nik: "",
+  nisn: "",
+  nama_ibu_kandung: "",
+  email: "",
+  asal_sekolah: "",
+  npsn_sekolah: "",
+  alamat_sekolah: "",
+  jurusan_asal: "",
+  tahun_lulus: "2025",
+  tinggi_badan: "",
+  berat_badan: "",
+  prodi_id: defaultProdiId || "",
+  prodi_id_2: "",
+  class_type: "reguler",
+  learning_mode: "offline",
+  info_source: "Media Sosial (Instagram, TikTok, FB)",
+  password: "",
+  referral_code: "",
+});
+
 export function PmbDirectRegisterModal({ isOpen, onClose, onAuth, defaultProdiId = "", programs = [] }) {
   const [availablePrograms, setAvailablePrograms] = useState(Array.isArray(programs) ? programs : []);
-  const [formData, setFormData] = useState({
-    name: "",
-    gender: "L",
-    tempat_lahir: "",
-    tanggal_lahir: "",
-    whatsapp: "",
-    alamat: "",
-    nik: "",
-    nisn: "",
-    nama_ibu_kandung: "",
-    email: "",
-    asal_sekolah: "",
-    npsn_sekolah: "",
-    alamat_sekolah: "",
-    jurusan_asal: "",
-    tahun_lulus: "2025",
-    tinggi_badan: "",
-    berat_badan: "",
-    prodi_id: defaultProdiId || "",
-    prodi_id_2: "",
-    class_type: "reguler",
-    learning_mode: "offline",
-    info_source: "Media Sosial",
-    password: "",
-    referral_code: "",
-  });
+  const [promoters, setPromoters] = useState([]);
+  const [formData, setFormData] = useState(() => createInitialFormData(defaultProdiId));
   const [loading, setLoading] = useState(false);
   const [referralFeedback, setReferralFeedback] = useState(null);
   const [successData, setSuccessData] = useState(null);
@@ -66,24 +69,55 @@ export function PmbDirectRegisterModal({ isOpen, onClose, onAuth, defaultProdiId
     setAvailablePrograms(Array.isArray(programs) ? programs : []);
   }, [programs]);
 
+  // Reset formulir saat modal dibuka baru & tidak sedang melihat bukti sukses
   useEffect(() => {
-    if (!isOpen || availablePrograms.length > 0) return undefined;
+    if (isOpen && !successData) {
+      setFormData(createInitialFormData(defaultProdiId));
+      setReferralFeedback(null);
+    }
+  }, [isOpen, defaultProdiId]);
+
+  useEffect(() => {
+    if (!isOpen) return undefined;
     let cancelled = false;
     api.get("/api/v1/pmb/public/config")
       .then(({ data }) => {
-        if (!cancelled && data?.ok) setAvailablePrograms(data.programs || []);
+        if (!cancelled && data?.ok) {
+          if (Array.isArray(data.programs) && data.programs.length > 0) {
+            setAvailablePrograms(data.programs);
+          }
+          if (Array.isArray(data.promoters)) {
+            setPromoters(data.promoters);
+          }
+        }
       })
       .catch(() => {});
+
+    api.get("/api/v1/pmb/referrals/public/promoters")
+      .then(({ data }) => {
+        if (!cancelled && data?.ok && Array.isArray(data.promoters)) {
+          setPromoters(data.promoters);
+        }
+      })
+      .catch(() => {});
+
     return () => {
       cancelled = true;
     };
-  }, [availablePrograms.length, isOpen]);
+  }, [isOpen]);
 
   useEffect(() => {
     if (defaultProdiId) {
       setFormData((prev) => ({ ...prev, prodi_id: defaultProdiId }));
     }
   }, [defaultProdiId]);
+
+  const handleCloseModal = () => {
+    setSuccessData(null);
+    setReferralFeedback(null);
+    setFormData(createInitialFormData(defaultProdiId));
+    onClose();
+  };
 
   if (!isOpen) return null;
 
@@ -114,8 +148,7 @@ export function PmbDirectRegisterModal({ isOpen, onClose, onAuth, defaultProdiId
     if (onAuth && successData) {
       onAuth({ token: successData.token, user: { ...successData.applicant, role: "camaba" } });
     }
-    setSuccessData(null);
-    onClose();
+    handleCloseModal();
   };
 
   const handleSubmit = async (e) => {
@@ -189,7 +222,7 @@ export function PmbDirectRegisterModal({ isOpen, onClose, onAuth, defaultProdiId
                 <CheckCircle2 className="w-10 h-10 text-white" />
               </div>
               <h3 className="font-extrabold text-xl sm:text-2xl leading-tight">
-                Pendaftaran Berhasil Diterima! 🎉
+                Pendaftaran Berhasil Diterima!
               </h3>
               <p className="text-xs text-emerald-100 mt-1 max-w-md mx-auto">
                 Salinan pendaftaran dan akses login resmi telah dikirim ke email & WhatsApp Anda.
@@ -359,7 +392,7 @@ export function PmbDirectRegisterModal({ isOpen, onClose, onAuth, defaultProdiId
               </div>
               <button
                 type="button"
-                onClick={onClose}
+                onClick={handleCloseModal}
                 className="w-8 h-8 rounded-full bg-white/20 hover:bg-white/30 flex items-center justify-center text-white text-sm transition-colors"
                 aria-label="Tutup"
               >
@@ -639,30 +672,69 @@ export function PmbDirectRegisterModal({ isOpen, onClose, onAuth, defaultProdiId
 
                 <div>
                   <Label className="text-xs font-bold">Pilihan Jenis Kelas & Waktu Kuliah *</Label>
-                  <div className="grid grid-cols-2 gap-2 mt-1">
+                  <div className="grid grid-cols-1 sm:grid-cols-2 gap-2 mt-1.5">
                     <button
                       type="button"
-                      onClick={() => setFormData({ ...formData, class_type: "reguler" })}
-                      className={`p-2.5 rounded-lg border text-xs font-bold text-left transition-all ${
-                        formData.class_type === "reguler"
-                          ? "bg-sky-50 border-sky-600 text-sky-900 ring-1 ring-sky-500 shadow-xs"
-                          : "bg-white border-slate-200 text-slate-700 hover:bg-slate-100"
+                      onClick={() => setFormData({ ...formData, class_type: "reguler", learning_mode: "offline" })}
+                      className={`p-2.5 rounded-xl border text-xs font-bold text-left transition-all relative ${
+                        formData.class_type === "reguler" && formData.learning_mode === "offline"
+                          ? "bg-sky-50 border-sky-600 text-sky-950 ring-2 ring-sky-500 shadow-sm"
+                          : "bg-white border-slate-200 text-slate-700 hover:bg-slate-50"
                       }`}
                     >
-                      <p>Kelas Reguler</p>
-                      <p className="text-[10px] font-normal text-slate-500">Bisa Kuliah Online / Offline</p>
+                      <div className="flex items-center justify-between">
+                        <p className="font-bold">1. Kelas Reguler Offline</p>
+                        <span className="text-[9px] bg-sky-100 text-sky-800 px-1.5 py-0.5 rounded font-semibold">Tatap Muka</span>
+                      </div>
+                      <p className="text-[10px] font-normal text-slate-500 mt-0.5">Senin - Jumat di Kampus</p>
                     </button>
+
+                    <button
+                      type="button"
+                      onClick={() => setFormData({ ...formData, class_type: "reguler", learning_mode: "online" })}
+                      className={`p-2.5 rounded-xl border text-xs font-bold text-left transition-all relative ${
+                        formData.class_type === "reguler" && formData.learning_mode === "online"
+                          ? "bg-cyan-50 border-cyan-600 text-cyan-950 ring-2 ring-cyan-500 shadow-sm"
+                          : "bg-white border-slate-200 text-slate-700 hover:bg-slate-50"
+                      }`}
+                    >
+                      <div className="flex items-center justify-between">
+                        <p className="font-bold">2. Kelas Reguler Online</p>
+                        <span className="text-[9px] bg-cyan-100 text-cyan-800 px-1.5 py-0.5 rounded font-semibold">Daring Penuh</span>
+                      </div>
+                      <p className="text-[10px] font-normal text-slate-500 mt-0.5">LMS & Virtual Class Fleksibel</p>
+                    </button>
+
+                    <button
+                      type="button"
+                      onClick={() => setFormData({ ...formData, class_type: "weekend", learning_mode: "online" })}
+                      className={`p-2.5 rounded-xl border text-xs font-bold text-left transition-all relative ${
+                        formData.class_type === "weekend"
+                          ? "bg-purple-50 border-purple-600 text-purple-950 ring-2 ring-purple-500 shadow-sm"
+                          : "bg-white border-slate-200 text-slate-700 hover:bg-slate-50"
+                      }`}
+                    >
+                      <div className="flex items-center justify-between">
+                        <p className="font-bold">3. Kelas Weekend Online</p>
+                        <span className="text-[9px] bg-purple-100 text-purple-800 px-1.5 py-0.5 rounded font-semibold">Sabtu - Minggu</span>
+                      </div>
+                      <p className="text-[10px] font-normal text-slate-500 mt-0.5">Kuliah Daring Akhir Pekan</p>
+                    </button>
+
                     <button
                       type="button"
                       onClick={() => setFormData({ ...formData, class_type: "khusus", learning_mode: "offline" })}
-                      className={`p-2.5 rounded-lg border text-xs font-bold text-left transition-all ${
+                      className={`p-2.5 rounded-xl border text-xs font-bold text-left transition-all relative ${
                         formData.class_type === "khusus"
-                          ? "bg-indigo-50 border-indigo-600 text-indigo-900 ring-1 ring-indigo-500 shadow-xs"
-                          : "bg-white border-slate-200 text-slate-700 hover:bg-slate-100"
+                          ? "bg-indigo-50 border-indigo-600 text-indigo-950 ring-2 ring-indigo-500 shadow-sm"
+                          : "bg-white border-slate-200 text-slate-700 hover:bg-slate-50"
                       }`}
                     >
-                      <p>Kelas Khusus (Karyawan)</p>
-                      <p className="text-[10px] font-normal text-slate-500">Tatap Muka di Kampus</p>
+                      <div className="flex items-center justify-between">
+                        <p className="font-bold">4. Kelas Khusus Offline</p>
+                        <span className="text-[9px] bg-indigo-100 text-indigo-800 px-1.5 py-0.5 rounded font-semibold">Kelas Eksekutif</span>
+                      </div>
+                      <p className="text-[10px] font-normal text-slate-500 mt-0.5">Kurikulum Khusus Eksekutif di Kampus</p>
                     </button>
                   </div>
                 </div>
@@ -695,30 +767,36 @@ export function PmbDirectRegisterModal({ isOpen, onClose, onAuth, defaultProdiId
                 <div className="grid sm:grid-cols-2 gap-3">
                   <div>
                     <Label className="text-xs font-bold text-slate-700">
-                      Kode Referal Promotor <span className="font-normal text-slate-400">(Opsional)</span>
+                      Pilih Nama Marketing / Promotor PMB <span className="font-normal text-slate-400">(Opsional)</span>
                     </Label>
-                    <Input
+                    <select
                       value={formData.referral_code}
                       onChange={(e) => {
-                        const val = e.target.value.toUpperCase();
-                        setFormData({ ...formData, referral_code: val });
-                        if (val.length >= 4) {
-                          api.get(`/api/v1/pmb/referrals/public/check/${val}`)
-                            .then(({ data }) => {
-                              if (data.ok && data.valid) setReferralFeedback(data);
-                              else setReferralFeedback(null);
-                            })
-                            .catch(() => setReferralFeedback(null));
+                        const code = e.target.value;
+                        setFormData({ ...formData, referral_code: code });
+                        const found = promoters.find((p) => p.code === code);
+                        if (found) {
+                          setReferralFeedback({
+                            ok: true,
+                            valid: true,
+                            message: `Direferensikan oleh: ${found.name} (${found.category === "student" ? "Mahasiswa" : found.category === "lecturer" ? "Dosen" : "Tim Marketing PMB"})`,
+                          });
                         } else {
                           setReferralFeedback(null);
                         }
                       }}
-                      placeholder="Contoh: REF-BUDI26 (Kosongkan jika tidak ada)"
-                      className="text-xs mt-1 font-mono uppercase"
-                    />
+                      className="mt-1 w-full border border-slate-300 rounded-md p-2 text-xs bg-white font-medium truncate"
+                    >
+                      <option value="">-- Pendaftaran Mandiri (Tanpa Promotor) --</option>
+                      {promoters.map((p) => (
+                        <option key={p.code || p.id} value={p.code}>
+                          {p.name} ({p.category === "student" ? "Mahasiswa" : p.category === "lecturer" ? "Dosen" : "Marketing PMB"}) — [{p.code}]
+                        </option>
+                      ))}
+                    </select>
                     {referralFeedback && (
-                      <p className="text-[10px] text-emerald-700 font-bold mt-1 bg-emerald-50 p-1.5 rounded border border-emerald-200 inline-flex items-center gap-1">
-                        <Check className="w-3 h-3" /> {referralFeedback.message}
+                      <p className="text-[10px] text-emerald-700 font-bold mt-1.5 bg-emerald-50 p-1.5 rounded border border-emerald-200 inline-flex items-center gap-1">
+                        <Check className="w-3 h-3 text-emerald-600" /> {referralFeedback.message}
                       </p>
                     )}
                   </div>
@@ -738,7 +816,7 @@ export function PmbDirectRegisterModal({ isOpen, onClose, onAuth, defaultProdiId
               </div>
 
               <div className="pt-3 border-t border-slate-100 flex justify-end gap-2">
-                <Button type="button" variant="outline" size="sm" onClick={onClose} className="text-xs">
+                <Button type="button" variant="outline" size="sm" onClick={handleCloseModal} className="text-xs">
                   Batal
                 </Button>
                 <Button

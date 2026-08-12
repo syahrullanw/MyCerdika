@@ -247,3 +247,112 @@ def test_plan_backfills_semester_status_from_old_khs():
     )
     assert khs_update.values["status_mhs"] == "N"
     assert khs_update.needs_write is True
+
+
+def test_offline_plan_preserves_existing_feeder_metadata():
+    existing_teacher_snapshot = [
+        {
+            "feeder_assignment_id": "assignment-existing",
+            "feeder_registration_id": "registration-lecturer-existing",
+            "feeder_lecturer_id": "lecturer-existing",
+            "source": "feeder_snapshot",
+        }
+    ]
+    existing_activity_snapshot = {
+        "nim": "25001",
+        "id_registrasi_mahasiswa": "registration-student-existing",
+        "ipk": 3.6,
+    }
+    tables = {
+        "mhsw": [{"MhswID": "25001", "Nama": "Mahasiswa", "ProdiID": "P1"}],
+        "pegawai": [{"Login": "D1", "Nama": "Dosen", "NIDN": "0123456789"}],
+        "jadwal": [
+            {
+                "JadwalID": "J1",
+                "TahunID": "20252",
+                "DosenID": "D1",
+                "MKID": "MK1",
+            }
+        ],
+        "khs": [
+            {
+                "KHSID": "old-khs",
+                "MhswID": "25001",
+                "TahunID": "20252",
+                "StatusMhswID": "A",
+            }
+        ],
+    }
+    current = {
+        "users": [
+            {
+                "id": "25001",
+                "role": "student",
+                "name": "Mahasiswa",
+                "feeder_student_id": "student-existing",
+                "feeder_registration_id": "registration-student-existing",
+                "pddikti_ids": {
+                    "id_mahasiswa": "student-existing",
+                    "id_registrasi_mahasiswa": "registration-student-existing",
+                    "last_verified_id_mahasiswa": "student-verified",
+                    "last_verified_id_registrasi": "registration-verified",
+                },
+            },
+            {
+                "id": "D1",
+                "role": "lecturer",
+                "name": "Dosen",
+                "nidn": "0123456789",
+                "feeder_lecturer_id": "lecturer-existing",
+                "feeder_registration_ids": ["registration-lecturer-existing"],
+            },
+        ],
+        "programs": [],
+        "courses": [{"id": "MK1", "code": "MK1", "name": "Mata Kuliah"}],
+        "classes": [{"id": "J1", "dosen_pengajar": existing_teacher_snapshot}],
+        "kurikulum": [],
+        "academic_periods": [],
+        "krs": [],
+        "khs": [],
+        "aktivitas_mahasiswa": [
+            {
+                "id": "AKTMHS_20252_25001",
+                "feeder_snapshot": existing_activity_snapshot,
+            }
+        ],
+    }
+
+    updates, _ = reconciliation.build_plan(
+        tables=tables,
+        current=current,
+        live={},
+        period="20252",
+        source_name="old.json",
+        feeder_available=False,
+    )
+
+    student_update = next(
+        item for item in updates if item.collection == "users" and item.query == {"id": "25001"}
+    )
+    lecturer_update = next(
+        item for item in updates if item.collection == "users" and item.query == {"id": "D1"}
+    )
+    class_update = next(
+        item for item in updates if item.collection == "classes" and item.query == {"id": "J1"}
+    )
+    activity_update = next(
+        item
+        for item in updates
+        if item.collection == "aktivitas_mahasiswa"
+        and item.query == {"id": "AKTMHS_20252_25001"}
+    )
+
+    assert student_update.values["feeder_student_id"] == "student-existing"
+    assert student_update.values["feeder_registration_id"] == "registration-student-existing"
+    assert student_update.values["pddikti_ids"]["last_verified_id_mahasiswa"] == "student-verified"
+    assert lecturer_update.values["feeder_lecturer_id"] == "lecturer-existing"
+    assert lecturer_update.values["feeder_registration_ids"] == [
+        "registration-lecturer-existing"
+    ]
+    assert class_update.values["dosen_pengajar"] == existing_teacher_snapshot
+    assert activity_update.values["feeder_snapshot"] == existing_activity_snapshot

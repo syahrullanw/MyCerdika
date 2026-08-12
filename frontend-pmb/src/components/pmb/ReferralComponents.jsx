@@ -100,7 +100,7 @@ export function ReferralRegistrationModal({ isOpen, onClose, defaultCategory = "
 
   const shareWA = (code, link) => {
     const text = encodeURIComponent(
-      `Halo! Yuk kuliah di kampus terbaik dengan pilihan kelas Reguler (Online/Offline) atau Kelas Karyawan. Daftar sekarang melalui link pendaftaran resmi PMB berikut: ${link} (Kode Referal: ${code})`
+      `Halo! Yuk kuliah di kampus terbaik dengan pilihan kelas Reguler (Online/Offline), Weekend Online, atau Kelas Khusus Eksekutif. Daftar sekarang melalui link pendaftaran resmi PMB berikut: ${link} (Kode Referal: ${code})`
     );
     window.open(`https://api.whatsapp.com/send?text=${text}`, "_blank");
   };

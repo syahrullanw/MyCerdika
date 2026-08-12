@@ -483,6 +483,7 @@ def build_plan(
     live: dict[str, list[dict[str, Any]]],
     period: str,
     source_name: str,
+    feeder_available: bool = True,
 ) -> tuple[list[PlannedUpdate], dict[str, Any]]:
     updates: list[PlannedUpdate] = []
     generated_at = now_iso()
@@ -500,6 +501,11 @@ def build_plan(
     khs_by_key = {
         (normalized(row.get("student_id")), normalized(row.get("academic_period_id"))): row
         for row in current["khs"]
+    }
+    activities_by_id = {
+        normalized(row.get("id")): row
+        for row in current.get("aktivitas_mahasiswa", [])
+        if normalized(row.get("id"))
     }
 
     old_faculties = {
@@ -815,13 +821,18 @@ def build_plan(
         agama = agama_map.get(normalized(source.get("Agama")), {})
         status_awal = status_awal_map.get(normalized(source.get("StatusAwalID")), {})
         feeder_current = live_students.get(nim, {})
+        existing_identifiers = target.get("pddikti_ids") or {}
         identifiers = {
-            "id_mahasiswa": clean(source.get("MhswIDDikti")),
-            "id_registrasi_mahasiswa": clean(source.get("MhswRegIDDikti")),
-            "last_verified_id_mahasiswa": clean(feeder_current.get("id_mahasiswa")),
+            "id_mahasiswa": clean(source.get("MhswIDDikti"))
+            or clean(existing_identifiers.get("id_mahasiswa")),
+            "id_registrasi_mahasiswa": clean(source.get("MhswRegIDDikti"))
+            or clean(existing_identifiers.get("id_registrasi_mahasiswa")),
+            "last_verified_id_mahasiswa": clean(feeder_current.get("id_mahasiswa"))
+            or clean(existing_identifiers.get("last_verified_id_mahasiswa")),
             "last_verified_id_registrasi": clean(
                 feeder_current.get("id_registrasi_mahasiswa")
-            ),
+            )
+            or clean(existing_identifiers.get("last_verified_id_registrasi")),
         }
         registration = {
             "semester_masuk": clean(source.get("TahunID")),
@@ -863,8 +874,10 @@ def build_plan(
             },
         }
         values = {
-            "feeder_student_id": clean(source.get("MhswIDDikti")),
-            "feeder_registration_id": clean(source.get("MhswRegIDDikti")),
+            "feeder_student_id": clean(source.get("MhswIDDikti"))
+            or clean(target.get("feeder_student_id")),
+            "feeder_registration_id": clean(source.get("MhswRegIDDikti"))
+            or clean(target.get("feeder_registration_id")),
             "pddikti_ids": identifiers,
             "registration": registration,
             "agama": agama.get("name") or target.get("agama") or "",
@@ -939,16 +952,25 @@ def build_plan(
         verified_rows = verified_staff_from_active_class.get(staff_id, [])
         if not feeder_current and verified_rows:
             feeder_current = verified_rows[0]
-        feeder_registration_ids = set(
-            live_registration_by_nidn.get(normalized(source.get("NIDN")), set())
-        )
-        feeder_registration_ids.update(
-            clean(row.get("id_registrasi_dosen"))
-            for row in verified_rows
-            if meaningful(row.get("id_registrasi_dosen"))
-        )
+        if feeder_available:
+            feeder_registration_ids = set(
+                live_registration_by_nidn.get(normalized(source.get("NIDN")), set())
+            )
+            feeder_registration_ids.update(
+                clean(row.get("id_registrasi_dosen"))
+                for row in verified_rows
+                if meaningful(row.get("id_registrasi_dosen"))
+            )
+            feeder_lecturer_id = clean(feeder_current.get("id_dosen"))
+        else:
+            feeder_registration_ids = {
+                clean(value)
+                for value in target.get("feeder_registration_ids", [])
+                if meaningful(value)
+            }
+            feeder_lecturer_id = clean(target.get("feeder_lecturer_id"))
         values = {
-            "feeder_lecturer_id": clean(feeder_current.get("id_dosen")),
+            "feeder_lecturer_id": feeder_lecturer_id,
             "feeder_registration_ids": sorted(feeder_registration_ids),
             "agama": agama.get("name") or target.get("agama") or "",
             "agama_id": agama.get("id", ""),
@@ -1088,7 +1110,11 @@ def build_plan(
             "tanggal_mulai_efektif": clean(source.get("TglMulai")),
             "tanggal_akhir_efektif": clean(source.get("TglSelesai")),
             "planned_meetings": as_int(source.get("RencanaKehadiran"), 16),
-            "dosen_pengajar": feeder_teachers or local_teachers,
+            "dosen_pengajar": (
+                feeder_teachers or local_teachers
+                if feeder_available
+                else target.get("dosen_pengajar") or local_teachers
+            ),
             "local_dosen_pengajar": local_teachers,
             "feeder_sync_status": "matched" if feeder_class_id else "not_synced",
             "feeder_last_error_code": clean(source.get("ErrorCode")),
@@ -1376,8 +1402,12 @@ def build_plan(
 
     for (nim, period_code), row in old_khs_unique.items():
         user = users_by_id.get(nim, {})
-        feeder_snapshot = live_activities.get(nim, {}) if period_code == period else {}
         activity_id = f"AKTMHS_{period_code}_{nim}"
+        current_activity = activities_by_id.get(normalized(activity_id), {})
+        if feeder_available and period_code == period:
+            feeder_snapshot = live_activities.get(nim, {})
+        else:
+            feeder_snapshot = current_activity.get("feeder_snapshot") or {}
         values = {
             "id": activity_id,
             "student_id": user.get("id") or clean(row.get("MhswID")),

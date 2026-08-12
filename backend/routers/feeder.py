@@ -1508,6 +1508,7 @@ OLD_IMPORT_BASE_COLLECTIONS = [
     "academic_periods",
     "krs",
     "khs",
+    "aktivitas_mahasiswa",
 ]
 OLD_IMPORT_FINANCE_COLLECTIONS = {
     "finance_components",
@@ -1576,6 +1577,9 @@ def public_incremental_entry(entry: Dict[str, Any]) -> Dict[str, Any]:
 def public_old_import_preview(document: Dict[str, Any]) -> Dict[str, Any]:
     entries = document.get("operations") or []
     relevant = [item for item in entries if item.get("status") != "unchanged"]
+    feeder_available = (document.get("migration_report") or {}).get("feeder", {}).get(
+        "available", True
+    )
     return {
         "ok": True,
         "preview_id": document.get("id"),
@@ -1587,7 +1591,12 @@ def public_old_import_preview(document: Dict[str, Any]) -> Dict[str, Any]:
         "migration_report": document.get("migration_report") or {},
         "operations": [public_incremental_entry(item) for item in relevant[:300]],
         "operation_total_returned": min(len(relevant), 300),
-        "notice": "Preview tidak mengubah database. Terapkan hanya perubahan berstatus siap.",
+        "notice": (
+            "Preview tidak mengubah database atau Feeder. Audit Feeder belum tersedia; "
+            "migrasi OLD ke SIAKAD baru tetap dapat ditinjau."
+            if not feeder_available
+            else "Preview tidak mengubah database atau Feeder. Terapkan hanya perubahan berstatus siap."
+        ),
     }
 
 
@@ -1648,13 +1657,26 @@ async def preview_old_siakad_import(
                 detail=f"Bukan ekspor OLD-SIAKAD lengkap. Tabel tidak ditemukan: {', '.join(missing_tables)}",
             )
 
-        live = await fetch_live_feeder(db, requested_period)
+        feeder_available = True
+        feeder_error = ""
+        try:
+            live = await fetch_live_feeder(db, requested_period)
+        except (RuntimeError, httpx.HTTPError, ValueError, HTTPException) as error:
+            # Feeder hanya pembanding read-only pada tahap migrasi OLD -> SIAKAD.
+            # Kegagalan koneksi tidak boleh menghalangi pemindahan data antar-SIAKAD.
+            feeder_available = False
+            feeder_error = str(error)
+            live = {}
         current = {
             name: await getattr(db, name).find({}, {"_id": 0}).to_list(None)
             for name in OLD_IMPORT_BASE_COLLECTIONS
         }
-        grade_summary = build_three_way_grade_summary(
-            tables, current["krs"], live["grades"], requested_period
+        grade_summary = (
+            build_three_way_grade_summary(
+                tables, current["krs"], live.get("grades", []), requested_period
+            )
+            if feeder_available
+            else None
         )
         updates, report = build_plan(
             tables=tables,
@@ -1662,6 +1684,7 @@ async def preview_old_siakad_import(
             live=live,
             period=requested_period,
             source_name=filename,
+            feeder_available=feeder_available,
         )
         finance_plan, finance_summary = build_finance_plan(tables, filename)
         updates.extend(
@@ -1689,9 +1712,27 @@ async def preview_old_siakad_import(
             "migration_report": {
                 "changed_krs_documents": report.get("changed_krs_documents", 0),
                 "changed_khs_documents": report.get("changed_khs_documents", 0),
-                "students_old_only_vs_feeder": len(report.get("students_old_only_vs_feeder", [])),
-                "students_feeder_only_vs_old": len(report.get("students_feeder_only_vs_old", [])),
-                "three_way_grades": dict(grade_summary),
+                "students_old_only_vs_feeder": (
+                    len(report.get("students_old_only_vs_feeder", []))
+                    if feeder_available
+                    else None
+                ),
+                "students_feeder_only_vs_old": (
+                    len(report.get("students_feeder_only_vs_old", []))
+                    if feeder_available
+                    else None
+                ),
+                "three_way_grades": dict(grade_summary) if grade_summary is not None else None,
+                "feeder": {
+                    "available": feeder_available,
+                    "read_only": True,
+                    "error": feeder_error or None,
+                    "notice": (
+                        "Feeder berhasil dibaca untuk audit; tidak ada data yang ditulis ke Feeder."
+                        if feeder_available
+                        else "Audit Feeder ditunda. Preview dan penerapan hanya memproses OLD ke SIAKAD baru."
+                    ),
+                },
                 "finance": {
                     **finance_summary,
                     "operations_held": finance_operations_held,

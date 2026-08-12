@@ -15,6 +15,7 @@ import tempfile
 import time
 import uuid
 import zipfile
+import sys
 from datetime import datetime, timedelta, timezone
 from email.mime.multipart import MIMEMultipart
 from email.mime.text import MIMEText
@@ -88,6 +89,13 @@ except ImportError:  # Supports `uvicorn server:app` from the backend directory.
 
 ROOT_DIR = Path(__file__).parent
 load_dotenv(ROOT_DIR / ".env")
+
+# Router modules historically use top-level imports such as
+# ``from routers.feeder import ...``. Keep those imports working when the
+# application is started from the repository root as ``backend.server:app``
+# as well as from ``backend`` as ``server:app``.
+if str(ROOT_DIR) not in sys.path:
+    sys.path.insert(0, str(ROOT_DIR))
 
 db = PostgresDatabase(os.environ["DATABASE_URL"])
 

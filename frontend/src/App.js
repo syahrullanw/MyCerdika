@@ -22366,9 +22366,17 @@ export function FeederPage({ token }) {
       const data = await res.json().catch(() => ({}));
       if (!res.ok) throw new Error(data.detail || "Preview migrasi OLD-SIAKAD gagal");
       setOldImportPreview(data);
-      toast.success("Ekspor OLD-SIAKAD berhasil dianalisis. Database belum diubah.");
+      toast.success(
+        data.migration_report?.feeder?.available === false
+          ? "Preview OLD → SIAKAD selesai. Audit Feeder ditunda karena koneksi belum tersedia."
+          : "Ekspor OLD-SIAKAD berhasil dianalisis. Database belum diubah.",
+      );
     } catch (error) {
-      toast.error(error.message || "Preview migrasi OLD-SIAKAD gagal");
+      const message =
+        error?.name === "TypeError" && /fetch/i.test(error?.message || "")
+          ? "Backend SIAKAD tidak dapat dihubungi. Pastikan layanan backend aktif, lalu coba lagi."
+          : error?.message || "Preview migrasi OLD-SIAKAD gagal";
+      toast.error(message);
     } finally {
       setOldImportLoading(false);
     }
@@ -22882,7 +22890,7 @@ export function FeederPage({ token }) {
                 <Upload className="w-4 h-4 text-indigo-600" /> Migrasi Incremental OLD-SIAKAD
               </CardTitle>
               <p className="text-[11px] text-slate-500 mt-1">
-                Unggah ekspor terbaru. Sistem hanya menerapkan perubahan aman dan tidak menimpa konflik atau data lokal yang lebih baru.
+                Unggah ekspor terbaru untuk memigrasikan OLD ke SIAKAD baru. Feeder hanya dibaca sebagai pembanding audit bila koneksinya tersedia.
               </p>
             </div>
             <Badge variant="outline" className="w-fit border-indigo-200 bg-indigo-50 text-indigo-700">
@@ -22943,6 +22951,16 @@ export function FeederPage({ token }) {
                   </div>
                 ))}
               </div>
+
+              {oldImportPreview.migration_report?.feeder?.available === false && (
+                <div className="rounded-lg border border-amber-200 bg-amber-50 p-3">
+                  <strong className="text-xs text-amber-900 block">Audit Feeder belum dijalankan</strong>
+                  <p className="text-[11px] text-amber-800 mt-1">
+                    Koneksi Feeder belum tersedia, tetapi preview dan penerapan migrasi OLD → SIAKAD baru tetap dapat dilakukan. Data tidak akan dikirim ke Feeder dari menu ini.
+                    {oldImportPreview.migration_report.feeder.error ? ` Penyebab: ${oldImportPreview.migration_report.feeder.error}` : ""}
+                  </p>
+                </div>
+              )}
 
               {oldImportPreview.migration_report?.finance && (
                 <div className={`rounded-lg border p-3 ${oldImportPreview.migration_report.finance.status === "needs_reconciliation" ? "border-amber-200 bg-amber-50" : "border-emerald-200 bg-emerald-50"}`}>
