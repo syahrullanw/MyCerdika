@@ -33,6 +33,7 @@ import {
   Monitor,
   Rocket,
   FileText,
+  FileSpreadsheet,
   Settings,
   Check,
   Pencil,
@@ -52,6 +53,7 @@ import { PmbReferralsTab } from "./PmbReferralsTab";
 import { PmbExecutiveReportTab } from "./PmbExecutiveReportTab";
 import { PmbLandingCustomizerTab } from "./PmbLandingCustomizerTab";
 import { PmbTestSessionsTab } from "./PmbTestSessionsTab";
+import { PmbStudentImportTab } from "./PmbStudentImportTab";
 
 const BACKEND_URL = (process.env.REACT_APP_BACKEND_URL || "").replace(/\/+$/, "") || window.location.origin;
 const api = axios.create({ baseURL: BACKEND_URL });
@@ -66,7 +68,7 @@ function formatRupiah(num) {
 
 export function AdminPmbHub({ token: propToken, user, programs: initialPrograms = [] }) {
   const token = propToken || (typeof window !== "undefined" ? localStorage.getItem("token") || "" : "");
-  const [activeTab, setActiveTab] = useState("overview"); // overview, customizer, analytics, referrals, applicants, cbt_bank, test_sessions, reregistration, conversion, final_report, settings
+  const [activeTab, setActiveTab] = useState("overview"); // overview, customizer, analytics, referrals, applicants, student_import, cbt_bank, test_sessions, reregistration, conversion, final_report, settings
   const [stats, setStats] = useState(null);
   const [applicants, setApplicants] = useState([]);
   const [questions, setQuestions] = useState([]);
@@ -546,6 +548,15 @@ export function AdminPmbHub({ token: propToken, user, programs: initialPrograms 
           }`}
         >
           <Users className="w-3.5 h-3.5 inline mr-1.5" /> Calon Mahasiswa ({applicants.length})
+        </button>
+        <button
+          type="button"
+          onClick={() => setActiveTab("student_import")}
+          className={`px-3 py-2 rounded-lg transition-all ${
+            activeTab === "student_import" ? "bg-white text-indigo-900 shadow-xs" : "text-slate-600 hover:text-slate-900"
+          }`}
+        >
+          <FileSpreadsheet className="w-3.5 h-3.5 inline mr-1.5" /> Import Mahasiswa Excel
         </button>
         <button
           type="button"
@@ -1239,6 +1250,11 @@ export function AdminPmbHub({ token: propToken, user, programs: initialPrograms 
         </div>
       )}
 
+      {/* Sub-tab: Import mahasiswa baru setelah periode PMB selesai */}
+      {activeTab === "student_import" && (
+        <PmbStudentImportTab token={token} programs={programsList} />
+      )}
+
       {/* Sub-tab 9: Final Executive Report */}
       {activeTab === "final_report" && (
         <PmbExecutiveReportTab token={token} />
@@ -1247,6 +1263,428 @@ export function AdminPmbHub({ token: propToken, user, programs: initialPrograms 
       {/* Sub-tab 10: Global Settings */}
       {activeTab === "settings" && settings && (
         <div className="space-y-6">
+          {/* Card 0: Setting Kelas yang Dibuka Per Prodi */}
+          <Card className="border-slate-200 shadow-sm overflow-hidden">
+            <CardHeader className="bg-gradient-to-r from-purple-900 via-indigo-900 to-slate-900 text-white py-4 px-6">
+              <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3">
+                <div>
+                  <CardTitle className="text-base font-bold flex items-center gap-2 text-white">
+                    <GraduationCap className="w-5 h-5 text-purple-300" />
+                    Pengaturan Pilihan Kelas & Mode Kuliah (Per Program Studi)
+                  </CardTitle>
+                  <CardDescription className="text-purple-100 text-xs mt-0.5">
+                    Aktifkan atau matikan jenis kelas (Reguler, Online, Weekend, Khusus) yang dibuka pada formulir pendaftaran camaba untuk setiap Prodi.
+                  </CardDescription>
+                </div>
+                <Badge className="bg-purple-500 text-white text-xs font-bold px-3 py-1 self-start sm:self-auto">
+                  {programsList.length} Program Studi
+                </Badge>
+              </div>
+            </CardHeader>
+            <CardContent className="p-6 space-y-4">
+              <div className="p-3 bg-purple-50/80 rounded-xl border border-purple-200 text-xs text-purple-950 flex items-start gap-2.5">
+                <span className="text-base">💡</span>
+                <div>
+                  <p className="font-bold">Panduan Pengaturan Kelas Per Prodi:</p>
+                  <p className="text-slate-600 mt-0.5">
+                    Pilihan kelas yang Anda aktifkan di sini akan <strong>secara otomatis memfilter</strong> opsi yang tampil pada Formulir Pendaftaran PMB saat calon mahasiswa memilih Program Studi terkait.
+                  </p>
+                </div>
+              </div>
+
+              <div className="space-y-4">
+              {/* Global Quick Action Bar */}
+              <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-2 p-3 bg-purple-50/60 rounded-xl border border-purple-200 text-xs">
+                <span className="font-bold text-purple-950 flex items-center gap-1.5">
+                  ⚡ Preset Massal Semua Prodi:
+                </span>
+                <div className="flex items-center gap-1.5 flex-wrap">
+                  <button
+                    type="button"
+                    onClick={() => {
+                      const newMap = {};
+                      programsList.forEach((p) => {
+                        newMap[p.id] = ["reguler_offline", "reguler_online", "weekend_online", "khusus_offline"];
+                      });
+                      setSettings({ ...settings, prodi_class_settings: newMap });
+                    }}
+                    className="px-2.5 py-1 rounded-lg text-[11px] font-bold bg-purple-600 text-white hover:bg-purple-700 transition-colors shadow-xs cursor-pointer"
+                  >
+                    Buka Semua Kelas (Semua Prodi)
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => {
+                      const newMap = {};
+                      programsList.forEach((p) => {
+                        newMap[p.id] = ["reguler_online", "weekend_online"];
+                      });
+                      setSettings({ ...settings, prodi_class_settings: newMap });
+                    }}
+                    className="px-2.5 py-1 rounded-lg text-[11px] font-bold bg-cyan-600 text-white hover:bg-cyan-700 transition-colors shadow-xs cursor-pointer"
+                  >
+                    Hanya Online (Semua Prodi)
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => {
+                      const newMap = {};
+                      programsList.forEach((p) => {
+                        newMap[p.id] = ["reguler_offline", "reguler_online"];
+                      });
+                      setSettings({ ...settings, prodi_class_settings: newMap });
+                    }}
+                    className="px-2.5 py-1 rounded-lg text-[11px] font-bold bg-sky-600 text-white hover:bg-sky-700 transition-colors shadow-xs cursor-pointer"
+                  >
+                    Hanya Reguler (Semua Prodi)
+                  </button>
+                </div>
+              </div>
+
+              {/* Compact Prodi List */}
+              <div className="divide-y divide-slate-100 border border-slate-200 rounded-xl overflow-hidden bg-white shadow-xs">
+                {programsList.map((prodi) => {
+                  const prodiId = prodi.id;
+                  const openedClasses = settings.prodi_class_settings?.[prodiId] ?? [
+                    "reguler_offline",
+                    "reguler_online",
+                    "weekend_online",
+                    "khusus_offline",
+                  ];
+
+                  const classDefs = [
+                    { id: "reguler_offline", shortLabel: "Reguler Offline", badge: "Tatap Muka", activeBg: "bg-sky-100 border-sky-400 text-sky-950 font-bold" },
+                    { id: "reguler_online", shortLabel: "Reguler Online", badge: "Daring Penuh", activeBg: "bg-cyan-100 border-cyan-400 text-cyan-950 font-bold" },
+                    { id: "weekend_online", shortLabel: "Weekend Online", badge: "Akhir Pekan", activeBg: "bg-purple-100 border-purple-400 text-purple-950 font-bold" },
+                    { id: "khusus_offline", shortLabel: "Khusus Offline", badge: "Eksekutif", activeBg: "bg-indigo-100 border-indigo-400 text-indigo-950 font-bold" },
+                  ];
+
+                  const toggleClass = (classId) => {
+                    const currentMap = settings.prodi_class_settings || {};
+                    const currentList = currentMap[prodiId] ?? [
+                      "reguler_offline",
+                      "reguler_online",
+                      "weekend_online",
+                      "khusus_offline",
+                    ];
+                    let newList;
+                    if (currentList.includes(classId)) {
+                      newList = currentList.filter((c) => c !== classId);
+                    } else {
+                      newList = [...currentList, classId];
+                    }
+                    setSettings({
+                      ...settings,
+                      prodi_class_settings: {
+                        ...currentMap,
+                        [prodiId]: newList,
+                      },
+                    });
+                  };
+
+                  const setPreset = (presetType) => {
+                    const currentMap = settings.prodi_class_settings || {};
+                    let newList = [];
+                    if (presetType === "all") {
+                      newList = ["reguler_offline", "reguler_online", "weekend_online", "khusus_offline"];
+                    } else if (presetType === "online") {
+                      newList = ["reguler_online", "weekend_online"];
+                    } else if (presetType === "reguler") {
+                      newList = ["reguler_offline", "reguler_online"];
+                    } else if (presetType === "khusus") {
+                      newList = ["khusus_offline", "reguler_offline"];
+                    }
+                    setSettings({
+                      ...settings,
+                      prodi_class_settings: {
+                        ...currentMap,
+                        [prodiId]: newList,
+                      },
+                    });
+                  };
+
+                  return (
+                    <div key={prodiId} className="p-3 hover:bg-slate-50/80 transition-colors">
+                      <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-2">
+                        {/* Title & Info */}
+                        <div className="flex items-center gap-2">
+                          <span className="font-extrabold text-slate-900 text-xs sm:text-sm">
+                            {prodi.nama || prodi.name}
+                          </span>
+                          <span className="text-[9px] font-bold px-1.5 py-0.5 rounded bg-slate-100 text-slate-600 border border-slate-200">
+                            {prodi.jenjang || "S1"} • {prodi.kode || prodi.code || prodiId}
+                          </span>
+                        </div>
+
+                        {/* Preset Actions */}
+                        <div className="flex items-center gap-1">
+                          <span className="text-[10px] text-slate-400 font-medium mr-1">Preset:</span>
+                          <button
+                            type="button"
+                            onClick={() => setPreset("all")}
+                            className="px-1.5 py-0.5 rounded text-[10px] font-bold text-slate-600 hover:bg-slate-200 transition-colors cursor-pointer"
+                          >
+                            Semua
+                          </button>
+                          <span className="text-slate-300">•</span>
+                          <button
+                            type="button"
+                            onClick={() => setPreset("online")}
+                            className="px-1.5 py-0.5 rounded text-[10px] font-bold text-cyan-700 hover:bg-cyan-100 transition-colors cursor-pointer"
+                          >
+                            Online
+                          </button>
+                          <span className="text-slate-300">•</span>
+                          <button
+                            type="button"
+                            onClick={() => setPreset("reguler")}
+                            className="px-1.5 py-0.5 rounded text-[10px] font-bold text-sky-700 hover:bg-sky-100 transition-colors cursor-pointer"
+                          >
+                            Reguler
+                          </button>
+                          <span className="text-slate-300">•</span>
+                          <button
+                            type="button"
+                            onClick={() => setPreset("khusus")}
+                            className="px-1.5 py-0.5 rounded text-[10px] font-bold text-indigo-700 hover:bg-indigo-100 transition-colors cursor-pointer"
+                          >
+                            Khusus & Reguler
+                          </button>
+                        </div>
+                      </div>
+
+                      {/* Class Chips Toggle */}
+                      <div className="flex items-center gap-1.5 flex-wrap mt-2">
+                        {classDefs.map((c) => {
+                          const isOpen = openedClasses.includes(c.id);
+                          return (
+                            <button
+                              key={c.id}
+                              type="button"
+                              onClick={() => toggleClass(c.id)}
+                              className={`px-2.5 py-1 rounded-lg border text-xs transition-all flex items-center gap-1.5 cursor-pointer ${
+                                isOpen
+                                  ? `${c.activeBg} border-current shadow-2xs`
+                                  : "bg-slate-50 border-slate-200 text-slate-400 hover:bg-slate-100"
+                              }`}
+                            >
+                              <span className={`text-[10px] font-extrabold px-1 rounded ${
+                                isOpen ? "bg-white/80 text-emerald-700" : "bg-slate-200 text-slate-500"
+                              }`}>
+                                {isOpen ? "✓" : "✕"}
+                              </span>
+                              <span>{c.shortLabel}</span>
+                              <span className="text-[9px] opacity-75 font-normal">({c.badge})</span>
+                            </button>
+                          );
+                        })}
+                        {openedClasses.length === 0 && (
+                          <span className="text-[10px] text-rose-600 font-bold bg-rose-50 px-2 py-0.5 rounded border border-rose-200">
+                            ⚠️ Tidak ada kelas dibuka
+                          </span>
+                        )}
+                      </div>
+                    </div>
+                  );
+                })}
+              </div>
+              </div>
+            </CardContent>
+          </Card>
+
+          {/* Card: Pengaturan Grade Hasil Ujian (Analisis Kategori Camaba) */}
+          <Card className="border-slate-200 shadow-sm overflow-hidden">
+            <CardHeader className="bg-gradient-to-r from-purple-900 via-indigo-900 to-slate-900 text-white py-4 px-6">
+              <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3">
+                <div>
+                  <CardTitle className="text-base font-bold flex items-center gap-2 text-white">
+                    <Award className="w-5 h-5 text-amber-400" />
+                    Pengaturan Grade Hasil Ujian CBT (Rentang Nilai & Analisis Kategori)
+                  </CardTitle>
+                  <CardDescription className="text-xs text-purple-200 mt-0.5">
+                    Atur rentang skor nilai dan nama Grade yang otomatis didapatkan camaba seketika setelah menyelesaikan tes seleksi CBT.
+                  </CardDescription>
+                </div>
+                <div className="flex items-center gap-2">
+                  <button
+                    type="button"
+                    onClick={() => {
+                      const defaultGrades = [
+                        {
+                          grade: "Grade A",
+                          min_score: 85.0,
+                          max_score: 100.0,
+                          label: "Sangat Baik / Lolos Utama (Beasiswa)",
+                          badge_color: "emerald",
+                          description: "Hasil ujian sangat memuaskan. Direkomendasikan beasiswa dan prioritas alokasi kelas.",
+                        },
+                        {
+                          grade: "Grade B",
+                          min_score: 70.0,
+                          max_score: 84.99,
+                          label: "Baik / Lolos Reguler",
+                          badge_color: "sky",
+                          description: "Lolos seleksi penerimaan mahasiswa baru jalur reguler.",
+                        },
+                        {
+                          grade: "Grade C",
+                          min_score: 55.0,
+                          max_score: 69.99,
+                          label: "Cukup / Lolos Bersyarat",
+                          badge_color: "amber",
+                          description: "Lolos seleksi bersyarat (wajib mengikuti program matrikulasi dasar).",
+                        },
+                        {
+                          grade: "Grade D",
+                          min_score: 0.0,
+                          max_score: 54.99,
+                          label: "Kurang / Ujian Ulang",
+                          badge_color: "rose",
+                          description: "Nilai belum mencapai batas kelulusan minimal. Diizinkan ujian remedial / seleksi ulang.",
+                        },
+                      ];
+                      setSettings({ ...settings, cbt_grade_settings: defaultGrades });
+                      toast.success("Preset Rentang Grade berhasil di-reset ke nilai standar!");
+                    }}
+                    className="px-2.5 py-1 rounded-lg text-xs font-bold bg-white/10 text-purple-200 hover:bg-white/20 transition-colors border border-white/20 cursor-pointer"
+                  >
+                    Reset Preset Standard
+                  </button>
+                </div>
+              </div>
+            </CardHeader>
+            <CardContent className="p-6 space-y-4 bg-white">
+              <div className="space-y-3">
+                {(settings.cbt_grade_settings || [
+                  { grade: "Grade A", min_score: 85, max_score: 100, label: "Sangat Baik / Beasiswa", badge_color: "emerald", description: "Hasil ujian sangat memuaskan. Direkomendasikan beasiswa dan prioritas alokasi kelas." },
+                  { grade: "Grade B", min_score: 70, max_score: 84.99, label: "Baik / Lolos Reguler", badge_color: "sky", description: "Lolos seleksi penerimaan mahasiswa baru jalur reguler." },
+                  { grade: "Grade C", min_score: 55, max_score: 69.99, label: "Cukup / Lolos Bersyarat", badge_color: "amber", description: "Lolos seleksi bersyarat (wajib mengikuti program matrikulasi dasar)." },
+                  { grade: "Grade D", min_score: 0, max_score: 54.99, label: "Kurang / Ujian Ulang", badge_color: "rose", description: "Nilai belum mencapai batas kelulusan minimal." },
+                ]).map((g, idx) => {
+                  const updateGradeField = (field, val) => {
+                    const currentList = [...(settings.cbt_grade_settings || [])];
+                    if (!currentList[idx]) return;
+                    currentList[idx] = { ...currentList[idx], [field]: val };
+                    setSettings({ ...settings, cbt_grade_settings: currentList });
+                  };
+
+                  const removeGradeRow = () => {
+                    const currentList = (settings.cbt_grade_settings || []).filter((_, i) => i !== idx);
+                    setSettings({ ...settings, cbt_grade_settings: currentList });
+                  };
+
+                  return (
+                    <div key={idx} className="p-3.5 rounded-xl border border-slate-200 bg-slate-50/50 hover:bg-white transition-all space-y-2 shadow-2xs">
+                      <div className="grid grid-cols-1 sm:grid-cols-12 gap-2.5 items-center">
+                        {/* Grade Title & Badge Color */}
+                        <div className="sm:col-span-3 flex items-center gap-2">
+                          <Input
+                            value={g.grade || ""}
+                            onChange={(e) => updateGradeField("grade", e.target.value)}
+                            placeholder="Nama Grade (misal Grade A)"
+                            className="text-xs font-bold bg-white border-slate-300 h-8"
+                          />
+                          <select
+                            value={g.badge_color || "sky"}
+                            onChange={(e) => updateGradeField("badge_color", e.target.value)}
+                            className="text-[11px] font-bold h-8 px-2 rounded-lg border border-slate-300 bg-white"
+                          >
+                            <option value="emerald">Hijau (Emerald)</option>
+                            <option value="sky">Biru (Sky)</option>
+                            <option value="purple">Ungu (Purple)</option>
+                            <option value="amber">Kuning (Amber)</option>
+                            <option value="rose">Merah (Rose)</option>
+                          </select>
+                        </div>
+
+                        {/* Min - Max Score Range */}
+                        <div className="sm:col-span-3 flex items-center gap-1.5">
+                          <span className="text-[10px] font-bold text-slate-500 shrink-0">Skor:</span>
+                          <Input
+                            type="number"
+                            step="0.1"
+                            value={g.min_score ?? 0}
+                            onChange={(e) => updateGradeField("min_score", parseFloat(e.target.value) || 0)}
+                            className="text-xs font-mono h-8 bg-white text-center"
+                            placeholder="Min"
+                          />
+                          <span className="text-slate-400 font-bold text-xs">-</span>
+                          <Input
+                            type="number"
+                            step="0.1"
+                            value={g.max_score ?? 100}
+                            onChange={(e) => updateGradeField("max_score", parseFloat(e.target.value) || 100)}
+                            className="text-xs font-mono h-8 bg-white text-center"
+                            placeholder="Max"
+                          />
+                        </div>
+
+                        {/* Label / Status */}
+                        <div className="sm:col-span-5">
+                          <Input
+                            value={g.label || ""}
+                            onChange={(e) => updateGradeField("label", e.target.value)}
+                            placeholder="Status / Label Kategori (misal: Sangat Baik / Lolos Beasiswa)"
+                            className="text-xs font-semibold bg-white border-slate-300 h-8"
+                          />
+                        </div>
+
+                        {/* Delete Action */}
+                        <div className="sm:col-span-1 flex justify-end">
+                          <button
+                            type="button"
+                            onClick={removeGradeRow}
+                            className="p-1.5 rounded-lg text-rose-600 hover:bg-rose-100 transition-colors cursor-pointer"
+                            title="Hapus Grade"
+                          >
+                            <Trash2 className="w-4 h-4" />
+                          </button>
+                        </div>
+                      </div>
+
+                      {/* Description / Recommendation Note */}
+                      <div className="flex items-center gap-2 pt-1 border-t border-slate-200/60">
+                        <span className="text-[10px] font-bold text-slate-500 shrink-0">Catatan Rekomendasi:</span>
+                        <Input
+                          value={g.description || ""}
+                          onChange={(e) => updateGradeField("description", e.target.value)}
+                          placeholder="Pesan rekomendasi yang ditampilkan ke camaba setelah ujian (contoh: Lolos seleksi dengan nilai sangat baik...)"
+                          className="text-xs text-slate-700 bg-white border-slate-200 h-7 text-[11px]"
+                        />
+                      </div>
+                    </div>
+                  );
+                })}
+              </div>
+
+              <div className="flex items-center justify-between pt-2">
+                <Button
+                  type="button"
+                  variant="outline"
+                  size="sm"
+                  onClick={() => {
+                    const currentList = [...(settings.cbt_grade_settings || [])];
+                    currentList.push({
+                      grade: `Grade ${String.fromCharCode(65 + currentList.length)}`,
+                      min_score: 50,
+                      max_score: 69.99,
+                      label: "Lolos Kategori",
+                      badge_color: "sky",
+                      description: "Catatan penentuan grade camaba.",
+                    });
+                    setSettings({ ...settings, cbt_grade_settings: currentList });
+                  }}
+                  className="text-xs font-bold text-purple-700 border-purple-300 hover:bg-purple-50 cursor-pointer"
+                >
+                  <Plus className="w-3.5 h-3.5 mr-1" /> Tambah Rentang Grade Baru
+                </Button>
+                <p className="text-[10px] text-slate-500 font-medium italic">
+                  💡 Poin nilai camaba akan dihitung otomatis & grade langsung muncul begitu ujian dikumpulkan.
+                </p>
+              </div>
+            </CardContent>
+          </Card>
+
           {/* Card 1: Switch Ujian Online */}
           <Card className="border-slate-200 shadow-sm overflow-hidden">
             <CardHeader className="bg-gradient-to-r from-slate-900 via-indigo-950 to-slate-900 text-white py-4 px-6">
@@ -1666,13 +2104,28 @@ export function AdminPmbHub({ token: propToken, user, programs: initialPrograms 
             </CardHeader>
             <CardContent className="space-y-4 text-xs">
               <form onSubmit={handleSaveSettings} className="space-y-4">
-                <div className="grid sm:grid-cols-2 gap-4">
+                <div className="grid sm:grid-cols-3 gap-4">
                   <div>
                     <Label className="text-xs font-bold">Nama Periode / Gelombang Aktif</Label>
                     <Input
                       value={settings.active_period_name || ""}
                       onChange={(e) => setSettings({ ...settings, active_period_name: e.target.value })}
                       className="text-xs mt-1"
+                      placeholder="contoh: Tahun Akademik 2026/2027 Gelombang 1"
+                    />
+                  </div>
+                  <div>
+                    <Label className="text-xs font-bold flex items-center justify-between">
+                      <span>Prefix Tahun Ajaran (NIM)</span>
+                      <span className="text-[9px] text-indigo-700 font-bold bg-indigo-50 px-1 py-0.5 rounded border border-indigo-200">
+                        2627 untuk TA 2026/2027
+                      </span>
+                    </Label>
+                    <Input
+                      value={settings.nim_prefix || "2627"}
+                      onChange={(e) => setSettings({ ...settings, nim_prefix: e.target.value })}
+                      className="text-xs mt-1 font-mono font-bold"
+                      placeholder="contoh: 2627"
                     />
                   </div>
                   <div>
@@ -1683,6 +2136,51 @@ export function AdminPmbHub({ token: propToken, user, programs: initialPrograms 
                       onChange={(e) => setSettings({ ...settings, target_new_students: parseInt(e.target.value) })}
                       className="text-xs mt-1"
                     />
+                  </div>
+                </div>
+
+                {/* Penandatangan SK Penerimaan & Lokasi Terbit */}
+                <div className="p-4 rounded-xl border border-indigo-200 bg-indigo-50/40 space-y-3">
+                  <h4 className="font-bold text-indigo-950 text-xs flex items-center gap-1.5 uppercase tracking-wider">
+                    <FileCheck className="w-4 h-4 text-indigo-600" /> Pengaturan Penandatangan SK Penerimaan & Kota Terbit
+                  </h4>
+                  <div className="grid sm:grid-cols-2 md:grid-cols-4 gap-3">
+                    <div>
+                      <Label className="text-xs font-bold">Kota Terbit SK / Lokasi Kampus</Label>
+                      <Input
+                        value={settings.campus_city ?? "Jakarta"}
+                        onChange={(e) => setSettings({ ...settings, campus_city: e.target.value })}
+                        placeholder="contoh: Jakarta / Bandung / Surabaya"
+                        className="text-xs mt-1 bg-white"
+                      />
+                    </div>
+                    <div>
+                      <Label className="text-xs font-bold">Nama Ketua Panitia PMB</Label>
+                      <Input
+                        value={settings.pmb_lead_name ?? "Dr. Muhammad Farhan, S.Kom., M.T."}
+                        onChange={(e) => setSettings({ ...settings, pmb_lead_name: e.target.value })}
+                        placeholder="contoh: Dr. Muhammad Farhan, S.Kom., M.T."
+                        className="text-xs mt-1 bg-white font-bold"
+                      />
+                    </div>
+                    <div>
+                      <Label className="text-xs font-bold">NIP / NIDN Ketua PMB</Label>
+                      <Input
+                        value={settings.pmb_lead_nip ?? "NIP. 198503152010121003"}
+                        onChange={(e) => setSettings({ ...settings, pmb_lead_nip: e.target.value })}
+                        placeholder="contoh: NIP. 198503152010121003"
+                        className="text-xs mt-1 bg-white font-mono"
+                      />
+                    </div>
+                    <div>
+                      <Label className="text-xs font-bold">Jabatan Penandatangan</Label>
+                      <Input
+                        value={settings.pmb_lead_title ?? "Ketua Panitia PMB"}
+                        onChange={(e) => setSettings({ ...settings, pmb_lead_title: e.target.value })}
+                        placeholder="contoh: Ketua Panitia PMB"
+                        className="text-xs mt-1 bg-white"
+                      />
+                    </div>
                   </div>
                 </div>
 

@@ -378,6 +378,7 @@ def test_settings_get_put_and_rollover_preview(admin_auth, state):
         "program_name": "Teknik Informatika",
         "lecturer_name": "Dosen Uji",
         "lecturer_email": "dosenuji@demo.id",
+        "app_logo_url": "https://example.com/app-logo.png",
         "campus_logo_url": "https://example.com/logo.png",
         "active_academic_year": "2026/2027",
         "active_semester": "Ganjil",
@@ -386,6 +387,7 @@ def test_settings_get_put_and_rollover_preview(admin_auth, state):
     assert put_response.status_code == 200, put_response.text
     saved = put_response.json()
     assert saved["campus_name"] == payload["campus_name"]
+    assert saved["app_logo_url"] == payload["app_logo_url"]
     assert saved["program_name"] == payload["program_name"]
     assert saved["active_academic_year"] == payload["active_academic_year"]
 

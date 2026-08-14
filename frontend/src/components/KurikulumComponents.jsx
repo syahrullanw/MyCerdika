@@ -48,18 +48,18 @@ const StatusBadge = ({ children, color = "blue" }) => {
     purple: "bg-purple-100 text-purple-800",
   };
   return (
-    <span className={`inline-flex items-center px-2 py-0.5 rounded text-xs font-medium ${map[color] || map.blue}`}>
+    <span className={`inline-flex shrink-0 items-center whitespace-nowrap px-2 py-0.5 rounded text-xs font-medium ${map[color] || map.blue}`}>
       {children}
     </span>
   );
 };
 
 const Card = ({ children, className = "" }) => (
-  <div className={`bg-white rounded-xl border border-slate-200 shadow-sm ${className}`}>{children}</div>
+  <div className={`min-w-0 bg-white rounded-xl border border-slate-200 shadow-sm ${className}`}>{children}</div>
 );
 
 const Btn = ({ children, onClick, variant = "primary", size = "md", disabled = false, className = "" }) => {
-  const base = "inline-flex items-center gap-1.5 rounded-lg font-medium transition-all focus:outline-none";
+  const base = "inline-flex items-center justify-center gap-1.5 rounded-lg font-medium transition-all focus:outline-none";
   const sizes = { sm: "px-3 py-1.5 text-xs", md: "px-4 py-2 text-sm", lg: "px-5 py-2.5 text-base" };
   const variants = {
     primary:   "bg-indigo-600 text-white hover:bg-indigo-700 disabled:opacity-50",
@@ -69,7 +69,7 @@ const Btn = ({ children, onClick, variant = "primary", size = "md", disabled = f
     ghost:     "text-slate-600 hover:bg-slate-100",
   };
   return (
-    <button className={`${base} ${sizes[size]} ${variants[variant]} ${className}`} onClick={onClick} disabled={disabled}>
+    <button type="button" className={`${base} ${sizes[size]} ${variants[variant]} ${className}`} onClick={onClick} disabled={disabled}>
       {children}
     </button>
   );
@@ -87,19 +87,20 @@ const FieldInput = ({ label, value, onChange, type = "text", placeholder = "", r
       value={value}
       onChange={(e) => onChange(e.target.value)}
       placeholder={placeholder}
-      className="border border-slate-300 rounded-lg px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-indigo-400 focus:border-transparent transition"
+      className="min-w-0 w-full border border-slate-300 rounded-lg px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-indigo-400 focus:border-transparent transition"
     />
     {hint && <span className="text-xs text-slate-400">{hint}</span>}
   </div>
 );
 
-const FieldSelect = ({ label, value, onChange, options = [], hint = "" }) => (
+const FieldSelect = ({ label, value, onChange, options = [], hint = "", disabled = false }) => (
   <div className="flex flex-col gap-1">
     {label && <label className="text-sm font-medium text-slate-700">{label}</label>}
     <select
       value={value}
       onChange={(e) => onChange(e.target.value)}
-      className="border border-slate-300 rounded-lg px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-indigo-400 bg-white transition"
+      disabled={disabled}
+      className="min-w-0 w-full border border-slate-300 rounded-lg px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-indigo-400 bg-white transition disabled:cursor-not-allowed disabled:bg-slate-100 disabled:text-slate-500"
     >
       {options.map(([val, lbl]) => <option key={val} value={val}>{lbl}</option>)}
     </select>
@@ -108,7 +109,7 @@ const FieldSelect = ({ label, value, onChange, options = [], hint = "" }) => (
 );
 
 const EmptyState = ({ Icon = Inbox, title, desc }) => (
-  <div className="flex flex-col items-center justify-center py-16 text-center">
+  <div className="flex flex-col items-center justify-center px-4 py-12 text-center sm:py-16">
     <Icon className="w-12 h-12 text-slate-300 mb-3" strokeWidth={1.5} />
     <p className="font-semibold text-slate-700 text-base">{title}</p>
     {desc && <p className="text-sm text-slate-400 mt-1 max-w-xs">{desc}</p>}
@@ -245,6 +246,21 @@ export function KurikulumMasterPage({ user }) {
     if (activeKurikulum) loadKurikulumCourses(activeKurikulum.id);
   };
 
+  const editCourse = (course) => {
+    setEditingCourseId(course.id);
+    setCourseForm({
+      kode: course.code || course.kode || "",
+      nama: course.name || course.nama || "",
+      sks_teori: course.sks_teori || course.sks || 2,
+      sks_praktikum: course.sks_praktikum || 0,
+      semester_paket: parseInt(course.semester_paket || course.semester || activeSemesterTab),
+      sifat: course.sifat || "wajib",
+      dosen_utama_id: course.dosen_utama_id || "",
+      dosen_anggota_ids: course.dosen_anggota_ids || [],
+    });
+    setShowCourseForm(true);
+  };
+
   const kaprodiProdiObj = useMemo(() => {
     if (!kaprodiProdiId) return null;
     const target = String(kaprodiProdiId).toLowerCase();
@@ -289,27 +305,28 @@ export function KurikulumMasterPage({ user }) {
   const semesterCourses = courses.filter((c) => (parseInt(c.semester_paket || c.semester || 1)) === activeSemesterTab);
 
   return (
-    <div className="max-w-5xl mx-auto space-y-6">
+    <div className="mx-auto w-full min-w-0 max-w-5xl space-y-4 overflow-x-hidden sm:space-y-6" data-testid="kurikulum-master-page">
       {/* ── DETAIL VIEW KURIKULUM ── */}
       {activeKurikulum ? (
-        <div className="space-y-6">
+        <div className="min-w-0 space-y-4 sm:space-y-6">
           {/* Header Navigation */}
-          <div className="flex items-center justify-between">
-            <div className="flex items-center gap-3">
+          <div className="flex flex-col gap-4 sm:flex-row sm:items-center sm:justify-between">
+            <div className="flex min-w-0 items-start gap-3 sm:items-center">
               <button
                 onClick={() => setActiveKurikulum(null)}
-                className="p-2 rounded-lg border border-slate-200 text-slate-600 hover:bg-slate-100 transition"
+                className="shrink-0 p-2 rounded-lg border border-slate-200 text-slate-600 hover:bg-slate-100 transition"
+                aria-label="Kembali ke daftar kurikulum"
               >
                 <ChevronLeft className="w-5 h-5" />
               </button>
-              <div>
-                <div className="flex items-center gap-2">
-                  <h1 className="text-xl font-bold text-slate-900">{activeKurikulum.nama}</h1>
+              <div className="min-w-0">
+                <div className="flex flex-wrap items-center gap-2">
+                  <h1 className="min-w-0 break-words text-lg font-bold leading-tight text-slate-900 sm:text-xl">{activeKurikulum.nama}</h1>
                   <StatusBadge color={activeKurikulum.status === "active" ? "green" : "gray"}>
                     {activeKurikulum.kode}
                   </StatusBadge>
                 </div>
-                <p className="text-slate-500 text-sm">
+                <p className="mt-1 text-xs leading-5 text-slate-500 sm:text-sm">
                   {activeKurikulum.prodi_nama || "Program Studi"} — Berlaku Mulai {activeKurikulum.tahun_mulai}
                 </p>
               </div>
@@ -327,42 +344,42 @@ export function KurikulumMasterPage({ user }) {
                 dosen_anggota_ids: [],
               });
               setShowCourseForm(true);
-            }}>
+            }} className="w-full sm:w-auto">
               <Plus className="w-4 h-4" /> Tambah Mata Kuliah
             </Btn>
           </div>
 
           {/* Stats Cards Breakdown */}
-          <div className="grid grid-cols-4 gap-4">
-            <Card className="p-4 bg-indigo-50/50 border-indigo-100">
+          <div className="grid grid-cols-2 gap-3 xl:grid-cols-4 xl:gap-4">
+            <Card className="p-3 sm:p-4 bg-indigo-50/50 border-indigo-100">
               <span className="text-xs font-medium text-indigo-600">Total Beban Kurikulum</span>
-              <p className="text-2xl font-bold text-indigo-900 mt-1">{totalSksKurikulum} <span className="text-sm font-normal text-indigo-600">SKS</span></p>
+              <p className="mt-1 text-xl font-bold text-indigo-900 sm:text-2xl">{totalSksKurikulum} <span className="text-sm font-normal text-indigo-600">SKS</span></p>
               <p className="text-xs text-indigo-500 mt-0.5">Target Lulus: {activeKurikulum.total_sks_lulus || 144} SKS</p>
             </Card>
-            <Card className="p-4 bg-blue-50/50 border-blue-100">
+            <Card className="p-3 sm:p-4 bg-blue-50/50 border-blue-100">
               <span className="text-xs font-medium text-blue-600">Rincian Kuliah & Praktikum</span>
-              <p className="text-lg font-bold text-blue-900 mt-1">{totalSksTeori} <span className="text-xs font-normal">SKS Teori</span> + {totalSksPrak} <span className="text-xs font-normal">SKS Prak</span></p>
+              <p className="mt-1 text-base font-bold leading-snug text-blue-900 sm:text-lg">{totalSksTeori} <span className="text-xs font-normal">SKS Teori</span> + {totalSksPrak} <span className="text-xs font-normal">SKS Prak</span></p>
               <p className="text-xs text-blue-500 mt-0.5">{courses.length} Total Mata Kuliah</p>
             </Card>
-            <Card className="p-4 bg-emerald-50/50 border-emerald-100">
+            <Card className="p-3 sm:p-4 bg-emerald-50/50 border-emerald-100">
               <span className="text-xs font-medium text-emerald-600">MK Wajib</span>
-              <p className="text-2xl font-bold text-emerald-900 mt-1">{totalSksWajib} <span className="text-sm font-normal text-emerald-600">SKS</span></p>
+              <p className="mt-1 text-xl font-bold text-emerald-900 sm:text-2xl">{totalSksWajib} <span className="text-sm font-normal text-emerald-600">SKS</span></p>
               <p className="text-xs text-emerald-500 mt-0.5">{courses.filter((c) => c.sifat === "wajib").length} Mata Kuliah Wajib</p>
             </Card>
-            <Card className="p-4 bg-purple-50/50 border-purple-100">
+            <Card className="p-3 sm:p-4 bg-purple-50/50 border-purple-100">
               <span className="text-xs font-medium text-purple-600">MK Pilihan</span>
-              <p className="text-2xl font-bold text-purple-900 mt-1">{totalSksPilihan} <span className="text-sm font-normal text-purple-600">SKS</span></p>
+              <p className="mt-1 text-xl font-bold text-purple-900 sm:text-2xl">{totalSksPilihan} <span className="text-sm font-normal text-purple-600">SKS</span></p>
               <p className="text-xs text-purple-500 mt-0.5">{courses.filter((c) => c.sifat === "pilihan").length} Mata Kuliah Pilihan</p>
             </Card>
           </div>
 
           {/* Form Modal Add / Edit Course */}
           {showCourseForm && (
-            <Card className="p-5 space-y-4 border-indigo-200 bg-indigo-50/30">
+            <Card className="space-y-4 border-indigo-200 bg-indigo-50/30 p-4 sm:p-5">
               <h3 className="font-semibold text-slate-800">
                 {editingCourseId ? "Edit Mata Kuliah & Dosen Pengampu" : `Tambah MK (Semester Paket ${activeSemesterTab})`}
               </h3>
-              <div className="grid grid-cols-2 gap-4">
+              <div className="grid grid-cols-1 gap-4 sm:grid-cols-2">
                 <FieldInput label="Kode MK" value={courseForm.kode} onChange={(v) => setCourseForm((p) => ({ ...p, kode: v }))} placeholder="IF201" required />
                 <FieldInput label="Nama Mata Kuliah" value={courseForm.nama} onChange={(v) => setCourseForm((p) => ({ ...p, nama: v }))} placeholder="Pemrograman Web" required />
                 
@@ -419,9 +436,9 @@ export function KurikulumMasterPage({ user }) {
               </div>
 
               {/* SKS Total Preview Badge */}
-              <div className="bg-indigo-100/60 border border-indigo-200 rounded-lg p-3 flex items-center justify-between text-sm">
+              <div className="flex flex-col items-start gap-1 rounded-lg border border-indigo-200 bg-indigo-100/60 p-3 text-sm sm:flex-row sm:items-center sm:justify-between">
                 <span className="text-indigo-800 font-medium">Beban Total Mata Kuliah:</span>
-                <span className="font-bold text-indigo-900 text-base">
+                <span className="break-words font-bold text-indigo-900 text-base sm:text-right">
                   {(parseInt(courseForm.sks_teori) || 0) + (parseInt(courseForm.sks_praktikum) || 0)} SKS
                   <span className="text-xs font-normal text-indigo-600 ml-1.5">
                     ({courseForm.sks_teori || 0} Teori + {courseForm.sks_praktikum || 0} Prak)
@@ -429,9 +446,9 @@ export function KurikulumMasterPage({ user }) {
                 </span>
               </div>
 
-              <div className="flex gap-2 justify-end">
-                <Btn variant="secondary" onClick={() => setShowCourseForm(false)}>Batal</Btn>
-                <Btn onClick={saveCourse} disabled={courseLoading || !courseForm.kode || !courseForm.nama}>
+              <div className="grid grid-cols-2 gap-2 sm:flex sm:justify-end">
+                <Btn variant="secondary" onClick={() => setShowCourseForm(false)} className="w-full sm:w-auto">Batal</Btn>
+                <Btn onClick={saveCourse} disabled={courseLoading || !courseForm.kode || !courseForm.nama} className="w-full sm:w-auto">
                   {courseLoading ? <Loader2 className="w-4 h-4 animate-spin" /> : null}
                   {courseLoading ? "Menyimpan..." : "Simpan MK"}
                 </Btn>
@@ -466,128 +483,183 @@ export function KurikulumMasterPage({ user }) {
             {semesterCourses.length === 0 ? (
               <EmptyState Icon={BookOpen} title={`Belum ada MK di Semester Paket ${activeSemesterTab}`} desc="Klik 'Tambah Mata Kuliah' untuk menambahkan MK ke semester ini." />
             ) : (
-              <table className="w-full text-sm">
-                <thead className="bg-slate-50 border-b border-slate-200">
-                  <tr>
-                    <th className="text-left px-4 py-3 font-medium text-slate-600">Kode</th>
-                    <th className="text-left px-4 py-3 font-medium text-slate-600">Mata Kuliah</th>
-                    <th className="text-center px-4 py-3 font-medium text-slate-600">Rincian SKS</th>
-                    <th className="text-center px-4 py-3 font-medium text-slate-600">Total SKS</th>
-                    <th className="text-left px-4 py-3 font-medium text-slate-600">Sifat</th>
-                    <th className="text-left px-4 py-3 font-medium text-slate-600">Dosen Pengampu Utama</th>
-                    <th className="text-left px-4 py-3 font-medium text-slate-600">Team Teaching</th>
-                    <th className="text-left px-4 py-3 font-medium text-slate-600">Aksi</th>
-                  </tr>
-                </thead>
-                <tbody className="divide-y divide-slate-100">
+              <>
+                <div className="divide-y divide-slate-100 md:hidden">
                   {semesterCourses.map((c) => {
                     const totalSks = (parseInt(c.sks_teori) || parseInt(c.sks) || 0) + (parseInt(c.sks_praktikum) || 0);
                     return (
-                      <tr key={c.id} className="hover:bg-slate-50 transition">
-                        <td className="px-4 py-3 font-mono font-semibold text-indigo-700">{c.code || c.kode}</td>
-                        <td className="px-4 py-3 font-medium">{c.name || c.nama}</td>
-                        <td className="px-4 py-3 text-center text-xs text-slate-500">
-                          {c.sks_teori || c.sks || 0} T + {c.sks_praktikum || 0} P
-                        </td>
-                        <td className="px-4 py-3 text-center font-bold text-slate-900">{totalSks} SKS</td>
-                        <td className="px-4 py-3">
+                      <article key={c.id} className="space-y-3 p-4" data-testid={`kurikulum-course-mobile-${c.id}`}>
+                        <div className="flex min-w-0 items-start justify-between gap-3">
+                          <div className="min-w-0">
+                            <p className="font-mono text-xs font-bold text-indigo-700">{c.code || c.kode}</p>
+                            <h3 className="mt-0.5 break-words text-sm font-semibold leading-5 text-slate-900">{c.name || c.nama}</h3>
+                          </div>
                           <StatusBadge color={c.sifat === "wajib" ? "green" : "purple"}>
                             {c.sifat === "wajib" ? "Wajib" : "Pilihan"}
                           </StatusBadge>
-                        </td>
-                        <td className="px-4 py-3 text-slate-800 font-medium">
-                          {c.dosen_utama_nama ? (
-                            <div className="flex items-center gap-1.5">
-                              <UserCheck className="w-3.5 h-3.5 text-indigo-600" />
-                              <span>{c.dosen_utama_nama}</span>
-                            </div>
-                          ) : (
-                            <span className="text-slate-400 italic text-xs">Belum di-assign</span>
-                          )}
-                        </td>
-                        <td className="px-4 py-3 text-xs text-slate-600">
-                          {Array.isArray(c.dosen_anggota_namas) && c.dosen_anggota_namas.length > 0 ? (
-                            <span>{c.dosen_anggota_namas.join(", ")}</span>
-                          ) : (
-                            <span className="text-slate-400 italic">—</span>
-                          )}
-                        </td>
-                        <td className="px-4 py-3">
-                          <div className="flex items-center gap-1">
-                            <Btn
-                              size="sm"
-                              variant="secondary"
-                              onClick={() => setSelectedRpsCourse(c)}
-                              className="text-xs text-indigo-700 bg-indigo-50 border-indigo-200 hover:bg-indigo-100"
-                            >
-                              <BookOpen className="w-3.5 h-3.5" /> RPS
-                            </Btn>
-                            <Btn
-                              size="sm"
-                              variant="ghost"
-                              onClick={() => {
-                                setEditingCourseId(c.id);
-                                setCourseForm({
-                                  kode: c.code || c.kode || "",
-                                  nama: c.name || c.nama || "",
-                                  sks_teori: c.sks_teori || c.sks || 2,
-                                  sks_praktikum: c.sks_praktikum || 0,
-                                  semester_paket: parseInt(c.semester_paket || c.semester || activeSemesterTab),
-                                  sifat: c.sifat || "wajib",
-                                  dosen_utama_id: c.dosen_utama_id || "",
-                                  dosen_anggota_ids: c.dosen_anggota_ids || [],
-                                });
-                                setShowCourseForm(true);
-                              }}
-                            >
-                              Edit
-                            </Btn>
-                            <Btn size="sm" variant="ghost" onClick={() => deleteCourse(c.id)} className="text-red-600 hover:bg-red-50">
-                              Hapus
-                            </Btn>
+                        </div>
+
+                        <div className="grid grid-cols-2 gap-2 rounded-lg bg-slate-50 p-3 text-xs">
+                          <div>
+                            <p className="text-slate-500">Rincian SKS</p>
+                            <p className="mt-0.5 font-semibold text-slate-800">{c.sks_teori || c.sks || 0} Teori + {c.sks_praktikum || 0} Praktik</p>
                           </div>
-                        </td>
-                      </tr>
+                          <div className="border-l border-slate-200 pl-3">
+                            <p className="text-slate-500">Total beban</p>
+                            <p className="mt-0.5 font-bold text-slate-900">{totalSks} SKS</p>
+                          </div>
+                        </div>
+
+                        <div className="space-y-2 text-xs">
+                          <div className="flex items-start gap-2">
+                            <UserCheck className="mt-0.5 h-3.5 w-3.5 shrink-0 text-indigo-600" />
+                            <div className="min-w-0">
+                              <p className="text-slate-500">Dosen utama</p>
+                              <p className={`break-words font-medium ${c.dosen_utama_nama ? "text-slate-800" : "italic text-slate-400"}`}>
+                                {c.dosen_utama_nama || "Belum di-assign"}
+                              </p>
+                            </div>
+                          </div>
+                          <div className="flex items-start gap-2">
+                            <Users className="mt-0.5 h-3.5 w-3.5 shrink-0 text-slate-500" />
+                            <div className="min-w-0">
+                              <p className="text-slate-500">Team teaching</p>
+                              <p className="break-words text-slate-700">
+                                {Array.isArray(c.dosen_anggota_namas) && c.dosen_anggota_namas.length > 0
+                                  ? c.dosen_anggota_namas.join(", ")
+                                  : "—"}
+                              </p>
+                            </div>
+                          </div>
+                        </div>
+
+                        <div className="grid grid-cols-3 gap-2 border-t border-slate-100 pt-3">
+                          <Btn
+                            size="sm"
+                            variant="secondary"
+                            onClick={() => setSelectedRpsCourse(c)}
+                            className="w-full border-indigo-200 bg-indigo-50 px-2 text-xs text-indigo-700 hover:bg-indigo-100"
+                          >
+                            <BookOpen className="h-3.5 w-3.5" /> RPS
+                          </Btn>
+                          <Btn size="sm" variant="ghost" onClick={() => editCourse(c)} className="w-full px-2">
+                            Edit
+                          </Btn>
+                          <Btn size="sm" variant="ghost" onClick={() => deleteCourse(c.id)} className="w-full px-2 text-red-600 hover:bg-red-50">
+                            Hapus
+                          </Btn>
+                        </div>
+                      </article>
                     );
                   })}
-                </tbody>
-              </table>
+                </div>
+
+                <div className="hidden overflow-x-auto md:block">
+                  <table className="w-full min-w-[920px] text-sm">
+                    <thead className="border-b border-slate-200 bg-slate-50">
+                      <tr>
+                        <th className="px-4 py-3 text-left font-medium text-slate-600">Kode</th>
+                        <th className="px-4 py-3 text-left font-medium text-slate-600">Mata Kuliah</th>
+                        <th className="px-4 py-3 text-center font-medium text-slate-600">Rincian SKS</th>
+                        <th className="px-4 py-3 text-center font-medium text-slate-600">Total SKS</th>
+                        <th className="px-4 py-3 text-left font-medium text-slate-600">Sifat</th>
+                        <th className="px-4 py-3 text-left font-medium text-slate-600">Dosen Pengampu Utama</th>
+                        <th className="px-4 py-3 text-left font-medium text-slate-600">Team Teaching</th>
+                        <th className="px-4 py-3 text-left font-medium text-slate-600">Aksi</th>
+                      </tr>
+                    </thead>
+                    <tbody className="divide-y divide-slate-100">
+                      {semesterCourses.map((c) => {
+                        const totalSks = (parseInt(c.sks_teori) || parseInt(c.sks) || 0) + (parseInt(c.sks_praktikum) || 0);
+                        return (
+                          <tr key={c.id} className="transition hover:bg-slate-50">
+                            <td className="px-4 py-3 font-mono font-semibold text-indigo-700">{c.code || c.kode}</td>
+                            <td className="px-4 py-3 font-medium">{c.name || c.nama}</td>
+                            <td className="px-4 py-3 text-center text-xs text-slate-500">
+                              {c.sks_teori || c.sks || 0} T + {c.sks_praktikum || 0} P
+                            </td>
+                            <td className="px-4 py-3 text-center font-bold text-slate-900">{totalSks} SKS</td>
+                            <td className="px-4 py-3">
+                              <StatusBadge color={c.sifat === "wajib" ? "green" : "purple"}>
+                                {c.sifat === "wajib" ? "Wajib" : "Pilihan"}
+                              </StatusBadge>
+                            </td>
+                            <td className="px-4 py-3 font-medium text-slate-800">
+                              {c.dosen_utama_nama ? (
+                                <div className="flex items-center gap-1.5">
+                                  <UserCheck className="h-3.5 w-3.5 text-indigo-600" />
+                                  <span>{c.dosen_utama_nama}</span>
+                                </div>
+                              ) : (
+                                <span className="text-xs italic text-slate-400">Belum di-assign</span>
+                              )}
+                            </td>
+                            <td className="px-4 py-3 text-xs text-slate-600">
+                              {Array.isArray(c.dosen_anggota_namas) && c.dosen_anggota_namas.length > 0 ? (
+                                <span>{c.dosen_anggota_namas.join(", ")}</span>
+                              ) : (
+                                <span className="italic text-slate-400">—</span>
+                              )}
+                            </td>
+                            <td className="px-4 py-3">
+                              <div className="flex items-center gap-1">
+                                <Btn
+                                  size="sm"
+                                  variant="secondary"
+                                  onClick={() => setSelectedRpsCourse(c)}
+                                  className="border-indigo-200 bg-indigo-50 text-xs text-indigo-700 hover:bg-indigo-100"
+                                >
+                                  <BookOpen className="h-3.5 w-3.5" /> RPS
+                                </Btn>
+                                <Btn size="sm" variant="ghost" onClick={() => editCourse(c)}>Edit</Btn>
+                                <Btn size="sm" variant="ghost" onClick={() => deleteCourse(c.id)} className="text-red-600 hover:bg-red-50">
+                                  Hapus
+                                </Btn>
+                              </div>
+                            </td>
+                          </tr>
+                        );
+                      })}
+                    </tbody>
+                  </table>
+                </div>
+              </>
             )}
           </Card>
 
           {/* Modal RPS Silabus Feeder */}
           {selectedRpsCourse && (
-            <div className="fixed inset-0 bg-slate-900/60 backdrop-blur-sm z-50 flex items-center justify-center p-4 overflow-y-auto">
-              <div className="w-full max-w-3xl bg-white rounded-xl shadow-2xl overflow-hidden border border-slate-200 my-8">
-                <div className="flex items-center justify-between px-6 py-4 border-b border-slate-200 bg-slate-50">
-                  <div>
-                    <h2 className="text-lg font-bold text-slate-900 font-display flex items-center gap-2">
-                      <BookOpen className="w-5 h-5 text-indigo-600" />
-                      Rencana Pembelajaran Semester (RPS): {selectedRpsCourse.name || selectedRpsCourse.nama}
+            <div className="fixed inset-0 z-50 flex items-end justify-center bg-slate-900/60 p-0 backdrop-blur-sm sm:items-center sm:p-4">
+              <div className="flex max-h-[92dvh] w-full max-w-3xl flex-col overflow-hidden rounded-t-2xl border border-slate-200 bg-white shadow-2xl sm:max-h-[calc(100dvh-2rem)] sm:rounded-xl">
+                <div className="flex shrink-0 items-start justify-between gap-3 border-b border-slate-200 bg-slate-50 px-4 py-3 sm:px-6 sm:py-4">
+                  <div className="min-w-0">
+                    <h2 className="flex items-start gap-2 break-words text-base font-bold leading-5 text-slate-900 sm:text-lg sm:leading-6">
+                      <BookOpen className="mt-0.5 h-5 w-5 shrink-0 text-indigo-600" />
+                      <span>Rencana Pembelajaran Semester (RPS): {selectedRpsCourse.name || selectedRpsCourse.nama}</span>
                     </h2>
-                    <p className="text-xs text-slate-500 mt-0.5">
+                    <p className="mt-1 break-words text-xs leading-5 text-slate-500">
                       Kode: {selectedRpsCourse.kode || selectedRpsCourse.code} · Total SKS: {selectedRpsCourse.sks_teori || selectedRpsCourse.sks || 2} Teori + {selectedRpsCourse.sks_praktikum || 0} Prak
                     </p>
                   </div>
                   <button
                     onClick={() => setSelectedRpsCourse(null)}
-                    className="px-3 py-1.5 rounded-lg bg-slate-200 hover:bg-slate-300 text-xs font-semibold text-slate-700 transition"
+                    className="shrink-0 rounded-lg bg-slate-200 px-3 py-1.5 text-xs font-semibold text-slate-700 transition hover:bg-slate-300"
                   >
                     Tutup
                   </button>
                 </div>
 
-                <div className="p-6 space-y-4 max-h-[70vh] overflow-y-auto">
+                <div className="min-h-0 flex-1 space-y-4 overflow-y-auto overscroll-contain p-4 sm:p-6">
                   {Array.isArray(selectedRpsCourse.rps_rencana_pembelajaran) && selectedRpsCourse.rps_rencana_pembelajaran.length > 0 ? (
                     <div className="space-y-3">
-                      <div className="flex items-center justify-between text-xs text-slate-500 font-medium pb-2 border-b border-slate-100">
+                      <div className="flex flex-col gap-2 border-b border-slate-100 pb-2 text-xs font-medium text-slate-500 sm:flex-row sm:items-center sm:justify-between">
                         <span>Menampilkan {selectedRpsCourse.rps_rencana_pembelajaran.length} Rencana Pertemuan Silabus</span>
                         <span className="text-emerald-700 font-semibold bg-emerald-50 px-2 py-0.5 rounded border border-emerald-200">Ter-sinkron Feeder PDDIKTI</span>
                       </div>
                       <div className="space-y-2.5">
                         {selectedRpsCourse.rps_rencana_pembelajaran.map((rp, idx) => (
                           <div key={idx} className="p-3.5 bg-slate-50 rounded-lg border border-slate-200 hover:border-indigo-300 transition">
-                            <div className="flex items-center justify-between">
+                            <div className="flex flex-wrap items-center justify-between gap-2">
                               <span className="font-bold text-xs text-indigo-700 bg-indigo-100 px-2 py-0.5 rounded">
                                 Pertemuan ke-{rp.pertemuan || idx + 1}
                               </span>
@@ -626,34 +698,34 @@ export function KurikulumMasterPage({ user }) {
         </div>
       ) : (
         /* ── MASTER KURIKULUM LIST VIEW ── */
-        <div className="space-y-6">
-          <div className="flex items-center justify-between">
-            <div className="flex items-center gap-3">
-              <div className="w-10 h-10 rounded-lg bg-indigo-100 flex items-center justify-center">
-                <BookOpen className="w-5 h-5 text-indigo-600" />
+        <div className="min-w-0 space-y-4 sm:space-y-6">
+          <div className="flex flex-col gap-4 sm:flex-row sm:items-center sm:justify-between">
+            <div className="flex min-w-0 items-start gap-3 sm:items-center">
+              <div className="flex h-10 w-10 shrink-0 items-center justify-center rounded-lg bg-indigo-100">
+                <BookOpen className="h-5 w-5 text-indigo-600" />
               </div>
-              <div>
-                <h1 className="text-xl font-bold text-slate-900">Kurikulum & Dosen Pengampu</h1>
-                <p className="text-slate-500 text-sm">Kelola versi kurikulum, paket MK per semester, rincian SKS, dan penugasan Dosen</p>
+              <div className="min-w-0">
+                <h1 className="break-words text-lg font-bold leading-tight text-slate-900 sm:text-xl">Kurikulum &amp; Dosen Pengampu</h1>
+                <p className="mt-1 text-xs leading-5 text-slate-500 sm:text-sm">Kelola versi kurikulum, paket MK per semester, rincian SKS, dan penugasan Dosen</p>
               </div>
             </div>
             <Btn onClick={() => {
               setEditingKurId(null);
               setKurForm({ kode: "", nama: "", prodi_id: selectedProdi || "", tahun_mulai: "2024", total_sks_lulus: 144, deskripsi: "", status: "active" });
               setShowKurForm(true);
-            }}>
+            }} className="w-full sm:w-auto">
               <Plus className="w-4 h-4" /> Buat Kurikulum Baru
             </Btn>
           </div>
 
           {isKaprodi && (
-            <div className="bg-indigo-50/80 border border-indigo-200 rounded-xl p-4 flex items-center gap-3 text-indigo-900 shadow-sm">
+            <div className="flex items-start gap-3 rounded-xl border border-indigo-200 bg-indigo-50/80 p-3 text-indigo-900 shadow-sm sm:p-4">
               <div className="h-9 w-9 rounded-lg bg-indigo-600 text-white flex items-center justify-center font-bold text-sm shrink-0 shadow-sm">
                 <Award className="w-5 h-5 text-white" />
               </div>
-              <div>
-                <p className="font-bold text-sm">Hak Akses Kaprodi: Program Studi {prodiList.find(p => p.id === kaprodiProdiId)?.nama || kaprodiProdiId}</p>
-                <p className="text-xs text-indigo-700 mt-0.5">
+              <div className="min-w-0">
+                <p className="break-words text-sm font-bold leading-5">Hak Akses Kaprodi: Program Studi {prodiList.find(p => p.id === kaprodiProdiId)?.nama || kaprodiProdiId}</p>
+                <p className="mt-1 text-xs leading-5 text-indigo-700">
                   Sebagai Ketua Program Studi (Kaprodi), Anda memiliki wewenang penuh menyusun Kurikulum, daftar Mata Kuliah, dan menugaskan Dosen Pengampu (Dosen Utama & Team Teaching) untuk prodi Anda.
                 </p>
               </div>
@@ -661,9 +733,9 @@ export function KurikulumMasterPage({ user }) {
           )}
 
           {/* Filter per Prodi */}
-          <div className="flex items-center gap-4 bg-slate-50 p-3 rounded-lg border border-slate-200">
+          <div className="flex flex-col items-stretch gap-2 rounded-lg border border-slate-200 bg-slate-50 p-3 sm:flex-row sm:items-center sm:gap-4">
             <span className="text-sm font-medium text-slate-700">Filter Program Studi:</span>
-            <div className="w-80">
+            <div className="w-full min-w-0 sm:w-80">
               <FieldSelect
                 value={isKaprodi ? kaprodiProdiId : selectedProdi}
                 onChange={(v) => !isKaprodi && setSelectedProdi(v)}
@@ -675,9 +747,9 @@ export function KurikulumMasterPage({ user }) {
 
           {/* Form Modal Add / Edit Master Kurikulum */}
           {showKurForm && (
-            <Card className="p-5 space-y-4 border-indigo-200 bg-indigo-50/30">
-              <h3 className="font-semibold text-slate-800">{editingKurId ? "Edit Kurikulum Master" : "Buat Kurikulum Master Baru"}</h3>
-              <div className="grid grid-cols-2 gap-4">
+            <Card className="space-y-4 border-indigo-200 bg-indigo-50/30 p-4 sm:p-5">
+              <h3 className="break-words font-semibold text-slate-800">{editingKurId ? "Edit Kurikulum Master" : "Buat Kurikulum Master Baru"}</h3>
+              <div className="grid grid-cols-1 gap-4 sm:grid-cols-2">
                 <FieldInput label="Kode Kurikulum" value={kurForm.kode} onChange={(v) => setKurForm((p) => ({ ...p, kode: v }))} placeholder="KUR-2024-TI" required />
                 <FieldInput label="Nama Kurikulum" value={kurForm.nama} onChange={(v) => setKurForm((p) => ({ ...p, nama: v }))} placeholder="Kurikulum 2024 MBKM" required />
                 
@@ -692,9 +764,9 @@ export function KurikulumMasterPage({ user }) {
                 <FieldInput label="Syarat SKS Lulus" type="number" value={kurForm.total_sks_lulus} onChange={(v) => setKurForm((p) => ({ ...p, total_sks_lulus: parseInt(v) || 144 }))} hint="Standard Sarjana (S1): 144 SKS" />
                 <FieldSelect label="Status" value={kurForm.status} onChange={(v) => setKurForm((p) => ({ ...p, status: v }))} options={[["active", "Aktif"], ["inactive", "Nonaktif"], ["draft", "Draft"]]} />
               </div>
-              <div className="flex gap-2 justify-end">
-                <Btn variant="secondary" onClick={() => setShowKurForm(false)}>Batal</Btn>
-                <Btn onClick={saveKurikulum} disabled={kurLoading || !kurForm.kode || !kurForm.nama}>
+              <div className="grid grid-cols-2 gap-2 sm:flex sm:justify-end">
+                <Btn variant="secondary" onClick={() => setShowKurForm(false)} className="w-full sm:w-auto">Batal</Btn>
+                <Btn onClick={saveKurikulum} disabled={kurLoading || !kurForm.kode || !kurForm.nama} className="w-full sm:w-auto">
                   {kurLoading ? <Loader2 className="w-4 h-4 animate-spin" /> : null}
                   {kurLoading ? "Menyimpan..." : "Simpan Kurikulum"}
                 </Btn>
@@ -708,22 +780,22 @@ export function KurikulumMasterPage({ user }) {
               <Card><EmptyState Icon={BookOpen} title="Belum ada Kurikulum" desc="Klik 'Buat Kurikulum Baru' untuk menambahkan versi kurikulum baru." /></Card>
             ) : (
               filteredKurikulum.map((kur) => (
-                <Card key={kur.id} className="p-5 hover:border-indigo-300 transition group">
-                  <div className="flex items-center justify-between">
-                    <div className="space-y-1">
-                      <div className="flex items-center gap-2">
-                        <span className="font-mono font-bold text-indigo-600">{kur.kode}</span>
-                        <h3 className="font-bold text-slate-900 text-lg">{kur.nama}</h3>
+                <Card key={kur.id} className="group p-4 transition hover:border-indigo-300 sm:p-5">
+                  <div className="flex flex-col items-stretch gap-4 sm:flex-row sm:items-center sm:justify-between">
+                    <div className="min-w-0 space-y-1">
+                      <div className="flex flex-wrap items-center gap-2">
+                        <span className="break-all font-mono text-sm font-bold text-indigo-600 sm:text-base">{kur.kode}</span>
+                        <h3 className="break-words text-base font-bold text-slate-900 sm:text-lg">{kur.nama}</h3>
                         <StatusBadge color={kur.status === "active" ? "green" : "gray"}>
                           {kur.status === "active" ? "Aktif" : kur.status}
                         </StatusBadge>
                       </div>
-                      <p className="text-sm text-slate-500">
+                      <p className="break-words text-xs leading-5 text-slate-500 sm:text-sm">
                         Prodi: <strong>{kur.prodi_nama || "Semua Prodi"}</strong> — Berlaku {kur.tahun_mulai} — Syarat Lulus: <strong>{kur.total_sks_lulus || 144} SKS</strong>
                       </p>
                     </div>
 
-                    <div className="flex items-center gap-2">
+                    <div className="grid shrink-0 grid-cols-2 gap-2 sm:flex sm:items-center">
                       <Btn variant="secondary" onClick={() => {
                         setEditingKurId(kur.id);
                         setKurForm({
@@ -736,10 +808,10 @@ export function KurikulumMasterPage({ user }) {
                           status: kur.status || "active",
                         });
                         setShowKurForm(true);
-                      }}>
+                      }} className="w-full sm:w-auto">
                         <Pencil className="w-3.5 h-3.5" /> Edit
                       </Btn>
-                      <Btn onClick={() => openDetail(kur)}>
+                      <Btn onClick={() => openDetail(kur)} className="w-full px-2 sm:w-auto sm:px-4">
                         Kelola MK & SKS →
                       </Btn>
                     </div>

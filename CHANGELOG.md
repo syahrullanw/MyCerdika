@@ -2,6 +2,158 @@
 
 Semua perubahan penting pada aplikasi ini dicatat di sini. Versi rilis utama disimpan di file [`VERSION`](./VERSION), sedangkan versi skema database yang sudah diterapkan dicatat oleh tabel `app_schema_migrations` di PostgreSQL.
 
+## [1.9.1] — 2026-08-14
+
+### Kelengkapan data fisik mahasiswa
+
+- Menambahkan form upload kelengkapan data fisik pada halaman Profil mahasiswa untuk **Ijazah, Transkrip Nilai, KTP, KK, Akte, KIP-K, dan Surat Keterangan**.
+- Menambahkan pengingat satu kali saat mahasiswa pertama kali login apabila dokumen fisik belum lengkap.
+- Menyimpan status kelengkapan per jenis dokumen, mendukung penggantian/penghapusan dokumen, serta menampilkan status upload pada profil.
+- Menambahkan backup otomatis ke Google Drive dengan struktur folder berdasarkan **angkatan**, termasuk status sinkronisasi dan fallback penyimpanan lokal jika Drive belum aktif.
+
+### Kalender akademik dan deadline operasional
+
+- Menyempurnakan pengaturan deadline **Setting Kurikulum (Kaprodi)**, **Pengisian RPS (Dosen)**, dan **Pengisian Nilai (Dosen)** dengan switch ON/OFF per agenda.
+- Deadline aktif ditampilkan sebagai countdown pada dashboard sesuai peran pengguna, sedangkan deadline nonaktif tidak ditampilkan.
+
+### Penyempurnaan tampilan mobile
+
+- Memperbaiki form edit pertemuan pada halaman RPS agar proporsional di mode mobile dan tombol Simpan tetap mudah dijangkau.
+- Merapikan layout halaman **Kurikulum & Dosen MK** pada layar mobile.
+- Merapikan layout halaman **Profil** pada layar mobile.
+
+### Import mahasiswa baru dan format NIM
+
+- Memperbaiki pembacaan template Excel agar kolom `nama` dan kolom wajib lain dikenali secara konsisten.
+- Memperbaiki error Network Error saat proses import mahasiswa valid.
+- Menyesuaikan pembentukan NIM menjadi **tahun ajaran + kode prodi + nomor unik**, misalnya `2627020001`.
+- Menyediakan template import resmi pada path publik frontend.
+
+### Branding aplikasi dan landing page PMB
+
+- Menambahkan form upload untuk **logo aplikasi utama** dan **logo landing page PMB** pada Pengaturan Kampus.
+- Memperbaiki akses file logo PMB agar tidak lagi gagal dengan error `API route not found` atau `403`.
+- Menampilkan logo PMB dengan rasio asli, tanpa kotak/background putih, dan menggunakan PNG transparan.
+- Header PMB menggunakan logo saja ketika logo sudah tersedia; nama kampus dan gelombang hanya menjadi fallback ketika logo belum diunggah.
+- Footer PMB menggunakan nama kampus lengkap dari Pengaturan Kampus.
+- Menetapkan identitas header PMB menggunakan Singkatan/Kode PT, serta menampilkan label gelombang tanpa tahun akademik pada bagian brand header.
+- Menyamakan perilaku branding pada frontend utama dan portal PMB mandiri.
+
+### Validasi rilis
+
+- Versi aplikasi dinaikkan dari `1.9.0` ke `1.9.1` pada `VERSION`, `frontend/package.json`, `frontend/package-lock.json`, dan `frontend-pmb/package.json`.
+- Production build frontend utama dan portal PMB mandiri berhasil.
+- Verifikasi browser mengonfirmasi logo PMB termuat, header menampilkan logo saja saat tersedia, dan footer menampilkan nama kampus lengkap.
+
+## [1.9.0] — 2026-08-13
+
+### Deadline operasional kalender akademik
+
+- **Deadline Per Semester**: Menambahkan pengaturan tanggal dan waktu untuk Setting Kurikulum (Kaprodi), Pengisian RPS (Dosen), dan Pengisian Nilai (Dosen) pada halaman Kalender Akademik.
+- **Switch ON/OFF**: Setiap deadline dapat diaktifkan atau dinonaktifkan secara terpisah. Deadline aktif otomatis menjadi agenda kalender, sedangkan deadline nonaktif tidak ditampilkan kepada pengguna.
+- **Countdown Berbasis Peran**: Dashboard Kaprodi menampilkan countdown Setting Kurikulum; dashboard Dosen menampilkan countdown Pengisian RPS dan Pengisian Nilai. Akun Kaprodi yang juga mengajar tetap memperoleh deadline Dosen yang relevan.
+- **Kontrol Operator Akademik**: Pengaturan hanya dapat diubah oleh Administrator Kampus atau akun dengan akses Operator Akademik, dan tersimpan terpisah untuk setiap Tahun Ajaran/Semester.
+
+### Analisis dan quality assurance Program Studi
+
+- **Analisis Mahasiswa Prodi**: Menambahkan dashboard Kaprodi untuk menganalisis seluruh mahasiswa dalam scope program studi berdasarkan kehadiran, nilai, pengumpulan tugas, aktivitas login, serta faktor dan skor risiko akademik. Tersedia distribusi risiko, daftar prioritas tindak lanjut, ringkasan per kelas, pencarian, filter risiko, dan detail individual mahasiswa.
+- **Analisis & Approval RPS Prodi**: Menambahkan dashboard mutu RPS seluruh mata kuliah yang aktif pada periode pilihan, termasuk kelengkapan 16 pertemuan, ketersediaan dokumen, status draft/menunggu/disetujui/perlu revisi, catatan review, serta aksi approval atau pengembalian RPS oleh Kaprodi.
+- **Konsistensi Selector Semester**: Seluruh ringkasan analisis mahasiswa, progres nilai, analisis RPS, dan total mata kuliah mengikuti Tahun Ajaran/Semester pada selector header. Total mata kuliah RPS dihitung dari mata kuliah yang benar-benar dibuka pada periode tersebut, bukan seluruh master mata kuliah lintas semester.
+- **Scope Program Studi Terproteksi**: Endpoint analisis memvalidasi penugasan Kaprodi/Sekprodi dan membatasi mahasiswa, kelas, nilai, presensi, serta RPS hanya pada program studi yang menjadi kewenangannya.
+
+### Hak akses dan kewenangan Kaprodi
+
+- **Katalog Modul Terkini**: Menambahkan modul `Progres Nilai Prodi`, `Analisis Mahasiswa Prodi`, dan `Analisis & Approval RPS Prodi` pada halaman Hak Akses beserta matriks izin dan templat jabatan terkait.
+- **Pemisahan Dokumen Akademik**: Memecah modul lama `Dokumen SK Akademik` menjadi `SK Mengajar Dosen` dan `SK Jabatan Akademik Dosen`, dengan kompatibilitas terhadap matriks hak akses versi lama.
+- **Pembatasan SK Jabatan Dosen**: Menghapus akses Kaprodi/Sekprodi terhadap halaman dan seluruh endpoint **SK Jabatan Akademik Dosen**. Modul tersebut kini hanya dapat diakses oleh Administrator Kampus, sementara akses SK Mengajar tetap tersedia sesuai kewenangan.
+- **Penjelasan Role Struktural**: Memperjelas pada halaman Hak Akses bahwa Kaprodi/Sekprodi tetap menggunakan role utama Dosen dan memperoleh akses tambahan melalui templat jabatan struktural.
+
+### Import mahasiswa baru setelah proses PMB
+
+- **Import Excel Mahasiswa Baru**: Menambahkan menu pada Admin PMB untuk mengunggah data mahasiswa baru setelah seluruh proses PMB selesai, lengkap dengan preview, validasi per baris, pilihan Prodi default, password default, dan import hanya untuk baris valid.
+- **Pembuatan Akun & NIM Otomatis**: Import membuat akun mahasiswa SIAKAD yang siap dipakai untuk analisis akademik. Jika NIM kosong, sistem membentuk NIM berdasarkan periode akademik aktif, kode program studi, dan nomor urut yang belum digunakan.
+- **Template Excel Resmi**: Menyediakan `template-import-mahasiswa-baru.xlsx` dengan kolom dan contoh data yang sesuai kontrak import.
+- **Perbaikan Link Template**: Tombol unduh menggunakan path publik frontend sehingga pada development mengarah ke `http://localhost:3000/templates/template-import-mahasiswa-baru.xlsx`, bukan port backend `8000`.
+
+### Stabilitas autentikasi, reload, dan chat
+
+- **Pemulihan Sesi Kedaluwarsa**: Saat reload dengan token yang sudah tidak valid, aplikasi membersihkan token dan data pengguna secara otomatis lalu kembali ke halaman login dengan satu pesan yang mudah dipahami.
+- **Pencegahan Error Berantai Chat**: Request kontak, dosen, percakapan, pengiriman pesan, serta koneksi WebSocket mengenali respons sesi tidak valid dan berhenti tanpa memunculkan toast `Sesi tidak ditemukan` dan `Daftar chat gagal dimuat` secara bersamaan.
+- **Konsistensi Admin/Dosen/Mahasiswa**: Penanganan sesi diterapkan pada shell dashboard admin/dosen, ruang mahasiswa, dan widget chat.
+
+### SEO dan Pengaturan Kampus
+
+- **Custom Meta Description**: Menambahkan kolom Meta Description Aplikasi pada halaman Pengaturan Kampus dengan penghitung maksimal 320 karakter dan rekomendasi panjang 120–160 karakter.
+- **Metadata Publik Dinamis**: Meta description disimpan di `app_settings`, dikirim melalui endpoint pengaturan publik, dan diterapkan ke `meta[name="description"]`, `og:description`, serta `twitter:description`.
+- **Fallback SEO & Bahasa Dokumen**: Menambahkan metadata fallback pada HTML awal dan menetapkan bahasa dokumen menjadi Bahasa Indonesia agar halaman tetap memiliki deskripsi sebelum konfigurasi publik selesai dimuat.
+
+### Penyempurnaan PDDIKTI Feeder
+
+- Mengecualikan mahasiswa nonaktif, keluar, drop out, dan lulus dari preview penulisan data aktif ke Feeder.
+- Menambahkan fallback jenis evaluasi dan rencana 16 minggu pertemuan untuk mencegah kegagalan dependensi pada penugasan dosen kelas lama.
+
+### Validasi rilis
+
+- Versi aplikasi dinaikkan dari `1.8.3` ke `1.9.0` sebagai rilis minor karena menambahkan beberapa modul dan alur kerja baru.
+- Metadata versi disinkronkan pada `VERSION`, `frontend/package.json`, `frontend/package-lock.json`, dan `frontend-pmb/package.json`.
+- Sebanyak **14 regression test** untuk import mahasiswa PMB, matriks hak akses, dan parser RPS berhasil dijalankan.
+- Seluruh modul backend yang berubah lulus pemeriksaan kompilasi Python, dan production build frontend SIAKAD serta portal PMB berhasil menggunakan versi `1.9.0`.
+- Tidak ada migration skema PostgreSQL baru; versi skema tetap `002_domain_tables`.
+
+## [1.8.3] — 2026-08-13
+
+### Fitur Progres Nilai Prodi (Kaprodi), Cetak TTD Digital Dosen & Ekspor Excel
+
+- **Halaman Monitoring Progres Nilai Prodi**: Membangun modul `ProgresNilaiProdiComponents.jsx` untuk Ketua Program Studi (Kaprodi), Sekretaris Prodi, dan Dosen Pengampu yang menyajikan ringkasan 5 metrik real-time (*Total Kelas MK, Progres Input Nilai %, Mahasiswa Dinilai vs Terdaftar, Kelas Finalized, dan Kelas Dalam Proses*), pilihan tampilan Grid Kartu / Tabel Detail, visual progress bar, serta sebaran distribusi nilai huruf (*A, B, C, D, E*).
+- **Sinkronisasi Otomatis Selector Header & Scope Prodi**: Menyelaraskan filter data secara otomatis dengan *Selector Tahun Ajaran / Semester* di header navigasi utama dan mengunci *scope* kelas berdasarkan penugasan Program Studi jabatan akademik pengguna tanpa memerlukan filter redundan di body.
+- **Ekspor Rekapitulasi Excel (.xlsx)**: Menambahkan endpoint backend `GET /api/v1/krs/progres-nilai/export.xlsx` untuk mengunduh rekapitulasi nilai mahasiswa per program studi maupun per kelas tertentu lengkap dengan komponen nilai tugas, UTS, UAS, nilai akhir, predikat, dan status.
+- **Cetak Lembar Pengesahan Nilai Ber-Tandatangan Digital Dosen**: Menambahkan fitur cetak dokumen resmi format A4 (`POST /api/v1/krs/progres-nilai/cetak`) ber-**Kop Surat Resmi Kampus**, tabel rekapitulasi nilai mahasiswa, serta **Blok Pengesahan Tandatangan Digital Dosen Pengampu** lengkap dengan badge *DIGITAL SIGNATURE VERIFIED*, token unik validasi dokumen, dan identitas NIDN/NIP Dosen.
+- **QR Code Scannable & Verifikasi Dokumen Publik**: Mengintegrasikan generator QR Code beresolusi tinggi via pustaka `segno` dan endpoint verifikasi publik `GET /api/v1/krs/progres-nilai/validasi/{token}` ber-badge hijau *VALID / TERVERIFIKASI* yang dapat dipindai oleh publik tanpa autentikasi.
+- **Modal Detail Nilai & Pencarian Mahasiswa**: Menyediakan modal peninjau nilai per mahasiswa, persentase bobot komponen penilaian (*Tugas, UTS, UAS*), filter pencarian nama/NIM mahasiswa, serta indikator kelengkapan nilai mahasiswa.
+- **Penyempurnaan Otorisasi Dosen & Robust Exception Handling**: Mengoptimalkan fungsi dependensi `require_admin_or_kaprodi_krs` di `krs_khs.py` agar ramah terhadap peran dosen/kaprodi/sekprodi/admin, membungkus konversi nilai mahasiswa dengan blok pengamanan `try/except`, serta menyelaraskan resolusi URL API backend.
+
+### Validasi rilis
+
+- Versi aplikasi dinaikkan dari `1.8.2` ke `1.8.3`.
+- Backend router `krs_khs.py` dan `server.py` lulus uji kompilasi dan sintaks Python tanpa error.
+- Metadata versi pada `VERSION`, `frontend/package.json`, dan `frontend-pmb/package.json` tersinkronisasi.
+
+## [1.8.2] — 2026-08-13
+
+### Fitur PMB, Grade CBT, Isolasi Cetak SK, Histori Pembayaran & Kredensial SIAKAD
+
+- **Pengaturan Grade CBT & Analisis Hasil Instan**: Menambahkan pengaturan rentang nilai (Grade Range A/B/C/D) di Admin PMB Hub (`AdminPmbHub.jsx`), otomatisasi `determine_cbt_grade` di backend `pmb.py`, serta kartu informasi Grade hasil seleksi CBT pada portal calon mahasiswa.
+- **Prefix NIM Berdasarkan Tahun Ajaran**: Menyesuaikan penomoran NIM pendaftar agar menggunakan prefix Tahun Ajaran (contoh: TA 2026/2027 menjadi prefix `2627`) dan menambahkan field kustomisasi Prefix Tahun Ajaran di Admin PMB Hub.
+- **Jabatan Fungsional Koordinator PMB & QR Code Validasi**: Mengintegrasikan penandatangan SK dari penetapan jabatan Koordinator PMB (`db.jabatan_assignments`) secara otomatis, serta menampilkan perisai *Digital Signature Verified* dilengkapi **QR Code Scannable** untuk validasi keabsahan dokumen SK.
+- **Format Tanggal Panjang Bahasa Indonesia**: Menerapkan format tanggal panjang Bahasa Indonesia resmi (contoh: *13 Februari 2027*) pada Tanggal Penetapan header dan Titi Mangsa penandatanganan dokumen SK Penerimaan.
+- **Isolasi Layout Cetak SK (`@media print`)**: Memperbaiki pratinjau cetak `window.print()` sehingga seluruh elemen UI portal luar (banner referal, alur wizard, tombol navigasi) tersembunyi secara otomatis, dan hanya lembar fisik SK Penerimaan yang dicetak secara rapi & profesional.
+- **Penyempurnaan Akses Alur 8 & Histori Pembayaran**: Memperbaiki validasi backend agar pendaftar yang telah menyelesaikan ujian seleksi/mempunyai Grade dapat langsung mengakses Alur 8 (Daftar Ulang), menambahkan **Card Status Lunas & Diverifikasi**, serta menampilkan **Tabel Histori Transaksi Pembayaran** (Uang Pra-Studi & Biaya Formulir) secara transparan.
+- **Kredensial Login Portal Utama (SIAKAD) & Password Default `Mahasiswa1231!`**: Menampilkan Card Kredensial Login Sistem Utama SIAKAD pada Alur 9 (Step Akhir) yang memuat Username (NIM Resmi), Password Default (`Mahasiswa1231!`), Tautan URL Login, serta tombol akses instan ke portal mahasiswa.
+- **Penguncian Otomatis Form Ukuran Jas Almamater (Section 8.2)**: Mengunci tombol pilihan ukuran jas (`S, M, L, XL, XXL, XXXL`) dan input catatan khusus secara otomatis setelah data ukuran jas pernah disimpan oleh calon mahasiswa.
+
+### Validasi rilis
+
+- Versi aplikasi dinaikkan dari `1.8.1` ke `1.8.2`.
+- Production build frontend utama (`frontend`) dan frontend PMB (`frontend-pmb`) compiled successfully tanpa error.
+- Backend router `pmb.py` dan `server.py` berjalan bersih dan terverifikasi.
+
+## [1.8.1] — 2026-08-13
+
+### Upload dan ekstraksi RPS dari PDF/Word
+
+- Mengganti input link/file PDF RPS resmi pada halaman RPS dengan form upload dokumen yang dapat mengekstrak data ke draft form RPS secara otomatis.
+- Memperluas format yang didukung menjadi PDF, DOCX/Word modern, dan DOC Word lama apabila converter LibreOffice tersedia di server.
+- Memperbaiki ekstraksi tabel PDF dengan mempertahankan posisi kolom, sehingga seluruh 16 pertemuan termasuk UTS dan UAS dapat terbaca pada template RPS yang sesuai.
+- Menambahkan ringkasan hasil ekstraksi, peringatan field yang belum terbaca, validasi ukuran maksimal 20 MB, serta penyimpanan dokumen RPS resmi.
+- Menambahkan pembatasan akses dokumen RPS agar mahasiswa hanya dapat mengakses dokumen dari kelas yang diikutinya.
+
+### Validasi rilis
+
+- Menambahkan regression test parser untuk DOCX dan PDF layout.
+- Lima test parser RPS berhasil.
+- Production build frontend utama berhasil.
+- Backend dan frontend smoke test lokal berhasil.
+
 ## [1.8.0] — 2026-08-12
 
 ### Skema Pembayaran Custom, Approval Admin & Visual Dashboard PMB

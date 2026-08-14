@@ -138,8 +138,10 @@ export function PmbLandingPage({ onOpenRegister, onOpenLogin, onAuth, branding, 
     { q: "Apa itu Program Mitra Referal PMB?", a: "Program Referal memungkinkan mahasiswa aktif, dosen, maupun masyarakat umum mendapatkan insentif fee komisi tunai (hingga Rp 250.000 / mahasiswa) untuk setiap calon mahasiswa yang diajak mendaftar dan menyelesaikan daftar ulang." }
   ];
 
-  const campusLogoUrl = branding?.campus_logo_url || branding?.logo_url;
-  const campusDisplayName = branding?.campus_name || branding?.name || "POLITEKNIK SCI";
+  const campusLogoUrl = settings?.landing_logo_url || branding?.pmb_logo_url || branding?.campus_logo_url || branding?.logo_url;
+  const campusDisplayName = branding?.campus_code?.trim() || branding?.campus_name?.trim() || branding?.name?.trim() || "POLITEKNIK SCI";
+  const campusFullName = branding?.campus_name?.trim() || branding?.name?.trim() || campusDisplayName;
+  const activeWaveLabel = settings?.gelombang?.trim() || settings?.active_period_name?.match(/gelombang\s*\d+/i)?.[0] || "Gelombang 1";
   const campusDescription = branding?.campus_motto || "Pusat Penerimaan Mahasiswa Baru & Sistem Informasi Akademik Terpadu.";
   const campusAddress = branding?.campus_address || settings?.landing_contact_address || "";
   const campusPhone = branding?.campus_whatsapp || branding?.campus_phone || settings?.landing_contact_phone || "";
@@ -163,7 +165,7 @@ export function PmbLandingPage({ onOpenRegister, onOpenLogin, onAuth, branding, 
         <div className="max-w-7xl mx-auto flex items-center justify-between gap-4">
           <div className="flex items-center gap-3">
             {campusLogoUrl ? (
-              <div className="w-11 h-11 rounded-xl bg-white/95 p-1 flex items-center justify-center shadow-lg shadow-sky-500/25 border border-sky-400/40 overflow-hidden shrink-0">
+              <div className="h-14 w-28 sm:h-16 sm:w-40 rounded-xl bg-transparent p-0 flex items-center justify-center shadow-lg shadow-sky-500/25 border-0 overflow-hidden shrink-0">
                 <img
                   src={resolveMediaUrl(campusLogoUrl)}
                   alt={campusDisplayName}
@@ -175,18 +177,20 @@ export function PmbLandingPage({ onOpenRegister, onOpenLogin, onAuth, branding, 
                 />
               </div>
             ) : (
-              <div className="w-10 h-10 rounded-xl bg-gradient-to-tr from-sky-400 via-blue-600 to-indigo-700 flex items-center justify-center text-white font-black text-xl shadow-lg shadow-sky-500/25 border border-sky-400/30 shrink-0">
+              <div className="h-14 w-28 sm:h-16 sm:w-40 rounded-xl bg-gradient-to-tr from-sky-400 via-blue-600 to-indigo-700 flex items-center justify-center text-white font-black text-xl shadow-lg shadow-sky-500/25 border border-sky-400/30 shrink-0">
                 <GraduationCap className="w-6 h-6" />
               </div>
             )}
-            <div>
-              <h1 className="font-extrabold text-base sm:text-lg text-white leading-tight flex items-center gap-1.5">
-                {campusDisplayName}
-              </h1>
-              <p className="text-[11px] text-cyan-400 font-semibold tracking-wider uppercase">
-                {settings?.active_period_name || "Portal Resmi PMB 2026/2027"}
-              </p>
-            </div>
+            {!campusLogoUrl && (
+              <div>
+                <h1 className="font-extrabold text-base sm:text-lg text-white leading-tight flex items-center gap-1.5 whitespace-nowrap">
+                  {campusDisplayName}
+                </h1>
+                <p className="text-[11px] text-cyan-400 font-semibold tracking-wider uppercase">
+                  {activeWaveLabel}
+                </p>
+              </div>
+            )}
           </div>
 
           <nav className="hidden lg:flex items-center gap-6 text-xs font-bold text-slate-300">
@@ -258,7 +262,7 @@ export function PmbLandingPage({ onOpenRegister, onOpenLogin, onAuth, branding, 
               </div>
 
               <div className="space-y-3">
-                <p className="text-xs font-extrabold uppercase tracking-[0.28em] text-amber-300">Politeknik SCI · Kampus Masa Depan</p>
+                <p className="text-xs font-extrabold uppercase tracking-[0.28em] text-amber-300">{campusDisplayName} · Kampus Masa Depan</p>
                 <h2 className="text-3xl sm:text-5xl lg:text-6xl font-black text-white tracking-tight leading-tight drop-shadow-md">
                   {settings?.landing_hero_title || "Raih Gelar Sarjana Impian & Bangun Karir Masa Depan Gemilang"}
                 </h2>
@@ -335,7 +339,7 @@ export function PmbLandingPage({ onOpenRegister, onOpenLogin, onAuth, branding, 
                 <div className="overflow-hidden rounded-[2rem] border border-white/20 bg-slate-950/40 p-2 shadow-2xl shadow-sky-950/50 rotate-[1deg]">
                   <img
                     src={CAMPUS_ASSETS.hero}
-                    alt="Gedung utama Politeknik SCI"
+                    alt={`Gedung utama ${campusDisplayName}`}
                     className="aspect-[16/11] w-full rounded-[1.5rem] object-cover"
                     loading="eager"
                   />
@@ -343,7 +347,7 @@ export function PmbLandingPage({ onOpenRegister, onOpenLogin, onAuth, branding, 
                   <div className="absolute bottom-7 left-7 right-7 flex items-end justify-between gap-3 text-white">
                     <div>
                       <p className="text-[10px] font-bold uppercase tracking-[0.25em] text-cyan-300">Ruang tumbuh generasi digital</p>
-                      <p className="mt-1 text-lg sm:text-xl font-black">Politeknik SCI</p>
+                      <p className="mt-1 text-lg sm:text-xl font-black">{campusDisplayName}</p>
                     </div>
                     <div className="rounded-full border border-white/25 bg-slate-950/45 px-3 py-1.5 text-[10px] font-bold backdrop-blur-md">Kampus inovatif</div>
                   </div>
@@ -660,7 +664,7 @@ export function PmbLandingPage({ onOpenRegister, onOpenLogin, onAuth, branding, 
             <div className="space-y-2">
               <div className="flex items-center gap-2.5">
                 {campusLogoUrl && (
-                  <div className="w-8 h-8 rounded-lg bg-white/95 p-1 flex items-center justify-center border border-sky-400/30 overflow-hidden shrink-0">
+                  <div className="h-10 w-24 sm:h-12 sm:w-28 rounded-lg bg-transparent p-0 flex items-center justify-center border-0 overflow-hidden shrink-0">
                     <img
                       src={resolveMediaUrl(campusLogoUrl)}
                       alt={campusDisplayName}
@@ -668,7 +672,7 @@ export function PmbLandingPage({ onOpenRegister, onOpenLogin, onAuth, branding, 
                     />
                   </div>
                 )}
-                <h4 className="font-bold text-white text-sm">{campusDisplayName}</h4>
+                <h4 className="font-bold text-white text-sm">{campusFullName}</h4>
               </div>
               <p className="text-xs text-slate-400">{campusDescription}</p>
               {campusAddress && (
@@ -705,7 +709,7 @@ export function PmbLandingPage({ onOpenRegister, onOpenLogin, onAuth, branding, 
             </div>
           </div>
           <div className="border-t border-slate-800/80 pt-4 text-center text-[11px] text-slate-500">
-            © {new Date().getFullYear()} {campusDisplayName}. Hak Cipta Dilindungi.
+            © {new Date().getFullYear()} {campusFullName}. Hak Cipta Dilindungi.
           </div>
         </footer>
       )}

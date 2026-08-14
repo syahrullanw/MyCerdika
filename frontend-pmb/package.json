@@ -1,6 +1,6 @@
 {
   "name": "frontend-pmb",
-  "version": "1.7.2",
+  "version": "1.9.1",
   "private": true,
   "dependencies": {
     "@hookform/resolvers": "^5.0.1",

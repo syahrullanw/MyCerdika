@@ -1,12 +1,17 @@
 from fastapi import HTTPException
 
 from server import (
+    AcademicDeadlineItemInput,
+    AcademicDeadlineSettingsInput,
     AcademicCalendarEventInput,
+    academic_deadline_event_payload,
+    academic_deadline_visible_to_user,
     calendar_event_visible_to_user,
     can_manage_academic_calendar,
     class_matches_tahun_ajaran,
     preferred_program_scope_values,
     split_program_scope_values,
+    validate_academic_deadline_settings,
     validate_academic_calendar_event,
 )
 
@@ -27,6 +32,66 @@ def test_academic_calendar_visibility_honors_audience_and_program_scope():
 def test_academic_operator_can_manage_calendar_without_changing_base_role():
     assert can_manage_academic_calendar({"role": "lecturer", "access_roles": ["academic_operator"]})
     assert not can_manage_academic_calendar({"role": "lecturer", "access_roles": []})
+
+
+def test_academic_deadline_visibility_matches_kaprodi_and_lecturer_targets():
+    lecturer = {"role": "lecturer", "access_roles": []}
+    kaprodi = {"role": "lecturer", "access_roles": ["kaprodi"]}
+
+    assert not academic_deadline_visible_to_user("curriculum_setup", lecturer)
+    assert academic_deadline_visible_to_user("curriculum_setup", kaprodi)
+    assert academic_deadline_visible_to_user("rps_submission", lecturer)
+    assert academic_deadline_visible_to_user("grade_entry", kaprodi)
+    assert not academic_deadline_visible_to_user("rps_submission", {"role": "student"})
+    assert academic_deadline_visible_to_user("curriculum_setup", {"role": "admin"})
+
+
+def test_academic_deadline_validation_requires_date_when_enabled():
+    payload = AcademicDeadlineSettingsInput(
+        academic_year_id="ta-20261",
+        deadlines={
+            "curriculum_setup": AcademicDeadlineItemInput(
+                enabled=True,
+                deadline_at="2026-09-01T16:59:00+00:00",
+            ),
+            "rps_submission": AcademicDeadlineItemInput(enabled=False),
+            "grade_entry": AcademicDeadlineItemInput(
+                enabled=True,
+                deadline_at="2027-01-20T16:59:00+00:00",
+            ),
+        },
+    )
+    normalized = validate_academic_deadline_settings(payload)
+    assert normalized["academic_year_id"] == "ta-20261"
+    assert normalized["deadlines"]["curriculum_setup"]["deadline_at"].startswith("2026-09-01")
+    assert normalized["deadlines"]["rps_submission"]["deadline_at"] == ""
+
+    missing_date = payload.model_copy(
+        update={
+            "deadlines": {
+                "rps_submission": AcademicDeadlineItemInput(enabled=True),
+            }
+        }
+    )
+    try:
+        validate_academic_deadline_settings(missing_date)
+    except HTTPException as error:
+        assert error.status_code == 400
+    else:
+        raise AssertionError("Deadline aktif tanpa tanggal harus ditolak")
+
+
+def test_academic_deadline_event_payload_is_calendar_compatible():
+    event = academic_deadline_event_payload(
+        "rps_submission",
+        {"enabled": True, "deadline_at": "2026-09-10T16:59:00+00:00"},
+        "ta-20261",
+    )
+    assert event["source"] == "academic_deadline"
+    assert event["type"] == "academic_deadline"
+    assert event["target_role"] == "lecturer"
+    assert event["academic_year_id"] == "ta-20261"
+    assert event["date"].startswith("2026-09-10")
 
 
 def test_calendar_event_validation_normalizes_and_rejects_invalid_range():

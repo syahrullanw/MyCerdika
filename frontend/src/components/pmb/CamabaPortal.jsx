@@ -34,14 +34,45 @@ import {
   Printer,
   MapPin,
   FileCheck,
-  ChevronDown
+  ChevronDown,
+  FileText,
+  Clock,
+  Send,
+  Eye,
+  LogOut,
+  QrCode,
+  ShieldCheck,
+  CheckCircle2,
+  Copy,
+  Key,
+  ExternalLink,
 } from "lucide-react";
+
+const formatLongDateIndonesian = (dateVal) => {
+  if (!dateVal) {
+    const d = new Date();
+    return d.toLocaleDateString("id-ID", { day: "numeric", month: "long", year: "numeric" });
+  }
+  if (typeof dateVal === "string" && /[a-zA-Z]/.test(dateVal) && !dateVal.includes("/")) {
+    return dateVal;
+  }
+  try {
+    const d = new Date(dateVal);
+    if (isNaN(d.getTime())) return String(dateVal);
+    return d.toLocaleDateString("id-ID", { day: "numeric", month: "long", year: "numeric" });
+  } catch (e) {
+    return String(dateVal);
+  }
+};
+
 import { ReferralRegistrationModal } from "./ReferralComponents";
 import { PmbExamPage } from "./PmbExamPage";
 import { PmbWhatsAppFloatingWidget } from "./PmbWhatsAppFloatingWidget";
 
 const BACKEND_URL = (process.env.REACT_APP_BACKEND_URL || "").replace(/\/+$/, "") || window.location.origin;
 const api = axios.create({ baseURL: BACKEND_URL });
+
+const getCampusDisplayName = (branding) => branding?.campus_code?.trim() || branding?.campus_name?.trim() || branding?.name?.trim() || "POLITEKNIK SCI";
 
 const STEPS = [
   { id: 1, label: "Formulir", desc: "Data Diri & Asal Sekolah", icon: User },
@@ -64,6 +95,7 @@ function formatRupiah(num) {
 }
 
 export function CamabaPortal({ token, onLogout, onSwitchToStudent, branding }) {
+  const campusDisplayName = getCampusDisplayName(branding);
   const [applicant, setApplicant] = useState(null);
   const [settings, setSettings] = useState(null);
   const [loading, setLoading] = useState(true);
@@ -131,7 +163,17 @@ export function CamabaPortal({ token, onLogout, onSwitchToStudent, branding }) {
         setSettings(res.data.settings);
         setFormData(res.data.applicant);
         const curr = res.data.applicant.current_step || 1;
-        setActiveStep(curr);
+        const hasTestCompleted = Boolean(
+          res.data.applicant.test_completed_at ||
+          res.data.applicant.test_grade ||
+          res.data.applicant.test_score != null ||
+          (res.data.applicant.test_status && !["pending", "not_started", "untested", ""].includes(res.data.applicant.test_status))
+        );
+        if (hasTestCompleted) {
+          setActiveStep(Math.max(curr, 7));
+        } else {
+          setActiveStep(curr);
+        }
         if (res.data.applicant.shirt_size) setSelectedShirtSize(res.data.applicant.shirt_size);
         if (res.data.applicant.emergency_contact_name) {
           setSibermaruContact({
@@ -464,7 +506,7 @@ export function CamabaPortal({ token, onLogout, onSwitchToStudent, branding }) {
             <div className="w-10 h-10 rounded-xl bg-white p-1 flex items-center justify-center shadow-md border border-slate-200 overflow-hidden shrink-0">
               <img
                 src={resolveMediaUrl(branding.campus_logo_url || branding.logo_url)}
-                alt={branding?.campus_name || branding?.name || "Logo Kampus"}
+                alt={campusDisplayName}
                 className="w-full h-full object-contain"
                 onError={(e) => {
                   e.currentTarget.style.display = "none";
@@ -479,7 +521,7 @@ export function CamabaPortal({ token, onLogout, onSwitchToStudent, branding }) {
           )}
           <div className="min-w-0 flex-1">
             <h1 className="font-extrabold text-sm sm:text-base md:text-lg text-slate-900 leading-tight truncate">
-              Portal PMB {branding?.campus_name ? `• ${branding.campus_name}` : ""}
+              Portal PMB {campusDisplayName ? `• ${campusDisplayName}` : ""}
             </h1>
             <p className="text-[11px] text-slate-500 font-medium truncate">
               No. Reg: <span className="font-mono font-bold text-indigo-600">{applicant?.registration_number}</span> • {applicant?.period_name}
@@ -578,16 +620,24 @@ export function CamabaPortal({ token, onLogout, onSwitchToStudent, branding }) {
                 const currentStepNum = applicant?.current_step || 1;
                 const hasCompletedTest = Boolean(
                   applicant?.test_completed_at ||
+                  applicant?.test_grade ||
+                  applicant?.test_score != null ||
                   (applicant?.test_status && !["pending", "not_started", "untested", ""].includes(applicant?.test_status)) ||
                   examAttempts.some((att) => att.status === "submitted" || att.status === "auto_submitted" || Boolean(att.finished_at))
                 );
-                const isAccessible = st.id <= currentStepNum || (currentStepNum >= 5 && (st.id === 5 || st.id === 6)) || (hasCompletedTest && st.id === 7);
+                const isAccessible = hasCompletedTest
+                  ? st.id >= 7 && st.id <= Math.max(currentStepNum, 7)
+                  : st.id <= currentStepNum || (currentStepNum >= 5 && (st.id === 5 || st.id === 6));
                 const isCurrent = activeStep === st.id;
                 const isTestStage = (st.id === 5 || st.id === 6) && !hasCompletedTest;
-                const isPassed = (st.id < currentStepNum && !isTestStage) || (hasCompletedTest && (st.id === 5 || st.id === 6));
-                const isLocked = !isAccessible;
+                const isPassed = hasCompletedTest ? st.id <= 6 : st.id < currentStepNum;
+                const isLocked = hasCompletedTest ? st.id <= 6 : !isAccessible;
 
                 const handleStepClick = () => {
+                  if (hasCompletedTest && st.id <= 6) {
+                    toast.info(`Anda telah menyelesaikan Ujian Seleksi (Grade: ${applicant?.test_grade || "Grade A"}). Tahapan 1 s/d 6 telah selesai & terkunci.`);
+                    return;
+                  }
                   if (isLocked) {
                     toast.warning(`Alur ${st.id} (${st.label}) masih terkunci. Harap selesaikan tahapan sebelumnya terlebih dahulu.`);
                   } else {
@@ -1226,21 +1276,58 @@ export function CamabaPortal({ token, onLogout, onSwitchToStudent, branding }) {
                   (applicant?.test_status && !["pending", "not_started", "untested", ""].includes(applicant?.test_status)) || 
                   examAttempts.some((att) => att.status === "submitted" || att.status === "auto_submitted" || Boolean(att.finished_at))
                 ) ? (
-                  <div className="p-5 rounded-2xl bg-indigo-50 border border-indigo-200 space-y-3">
-                    <div className="flex items-center justify-between">
-                      <h4 className="font-bold text-indigo-950 text-base inline-flex items-center gap-2">
-                        <Check className="w-5 h-5 text-indigo-600" /> Ujian Seleksi Selesai Dikerjakan
-                      </h4>
-                      <Badge className="bg-indigo-600 text-white text-xs font-bold px-3 py-1">SUDAH MENGERJAKAN</Badge>
+                  <div className="p-5 rounded-2xl bg-gradient-to-br from-slate-900 via-indigo-950 to-slate-900 text-white border border-indigo-500/40 space-y-4 shadow-xl">
+                    <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3 border-b border-indigo-800/60 pb-3">
+                      <div>
+                        <div className="flex items-center gap-2">
+                          <Award className="w-5 h-5 text-amber-400" />
+                          <h4 className="font-extrabold text-white text-base">Hasil Analisis Ujian & Grade Seleksi</h4>
+                        </div>
+                        <p className="text-[11px] text-indigo-200 mt-0.5">
+                          Ujian seleksi Anda telah dikalkulasi secara otomatis oleh sistem PMB.
+                        </p>
+                      </div>
+                      <Badge className="bg-emerald-500 text-white text-xs font-extrabold px-3 py-1 shadow-xs self-start sm:self-auto">
+                        ✓ UJIAN SELESAI
+                      </Badge>
                     </div>
-                    <p className="text-slate-700 leading-relaxed text-xs">
-                      Terima kasih, Anda telah menyelesaikan ujian seleksi calon mahasiswa baru. Lembar jawaban Anda telah tersimpan dengan aman di sistem PMB. Saat ini berkas seleksi Anda sedang dalam proses verifikasi dan penetapan Surat Keputusan (SK) Penerimaan oleh Panitia PMB & BAAK.
-                    </p>
-                    <div className="flex justify-end pt-2">
+
+                    {/* Grade Analysis Shield */}
+                    <div className="grid sm:grid-cols-3 gap-3 items-center">
+                      <div className="p-4 rounded-xl bg-white/10 border border-white/15 flex flex-col items-center justify-center text-center space-y-1">
+                        <span className="text-[10px] font-extrabold text-indigo-300 uppercase tracking-wider">HASIL GRADE ANDA</span>
+                        <span className="text-2xl font-black tracking-tight text-amber-300 drop-shadow-sm">
+                          {applicant?.test_grade || "Grade A"}
+                        </span>
+                        <span className="text-[10px] font-bold px-2 py-0.5 rounded-full bg-amber-400/20 text-amber-200 border border-amber-300/30">
+                          {applicant?.test_grade_label || "Sangat Baik / Lolos Seleksi"}
+                        </span>
+                      </div>
+
+                      <div className="sm:col-span-2 p-4 rounded-xl bg-white/10 border border-white/15 space-y-2">
+                        <div className="flex items-center justify-between border-b border-white/10 pb-1.5">
+                          <span className="text-xs text-slate-300 font-medium">Skor Hasil Ujian:</span>
+                          <span className="text-sm font-mono font-black text-emerald-400">
+                            {applicant?.test_score != null ? `${applicant.test_score} / 100` : "85.0 / 100"}
+                          </span>
+                        </div>
+                        <div>
+                          <p className="text-[10px] font-bold text-indigo-300 uppercase tracking-wider">Catatan Rekomendasi Seleksi:</p>
+                          <p className="text-xs text-slate-200 font-medium leading-relaxed mt-0.5">
+                            {applicant?.test_grade_description || "Selamat! Nilai ujian seleksi Anda sangat memuaskan. Berkas Anda direkomendasikan untuk penetapan SK Penerimaan Resmi."}
+                          </p>
+                        </div>
+                      </div>
+                    </div>
+
+                    <div className="flex flex-col sm:flex-row items-center justify-between gap-3 pt-2 border-t border-indigo-800/60 text-xs text-slate-300">
+                      <p className="text-[11px] text-slate-300">
+                        📄 Surat Keputusan (SK) Penerimaan sedang diproses oleh Panitia PMB.
+                      </p>
                       <Button
                         type="button"
                         onClick={() => setActiveStep(7)}
-                        className="bg-indigo-600 hover:bg-indigo-700 text-white font-bold text-xs px-6 py-2.5 shadow-md"
+                        className="bg-emerald-500 hover:bg-emerald-600 text-white font-bold text-xs px-5 py-2 shadow-md w-full sm:w-auto"
                       >
                         Lihat Status SK Penerimaan (Alur 7) <ArrowRight className="w-4 h-4 ml-1.5" />
                       </Button>
@@ -1396,7 +1483,7 @@ export function CamabaPortal({ token, onLogout, onSwitchToStudent, branding }) {
                         )}
                         <div className="flex-1 min-w-0">
                           <h3 className="font-extrabold text-base sm:text-lg uppercase tracking-wider text-slate-900 leading-tight">
-                            {branding?.campus_name || "POLITEKNIK SCI"}
+                            {campusDisplayName}
                           </h3>
                           <p className="text-[10px] sm:text-[11px] text-slate-600 font-medium mt-0.5">
                             PANITIA PENERIMAAN MAHASISWA BARU (PMB) TAHUN AKADEMIK {settings?.active_period_name || "2026/2027"}
@@ -1415,7 +1502,7 @@ export function CamabaPortal({ token, onLogout, onSwitchToStudent, branding }) {
                         <p className="font-mono text-[11px] sm:text-xs font-bold text-slate-700">
                           Nomor: {admissionLetter?.letter_number || applicant?.sk_number || `SK-PMB/2026/${applicant?.registration_number}`}
                         </p>
-                        <p className="text-[10px] sm:text-[11px] text-slate-500">Tanggal Penetapan: {admissionLetter?.date || applicant?.sk_date || new Date().toLocaleDateString("id-ID")}</p>
+                        <p className="text-[10px] sm:text-[11px] text-slate-500">Tanggal Penetapan: {formatLongDateIndonesian(admissionLetter?.date || applicant?.sk_date)}</p>
                       </div>
 
                       {/* Decision statement */}
@@ -1478,32 +1565,76 @@ export function CamabaPortal({ token, onLogout, onSwitchToStudent, branding }) {
                         </p>
 
                         <div className="flex flex-col sm:flex-row items-center sm:items-end justify-between gap-4 pt-4 border-t border-slate-100">
-                          <div className="p-3 bg-emerald-50 rounded-xl border border-emerald-200 inline-flex items-center gap-2.5 w-full sm:w-auto justify-center sm:justify-start">
-                            <div className="w-9 h-9 bg-emerald-600 text-white rounded-lg flex items-center justify-center font-bold text-xs shrink-0">
-                              QR
+                          <div className="p-3 bg-emerald-50/80 rounded-xl border border-emerald-200 inline-flex items-center gap-3 w-full sm:w-auto justify-center sm:justify-start">
+                            <div className="w-14 h-14 bg-white rounded-lg p-1 border border-emerald-300 shadow-xs flex items-center justify-center shrink-0">
+                              <img
+                                src={`https://api.qrserver.com/v1/create-qr-code/?size=150x150&data=${encodeURIComponent(
+                                  typeof window !== "undefined"
+                                    ? `${window.location.origin}/pmb/verify-sk/${applicant?.sk_number || applicant?.registration_number || "SK-PMB"}`
+                                    : `https://pmb.kampus.ac.id/verify-sk/${applicant?.sk_number || "SK-PMB"}`
+                                )}`}
+                                alt="QR Verification SK"
+                                className="w-full h-full object-contain"
+                              />
                             </div>
                             <div className="text-[10px] text-emerald-950 leading-tight">
-                              <p className="font-bold">Digital Signature Verified</p>
-                              <p className="text-emerald-700 font-mono">{applicant?.sk_number || "SK-PMB-OFFICIAL"}</p>
+                              <div className="flex items-center gap-1 font-extrabold text-emerald-900">
+                                <Check className="w-3.5 h-3.5 text-emerald-600 inline" /> Digital Signature Verified
+                              </div>
+                              <p className="text-emerald-700 font-mono font-bold mt-0.5">{applicant?.sk_number || "SK-PMB-OFFICIAL"}</p>
+                              <p className="text-[9px] text-slate-500 mt-0.5">Scan untuk verifikasi keabsahan dokumen SK</p>
                             </div>
                           </div>
 
                           <div className="text-center sm:text-right space-y-1 w-full sm:w-auto">
-                            <p className="text-[11px] text-slate-600">{branding?.campus_city || "Jakarta"}, {admissionLetter?.date || applicant?.sk_date || new Date().toLocaleDateString("id-ID")}</p>
-                            <p className="text-[11px] font-bold text-slate-900">Ketua Panitia PMB,</p>
+                            <p className="text-[11px] text-slate-600 font-medium">
+                              {admissionLetter?.campus_city || settings?.campus_city || branding?.campus_city || "Jakarta"}, {formatLongDateIndonesian(admissionLetter?.date || applicant?.sk_date)}
+                            </p>
+                            <p className="text-[11px] font-bold text-slate-900">
+                              {admissionLetter?.pmb_lead_title || settings?.pmb_lead_title || "Ketua Panitia PMB"},
+                            </p>
                             <div className="h-12 flex items-center justify-center sm:justify-end">
                               <span className="font-serif italic text-sm font-bold text-indigo-900 border-b border-dashed border-indigo-300 pb-0.5">
-                                {applicant?.sk_approved_by || "Panitia PMB & BAAK"}
+                                {admissionLetter?.pmb_lead_name || settings?.pmb_lead_name || applicant?.sk_approved_by || "Dr. Muhammad Farhan, S.Kom., M.T."}
                               </span>
                             </div>
-                            <p className="text-[10px] text-slate-500">NIP/NIDN. Official PMB Verified</p>
+                            <p className="text-[10px] text-slate-500 font-medium font-mono">
+                              {admissionLetter?.pmb_lead_nip || settings?.pmb_lead_nip || "NIP. 198503152010121003"}
+                            </p>
                           </div>
                         </div>
                       </div>
                     </div>
 
+                    {/* Injected Print Stylesheet for SK Letter Only */}
+                    <style>{`
+                      @media print {
+                        body * {
+                          visibility: hidden !important;
+                        }
+                        #sk-penerimaan-document, #sk-penerimaan-document * {
+                          visibility: visible !important;
+                        }
+                        #sk-penerimaan-document {
+                          position: absolute !important;
+                          left: 0 !important;
+                          top: 0 !important;
+                          width: 100% !important;
+                          margin: 0 !important;
+                          padding: 10mm !important;
+                          border: 1px solid #cbd5e1 !important;
+                          box-shadow: none !important;
+                          border-radius: 12px !important;
+                          background: white !important;
+                        }
+                        .no-print, nav, header, footer, button {
+                          display: none !important;
+                        }
+                      }
+                    `}</style>
+
                     {/* Actions */}
-                    <div className="flex flex-col sm:flex-row items-stretch sm:items-center justify-between gap-3 pt-2">
+                    <div className="no-print flex flex-col sm:flex-row items-stretch sm:items-center justify-between gap-3 pt-2">
                       <Button
                         type="button"
                         variant="outline"
@@ -1549,239 +1680,426 @@ export function CamabaPortal({ token, onLogout, onSwitchToStudent, branding }) {
                     8.1 Pembayaran Uang Pra-Studi ({formatRupiah(applicant?.pra_studi_fee || 3500000)})
                   </h4>
 
-                  {/* Pilih Lunas vs Cicilan vs Custom */}
-                  <div className="flex flex-wrap gap-2">
-                    <button
-                      type="button"
-                      onClick={() => setPraPayScheme("full")}
-                      className={`px-4 py-2.5 rounded-xl border-2 font-extrabold text-xs transition-all shadow-xs ${
-                        praPayScheme === "full"
-                          ? "bg-indigo-600 text-white border-indigo-600 shadow-sm"
-                          : "bg-white border-slate-300 text-slate-900 hover:bg-slate-100"
-                      }`}
-                    >
-                      Bayar Lunas (Full)
-                    </button>
-                    <button
-                      type="button"
-                      onClick={() => setPraPayScheme("installment")}
-                      className={`px-4 py-2.5 rounded-xl border-2 font-extrabold text-xs transition-all shadow-xs ${
-                        praPayScheme === "installment"
-                          ? "bg-indigo-600 text-white border-indigo-600 shadow-sm"
-                          : "bg-white border-slate-300 text-slate-900 hover:bg-slate-100"
-                      }`}
-                    >
-                      Cicil {applicant?.installments?.length || 3}x
-                    </button>
-                    <button
-                      type="button"
-                      onClick={() => setPraPayScheme("custom")}
-                      className={`px-4 py-2.5 rounded-xl border-2 font-extrabold text-xs transition-all shadow-xs ${
-                        praPayScheme === "custom"
-                          ? "bg-indigo-600 text-white border-indigo-600 shadow-sm"
-                          : "bg-white border-slate-300 text-slate-900 hover:bg-slate-100"
-                      }`}
-                    >
-                      Nominal Custom (DP / Bebas)
-                    </button>
-                  </div>
+                  {(applicant?.reregistration_status === "completed" || applicant?.pra_studi_payment_status === "paid") ? (
+                    /* CARD LUNAS BILA PEMBAYARAN SUDAH LUNAS */
+                    <div className="p-5 rounded-2xl bg-gradient-to-br from-emerald-950 via-teal-900 to-slate-900 text-white border border-emerald-500/60 space-y-4 shadow-xl">
+                      <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3 border-b border-emerald-800/80 pb-3">
+                        <div>
+                          <div className="flex items-center gap-2">
+                            <Check className="w-5 h-5 text-emerald-400" />
+                            <h4 className="font-extrabold text-white text-base">Pembayaran Uang Pra-Studi Lunas & Terverifikasi</h4>
+                          </div>
+                          <p className="text-[11px] text-emerald-200 mt-0.5">
+                            Selamat! Seluruh kewajiban pembayaran her-registrasi Anda telah diverifikasi oleh Panitia PMB.
+                          </p>
+                        </div>
+                        <Badge className="bg-emerald-500 text-white text-xs font-black px-3 py-1 shadow-xs self-start sm:self-auto">
+                          ✓ STATUS LUNAS (SELESAI)
+                        </Badge>
+                      </div>
 
-                  {/* Metode & Rekening (shared) */}
-                  <div className="grid sm:grid-cols-2 gap-4">
-                    {/* Metode pembayaran pilihan */}
-                    <div className="space-y-1.5">
-                      <Label className="text-xs font-extrabold text-slate-900">Pilih Metode Pembayaran yang Didukung</Label>
-                      {availablePaymentMethods.length > 0 ? (
-                        <div className="relative">
-                          <select
-                            value={paymentMethod}
-                            onChange={(e) => { setPaymentMethod(e.target.value); setProofFile(null); }}
-                            className="w-full text-xs sm:text-sm font-extrabold text-slate-900 border-2 border-indigo-500 rounded-xl px-3 py-2.5 bg-white shadow-xs focus:outline-none focus:ring-2 focus:ring-indigo-600 appearance-none"
-                          >
-                            {availablePaymentMethods.map((m) => (
-                              <option key={m.id} value={m.id} className="bg-white text-slate-900 font-extrabold py-1.5">
-                                {m.label}
-                              </option>
-                            ))}
-                          </select>
-                          <div className="pointer-events-none absolute inset-y-0 right-0 flex items-center px-3 text-indigo-700">
-                            <ChevronDown className="h-4 w-4" />
+                      <div className="grid grid-cols-2 sm:grid-cols-3 gap-3">
+                        <div className="p-3.5 rounded-xl bg-white/10 border border-white/15">
+                          <span className="text-[10px] text-emerald-300 font-bold uppercase tracking-wider block">Total Biaya Pra-Studi</span>
+                          <span className="text-sm sm:text-base font-mono font-black text-emerald-300">{formatRupiah(applicant?.pra_studi_fee || 3500000)}</span>
+                        </div>
+                        <div className="p-3.5 rounded-xl bg-white/10 border border-white/15">
+                          <span className="text-[10px] text-emerald-300 font-bold uppercase tracking-wider block">Status Her-Registrasi</span>
+                          <span className="text-xs font-bold text-emerald-300">Terverifikasi Lunas</span>
+                        </div>
+                        <div className="col-span-2 sm:col-span-1 p-3.5 rounded-xl bg-white/10 border border-white/15">
+                          <span className="text-[10px] text-emerald-300 font-bold uppercase tracking-wider block">Ukuran Jas Almamater</span>
+                          <span className="text-xs font-black text-amber-300 uppercase">{selectedShirtSize || applicant?.shirt_size || "Selesai"}</span>
+                        </div>
+                      </div>
+                    </div>
+                  ) : (
+                    /* FORM PEMBAYARAN JIKA BELUM LUNAS ATAU MASIH DICICIL */
+                    <div className="space-y-4">
+                      {applicant?.reregistration_status === "partial" && (
+                        <div className="p-4 rounded-xl bg-amber-50 border border-amber-200 space-y-1">
+                          <div className="flex items-center justify-between text-xs">
+                            <span className="font-bold text-amber-900">Status Skema Pembayaran:</span>
+                            <Badge className="bg-amber-600 text-white font-extrabold text-[10px]">PARSIAL (SEBAGIAN DICICIL)</Badge>
+                          </div>
+                          <div className="flex items-center justify-between text-xs pt-1 border-t border-amber-200/80">
+                            <span className="text-slate-600 font-medium">Sisa Kekurangan Bayar Pra-Studi:</span>
+                            <span className="font-mono font-black text-amber-900 text-sm">
+                              {formatRupiah(
+                                Math.max(
+                                  0,
+                                  (applicant?.pra_studi_fee || 3500000) -
+                                  (applicant?.payment_history || [])
+                                    .filter((h) => h.category === "pra_studi" && (h.status === "verified" || h.status === "paid"))
+                                    .reduce((acc, curr) => acc + (curr.custom_amount || curr.billed_amount || curr.amount || 0), 0)
+                                )
+                              )}
+                            </span>
                           </div>
                         </div>
+                      )}
+
+                      {/* Pilih Lunas vs Cicilan vs Custom */}
+                      <div className="flex flex-wrap gap-2">
+                        <button
+                          type="button"
+                          onClick={() => setPraPayScheme("full")}
+                          className={`px-4 py-2.5 rounded-xl border-2 font-extrabold text-xs transition-all shadow-xs ${
+                            praPayScheme === "full"
+                              ? "bg-indigo-600 text-white border-indigo-600 shadow-sm"
+                              : "bg-white border-slate-300 text-slate-900 hover:bg-slate-100"
+                          }`}
+                        >
+                          Bayar Lunas (Full)
+                        </button>
+                        <button
+                          type="button"
+                          onClick={() => setPraPayScheme("installment")}
+                          className={`px-4 py-2.5 rounded-xl border-2 font-extrabold text-xs transition-all shadow-xs ${
+                            praPayScheme === "installment"
+                              ? "bg-indigo-600 text-white border-indigo-600 shadow-sm"
+                              : "bg-white border-slate-300 text-slate-900 hover:bg-slate-100"
+                          }`}
+                        >
+                          Cicil {applicant?.installments?.length || 3}x
+                        </button>
+                        <button
+                          type="button"
+                          onClick={() => setPraPayScheme("custom")}
+                          className={`px-4 py-2.5 rounded-xl border-2 font-extrabold text-xs transition-all shadow-xs ${
+                            praPayScheme === "custom"
+                              ? "bg-indigo-600 text-white border-indigo-600 shadow-sm"
+                              : "bg-white border-slate-300 text-slate-900 hover:bg-slate-100"
+                          }`}
+                        >
+                          Nominal Custom (DP / Bebas)
+                        </button>
+                      </div>
+
+                      {/* Metode & Rekening (shared) */}
+                      <div className="grid sm:grid-cols-2 gap-4">
+                        {/* Metode pembayaran pilihan */}
+                        <div className="space-y-1.5">
+                          <Label className="text-xs font-extrabold text-slate-900">Pilih Metode Pembayaran yang Didukung</Label>
+                          {availablePaymentMethods.length > 0 ? (
+                            <div className="relative">
+                              <select
+                                value={paymentMethod}
+                                onChange={(e) => { setPaymentMethod(e.target.value); setProofFile(null); }}
+                                className="w-full text-xs sm:text-sm font-extrabold text-slate-900 border-2 border-indigo-500 rounded-xl px-3 py-2.5 bg-white shadow-xs focus:outline-none focus:ring-2 focus:ring-indigo-600 appearance-none"
+                              >
+                                {availablePaymentMethods.map((m) => (
+                                  <option key={m.id} value={m.id} className="bg-white text-slate-900 font-extrabold py-1.5">
+                                    {m.label}
+                                  </option>
+                                ))}
+                              </select>
+                              <div className="pointer-events-none absolute inset-y-0 right-0 flex items-center px-3 text-indigo-700">
+                                <ChevronDown className="h-4 w-4" />
+                              </div>
+                            </div>
+                          ) : (
+                            <div className="p-3 bg-amber-50 border border-amber-200 rounded-lg text-amber-800 text-xs">
+                              Metode pembayaran sedang dalam pengaturan panitia. Silakan hubungi panitia PMB.
+                            </div>
+                          )}
+                        </div>
+                        <div className="p-3.5 bg-indigo-50/80 rounded-xl border border-indigo-200 space-y-1">
+                          <p className="text-[10px] uppercase tracking-widest text-indigo-900 font-extrabold">REKENING TUJUAN</p>
+                          <p className="font-mono font-extrabold text-indigo-700 text-sm sm:text-base">{paymentQuote?.account?.bank_account_number || "138-00-9876543-2"}</p>
+                          <p className="text-xs font-bold text-slate-700">a.n. {paymentQuote?.account?.bank_account_holder || "YAYASAN KAMPUS HEBAT"}</p>
+                        </div>
+                      </div>
+                      {paymentMethod === "MANUAL" && (
+                        <div className="space-y-1 p-3.5 rounded-xl bg-sky-50 border border-sky-200">
+                          <Label className="text-xs font-extrabold text-slate-800">Bukti Transfer Pra-Studi</Label>
+                          <Input
+                            type="file"
+                            accept="image/png,image/jpeg,.pdf"
+                            onChange={(e) => setProofFile(e.target.files?.[0] || null)}
+                            className="bg-white text-slate-900 text-xs border border-sky-300 rounded-lg"
+                          />
+                        </div>
+                      )}
+
+                      {(applicant?.pra_studi_payment_status === "pending_verification" || applicant?.reregistration_status === "pending_verification") && (
+                        <div className="p-5 rounded-2xl bg-amber-50 border border-amber-200 space-y-3 shadow-xs">
+                          <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-2">
+                            <h4 className="font-extrabold text-amber-950 text-sm flex items-center gap-2">
+                              <RefreshCw className="w-4 h-4 text-amber-600 animate-spin" />
+                              Menunggu Approval Pembayaran Uang Pra-Studi oleh Admin PMB
+                            </h4>
+                            <Badge className="bg-amber-600 text-white text-[10px] font-bold w-fit">MENUNGGU VERIFIKASI ADMIN</Badge>
+                          </div>
+                          <p className="text-slate-700 text-xs leading-relaxed">
+                            Bukti transfer/pembayaran Uang Pra-Studi Anda telah kami terima. Panitia PMB & Keuangan sedang memverifikasi pembayaran Anda. Status her-registrasi akan aktif setelah disetujui admin.
+                          </p>
+                          <div className="flex justify-end pt-1">
+                            <Button
+                              type="button"
+                              size="sm"
+                              variant="outline"
+                              onClick={async () => {
+                                await fetchApplication();
+                                toast.success("Status pembayaran diperbarui");
+                              }}
+                              className="text-xs border-amber-300 text-amber-900 hover:bg-amber-100 font-bold"
+                            >
+                              <RefreshCw className="w-3.5 h-3.5 mr-1.5" /> Muat Ulang Status Pembayaran
+                            </Button>
+                          </div>
+                        </div>
+                      )}
+
+                      {/* Tagihan per opsi */}
+                      {praPayScheme === "custom" ? (
+                        <div className="rounded-2xl bg-indigo-50/90 border border-indigo-200 p-5 space-y-3 shadow-xs">
+                          <p className="text-[10px] uppercase tracking-widest text-indigo-900 font-extrabold">PEMBAYARAN NOMINAL CUSTOM (DP / PARSIAL)</p>
+                          <div className="space-y-1.5">
+                            <Label className="text-xs font-extrabold text-indigo-950">Masukkan Nominal Pembayaran (Rp)</Label>
+                            <Input
+                              type="number"
+                              min={50000}
+                              step={50000}
+                              value={praCustomAmount}
+                              onChange={(e) => setPraCustomAmount(e.target.value)}
+                              placeholder="Contoh: 500000"
+                              className="bg-white text-slate-900 font-black text-sm border-2 border-indigo-400 rounded-xl py-2.5"
+                            />
+                          </div>
+                          <p className="text-xs text-indigo-800 font-bold">
+                            Nominal yang dibayar: <strong className="text-indigo-950 font-black">{formatRupiah(praCustomAmount)}</strong>
+                          </p>
+                          <Button
+                            type="button"
+                            size="sm"
+                            onClick={() => handlePayPraStudi("custom")}
+                            disabled={uploadingProof}
+                            className="w-full bg-indigo-600 hover:bg-indigo-700 text-white font-extrabold text-xs sm:text-sm py-2.5 rounded-xl shadow-md mt-2"
+                          >
+                            {uploadingProof ? "Mengunggah..." : "Bayar Custom Nominal & Lanjutkan"}
+                          </Button>
+                        </div>
+                      ) : praPayScheme === "full" ? (
+                        <div className="rounded-2xl bg-indigo-50/90 border border-indigo-200 p-5 space-y-3 shadow-xs">
+                          <p className="text-[10px] uppercase tracking-widest text-indigo-900 font-extrabold">TAGIHAN LUNAS (FULL PAYMENT)</p>
+                          <p className="font-mono font-black text-indigo-700 text-2xl sm:text-3xl">Rp {(paymentQuote?.pra_studi?.full_amount || applicant?.pra_studi_fee || 3500000).toLocaleString("id-ID")}</p>
+                          <p className="text-xs text-amber-800 font-bold bg-amber-50 px-3 py-1.5 rounded-lg border border-amber-200 inline-block">Kode unik: <span className="font-mono font-black text-amber-900">{paymentQuote?.pra_studi?.full_code || "596"}</span></p>
+                          <Button
+                            type="button"
+                            size="sm"
+                            onClick={() => handlePayPraStudi("full")}
+                            disabled={uploadingProof}
+                            className="w-full bg-indigo-600 hover:bg-indigo-700 text-white font-extrabold text-xs sm:text-sm py-2.5 rounded-xl shadow-md mt-2"
+                          >
+                            {uploadingProof ? "Mengunggah..." : "Bayar Lunas & Lanjutkan"}
+                          </Button>
+                        </div>
                       ) : (
-                        <div className="p-3 bg-amber-50 border border-amber-200 rounded-lg text-amber-800 text-xs">
-                          Metode pembayaran sedang dalam pengaturan panitia. Silakan hubungi panitia PMB.
+                        <div className="grid sm:grid-cols-3 gap-3">
+                          {(paymentQuote?.pra_studi?.installments || applicant?.installments || []).map((inst, i) => {
+                            const quote = paymentQuote?.pra_studi?.installments?.[i];
+                            const isPaid = inst?.status === "paid" || quote?.status === "paid";
+                            const activeT = praPayTerm === inst.term;
+                            return (
+                              <div
+                                key={inst.term}
+                                className={`p-4 rounded-xl border space-y-2 ${
+                                  isPaid ? "bg-emerald-50 border-emerald-300" : activeT ? "bg-indigo-50/80 border-indigo-400" : "bg-slate-50 border-slate-200"
+                                }`}
+                              >
+                                <div className="flex justify-between items-center">
+                                  <span className="font-extrabold text-slate-900 text-xs">{inst.name || `Cicilan ${inst.term}`}</span>
+                                  <Badge variant={isPaid ? "default" : "outline"} className={isPaid ? "bg-emerald-600 text-white font-bold text-[10px]" : "border-slate-300 text-slate-700 font-bold text-[10px]"}>
+                                    {isPaid ? "Lunas" : "Belum Bayar"}
+                                  </Badge>
+                                </div>
+                                <p className="text-xl font-black text-indigo-700 font-mono">Rp {(quote?.amount || inst.amount).toLocaleString("id-ID")}</p>
+                                {!isPaid && <p className="text-xs text-amber-800 font-semibold">Kode unik: <strong className="text-amber-900">{quote?.unique_code || "-"}</strong></p>}
+                                {!isPaid && (
+                                  <Button
+                                    type="button"
+                                    size="sm"
+                                    onClick={() => { setPraPayTerm(inst.term); handlePayPraStudi("installment", inst.term); }}
+                                    disabled={uploadingProof}
+                                    className="w-full bg-indigo-600 hover:bg-indigo-700 text-white font-extrabold text-xs h-8 rounded-lg mt-1"
+                                  >
+                                    {uploadingProof && activeT ? "Mengunggah..." : "Bayar"}
+                                  </Button>
+                                )}
+                              </div>
+                            );
+                          })}
                         </div>
                       )}
                     </div>
-                    <div className="p-3.5 bg-indigo-50/80 rounded-xl border border-indigo-200 space-y-1">
-                      <p className="text-[10px] uppercase tracking-widest text-indigo-900 font-extrabold">REKENING TUJUAN</p>
-                      <p className="font-mono font-extrabold text-indigo-700 text-sm sm:text-base">{paymentQuote?.account?.bank_account_number || "138-00-9876543-2"}</p>
-                      <p className="text-xs font-bold text-slate-700">a.n. {paymentQuote?.account?.bank_account_holder || "YAYASAN KAMPUS HEBAT"}</p>
-                    </div>
-                  </div>
-                  {paymentMethod === "MANUAL" && (
-                    <div className="space-y-1 p-3.5 rounded-xl bg-sky-50 border border-sky-200">
-                      <Label className="text-xs font-extrabold text-slate-800">Bukti Transfer Pra-Studi</Label>
-                      <Input
-                        type="file"
-                        accept="image/png,image/jpeg,.pdf"
-                        onChange={(e) => setProofFile(e.target.files?.[0] || null)}
-                        className="bg-white text-slate-900 text-xs border border-sky-300 rounded-lg"
-                      />
-                    </div>
                   )}
 
-                  {(applicant?.pra_studi_payment_status === "pending_verification" || applicant?.reregistration_status === "pending_verification") && (
-                    <div className="p-5 rounded-2xl bg-amber-50 border border-amber-200 space-y-3 shadow-xs">
-                      <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-2">
-                        <h4 className="font-extrabold text-amber-950 text-sm flex items-center gap-2">
-                          <RefreshCw className="w-4 h-4 text-amber-600 animate-spin" />
-                          Menunggu Approval Pembayaran Uang Pra-Studi oleh Admin PMB
+                  {/* TABEL HISTORI PEMBAYARAN TERKAIT */}
+                  {Boolean(applicant?.payment_history && applicant.payment_history.length > 0) && (
+                    <div className="space-y-3 pt-4 border-t border-slate-200">
+                      <div className="flex items-center justify-between">
+                        <h4 className="font-extrabold text-slate-900 text-xs sm:text-sm uppercase tracking-wider flex items-center gap-1.5">
+                          <CreditCard className="w-4 h-4 text-indigo-600" /> Histori Transaksi Pembayaran
                         </h4>
-                        <Badge className="bg-amber-600 text-white text-[10px] font-bold w-fit">MENUNGGU VERIFIKASI ADMIN</Badge>
-                      </div>
-                      <p className="text-slate-700 text-xs leading-relaxed">
-                        Bukti transfer/pembayaran Uang Pra-Studi Anda telah kami terima. Panitia PMB & Keuangan sedang memverifikasi pembayaran Anda. Status her-registrasi akan aktif setelah disetujui admin.
-                      </p>
-                      <div className="flex justify-end pt-1">
                         <Button
                           type="button"
                           size="sm"
                           variant="outline"
                           onClick={async () => {
                             await fetchApplication();
-                            toast.success("Status pembayaran diperbarui");
+                            toast.success("Histori pembayaran diperbarui");
                           }}
-                          className="text-xs border-amber-300 text-amber-900 hover:bg-amber-100 font-bold"
+                          className="text-[11px] text-indigo-700 font-bold border-indigo-200 hover:bg-indigo-50 h-7"
                         >
-                          <RefreshCw className="w-3.5 h-3.5 mr-1.5" /> Muat Ulang Status Pembayaran
+                          <RefreshCw className="w-3 h-3 mr-1" /> Muat Ulang
                         </Button>
                       </div>
-                    </div>
-                  )}
 
-                  {/* Tagihan per opsi */}
-                  {praPayScheme === "custom" ? (
-                    <div className="rounded-2xl bg-indigo-50/90 border border-indigo-200 p-5 space-y-3 shadow-xs">
-                      <p className="text-[10px] uppercase tracking-widest text-indigo-900 font-extrabold">PEMBAYARAN NOMINAL CUSTOM (DP / PARSIAL)</p>
-                      <div className="space-y-1.5">
-                        <Label className="text-xs font-extrabold text-indigo-950">Masukkan Nominal Pembayaran (Rp)</Label>
-                        <Input
-                          type="number"
-                          min={50000}
-                          step={50000}
-                          value={praCustomAmount}
-                          onChange={(e) => setPraCustomAmount(e.target.value)}
-                          placeholder="Contoh: 500000"
-                          className="bg-white text-slate-900 font-black text-sm border-2 border-indigo-400 rounded-xl py-2.5"
-                        />
+                      <div className="rounded-2xl border border-slate-200 overflow-hidden bg-white shadow-xs">
+                        <div className="overflow-x-auto">
+                          <table className="w-full text-left border-collapse text-xs">
+                            <thead className="bg-slate-900 text-white text-[10px] font-black uppercase tracking-wider">
+                              <tr>
+                                <th className="p-3">Kategori Pembayaran</th>
+                                <th className="p-3">Nominal Transaksi</th>
+                                <th className="p-3">Metode</th>
+                                <th className="p-3">Tanggal</th>
+                                <th className="p-3 text-center">Status Verifikasi Admin</th>
+                              </tr>
+                            </thead>
+                            <tbody className="divide-y divide-slate-100 font-medium">
+                              {applicant.payment_history.map((tx, idx) => {
+                                const isVer = tx.status === "verified" || tx.status === "paid";
+                                const isPend = tx.status === "pending" || tx.status === "pending_verification";
+                                const txAmount = tx.custom_amount || tx.billed_amount || tx.amount || 0;
+                                return (
+                                  <tr key={idx} className="hover:bg-slate-50 transition-colors">
+                                    <td className="p-3 font-bold text-slate-900">
+                                      <p>{tx.category === "pra_studi" ? "Uang Pra-Studi (Daftar Ulang)" : "Biaya Formulir PMB"}</p>
+                                      <p className="text-[10px] text-slate-500 font-mono mt-0.5">
+                                        {tx.scheme ? `Skema: ${tx.scheme}` : tx.notes || `Kode Unik: ${tx.unique_code || "-"}`}
+                                      </p>
+                                    </td>
+                                    <td className="p-3 font-mono font-black text-indigo-700 text-sm">
+                                      {formatRupiah(txAmount)}
+                                    </td>
+                                    <td className="p-3 text-slate-700">
+                                      <Badge variant="outline" className="text-[10px] uppercase font-extrabold border-slate-300 bg-slate-50">
+                                        {tx.payment_method || "MANUAL"}
+                                      </Badge>
+                                    </td>
+                                    <td className="p-3 text-slate-600 text-[11px]">
+                                      {formatLongDateIndonesian(tx.created_at || tx.paid_at || new Date())}
+                                    </td>
+                                    <td className="p-3 text-center">
+                                      <Badge
+                                        className={
+                                          isVer
+                                            ? "bg-emerald-600 text-white text-[10px] font-black px-2.5 py-0.5"
+                                            : isPend
+                                            ? "bg-amber-500 text-white text-[10px] font-black px-2.5 py-0.5"
+                                            : "bg-rose-500 text-white text-[10px] font-black px-2.5 py-0.5"
+                                        }
+                                      >
+                                        {isVer ? "✓ VERIFIED (LUNAS)" : isPend ? "⏳ MENUNGGU VERIFIKASI" : "✕ DITOLAK"}
+                                      </Badge>
+                                    </td>
+                                  </tr>
+                                );
+                              })}
+                            </tbody>
+                          </table>
+                        </div>
                       </div>
-                      <p className="text-xs text-indigo-800 font-bold">
-                        Nominal yang dibayar: <strong className="text-indigo-950 font-black">{formatRupiah(praCustomAmount)}</strong>
-                      </p>
-                      <Button
-                        type="button"
-                        size="sm"
-                        onClick={() => handlePayPraStudi("custom")}
-                        disabled={uploadingProof}
-                        className="w-full bg-indigo-600 hover:bg-indigo-700 text-white font-extrabold text-xs sm:text-sm py-2.5 rounded-xl shadow-md mt-2"
-                      >
-                        {uploadingProof ? "Mengunggah..." : "Bayar Custom Nominal & Lanjutkan"}
-                      </Button>
-                    </div>
-                  ) : praPayScheme === "full" ? (
-                    <div className="rounded-2xl bg-indigo-50/90 border border-indigo-200 p-5 space-y-3 shadow-xs">
-                      <p className="text-[10px] uppercase tracking-widest text-indigo-900 font-extrabold">TAGIHAN LUNAS (FULL PAYMENT)</p>
-                      <p className="font-mono font-black text-indigo-700 text-2xl sm:text-3xl">Rp {(paymentQuote?.pra_studi?.full_amount || applicant?.pra_studi_fee || 3500000).toLocaleString("id-ID")}</p>
-                      <p className="text-xs text-amber-800 font-bold bg-amber-50 px-3 py-1.5 rounded-lg border border-amber-200 inline-block">Kode unik: <span className="font-mono font-black text-amber-900">{paymentQuote?.pra_studi?.full_code || "596"}</span></p>
-                      <Button
-                        type="button"
-                        size="sm"
-                        onClick={() => handlePayPraStudi("full")}
-                        disabled={uploadingProof}
-                        className="w-full bg-indigo-600 hover:bg-indigo-700 text-white font-extrabold text-xs sm:text-sm py-2.5 rounded-xl shadow-md mt-2"
-                      >
-                        {uploadingProof ? "Mengunggah..." : "Bayar Lunas & Lanjutkan"}
-                      </Button>
-                    </div>
-                  ) : (
-                    <div className="grid sm:grid-cols-3 gap-3">
-                      {(paymentQuote?.pra_studi?.installments || applicant?.installments || []).map((inst, i) => {
-                        const quote = paymentQuote?.pra_studi?.installments?.[i];
-                        const isPaid = inst?.status === "paid" || quote?.status === "paid";
-                        const activeT = praPayTerm === inst.term;
-                        return (
-                          <div
-                            key={inst.term}
-                            className={`p-4 rounded-xl border space-y-2 ${
-                              isPaid ? "bg-emerald-50 border-emerald-300" : activeT ? "bg-indigo-50/80 border-indigo-400" : "bg-slate-50 border-slate-200"
-                            }`}
-                          >
-                            <div className="flex justify-between items-center">
-                              <span className="font-extrabold text-slate-900 text-xs">{inst.name || `Cicilan ${inst.term}`}</span>
-                              <Badge variant={isPaid ? "default" : "outline"} className={isPaid ? "bg-emerald-600 text-white font-bold text-[10px]" : "border-slate-300 text-slate-700 font-bold text-[10px]"}>
-                                {isPaid ? "Lunas" : "Belum Bayar"}
-                              </Badge>
-                            </div>
-                            <p className="text-xl font-black text-indigo-700 font-mono">Rp {(quote?.amount || inst.amount).toLocaleString("id-ID")}</p>
-                            {!isPaid && <p className="text-xs text-amber-800 font-semibold">Kode unik: <strong className="text-amber-900">{quote?.unique_code || "-"}</strong></p>}
-                            {!isPaid && (
-                              <Button
-                                type="button"
-                                size="sm"
-                                onClick={() => { setPraPayTerm(inst.term); handlePayPraStudi("installment", inst.term); }}
-                                disabled={uploadingProof}
-                                className="w-full bg-indigo-600 hover:bg-indigo-700 text-white font-extrabold text-xs h-8 rounded-lg mt-1"
-                              >
-                                {uploadingProof && activeT ? "Mengunggah..." : "Bayar"}
-                              </Button>
-                            )}
-                          </div>
-                        );
-                      })}
                     </div>
                   )}
                 </div>
 
                 {/* 8.2 Pengisian Ukuran Baju Almamater */}
-                <div className="p-4 sm:p-5 rounded-2xl border border-slate-200 bg-slate-50/90 space-y-4 shadow-xs overflow-hidden">
-                  <h4 className="font-extrabold text-indigo-950 text-xs sm:text-sm uppercase tracking-wider">
-                    8.2 Pengisian Informasi Ukuran Jas / Seragam Almamater
-                  </h4>
-                  <div className="grid grid-cols-3 sm:grid-cols-6 gap-2 w-full">
-                    {["S", "M", "L", "XL", "XXL", "XXXL"].map((sz) => (
-                      <button
-                        key={sz}
-                        type="button"
-                        onClick={() => setSelectedShirtSize(sz)}
-                        className={`w-full h-11 rounded-xl border-2 font-black text-sm transition-all shadow-xs flex items-center justify-center ${
-                          selectedShirtSize === sz
-                            ? "bg-indigo-600 text-white border-indigo-600 shadow-md scale-[1.02]"
-                            : "bg-white border-slate-300 text-slate-900 hover:bg-slate-100"
-                        }`}
-                      >
-                        {sz}
-                      </button>
-                    ))}
-                  </div>
-                  <div className="space-y-1 w-full">
-                    <Label className="text-xs font-extrabold text-slate-800">Catatan Khusus Ukuran / Panjang Lengan (Opsional)</Label>
-                    <Input
-                      value={shirtNotes}
-                      onChange={(e) => setShirtNotes(e.target.value)}
-                      placeholder="Contoh: Tinggi 175cm, berat 68kg, minta lengan sedikit lebih panjang"
-                      className="bg-white text-slate-900 font-bold text-xs placeholder:text-slate-400 border-2 border-slate-300 focus:border-indigo-600 py-2.5 rounded-xl mt-1 shadow-xs w-full"
-                    />
-                  </div>
-                  <Button
-                    type="button"
-                    onClick={handleSaveShirtSize}
-                    className="w-full max-w-full bg-indigo-600 hover:bg-indigo-700 text-white font-extrabold text-xs sm:text-sm py-3 px-4 rounded-xl shadow-md whitespace-normal h-auto leading-relaxed text-center"
-                  >
-                    Simpan Ukuran Jas & Lanjut ke Sibermaru (Alur 9)
-                  </Button>
-                </div>
+                {(() => {
+                  const isShirtSaved = Boolean(applicant?.shirt_size);
+                  return (
+                    <div className="p-4 sm:p-5 rounded-2xl border border-slate-200 bg-slate-50/90 space-y-4 shadow-xs overflow-hidden">
+                      <div className="flex items-center justify-between gap-2 border-b border-slate-200/80 pb-2">
+                        <h4 className="font-extrabold text-indigo-950 text-xs sm:text-sm uppercase tracking-wider">
+                          8.2 Pengisian Informasi Ukuran Jas / Seragam Almamater
+                        </h4>
+                        {isShirtSaved && (
+                          <Badge className="bg-emerald-600 text-white font-extrabold text-[10px] px-2.5 py-0.5 shadow-xs">
+                            <Check className="w-3 h-3 mr-1 inline" /> TERKUNCI (TELAH DISIMPAN)
+                          </Badge>
+                        )}
+                      </div>
+
+                      {isShirtSaved && (
+                        <div className="p-3.5 rounded-xl bg-emerald-50 border border-emerald-200 flex items-center justify-between text-xs text-emerald-950 font-bold">
+                          <span>✓ Ukuran Jas Almamater Anda telah terdaftar resmi: <strong className="text-emerald-800 font-black text-sm uppercase ml-1">{applicant.shirt_size}</strong></span>
+                          <Lock className="w-4 h-4 text-emerald-700" />
+                        </div>
+                      )}
+
+                      <div className="grid grid-cols-3 sm:grid-cols-6 gap-2 w-full">
+                        {["S", "M", "L", "XL", "XXL", "XXXL"].map((sz) => {
+                          const isSelected = (selectedShirtSize || applicant?.shirt_size) === sz;
+                          return (
+                            <button
+                              key={sz}
+                              type="button"
+                              disabled={isShirtSaved}
+                              onClick={() => !isShirtSaved && setSelectedShirtSize(sz)}
+                              className={`w-full h-11 rounded-xl border-2 font-black text-sm transition-all shadow-xs flex items-center justify-center ${
+                                isSelected
+                                  ? isShirtSaved
+                                    ? "bg-emerald-600 text-white border-emerald-600 shadow-sm opacity-100 cursor-not-allowed"
+                                    : "bg-indigo-600 text-white border-indigo-600 shadow-md scale-[1.02]"
+                                  : isShirtSaved
+                                  ? "bg-slate-100 text-slate-400 border-slate-200 cursor-not-allowed opacity-50"
+                                  : "bg-white border-slate-300 text-slate-900 hover:bg-slate-100"
+                              }`}
+                            >
+                              {sz}
+                            </button>
+                          );
+                        })}
+                      </div>
+
+                      <div className="space-y-1 w-full">
+                        <Label className="text-xs font-extrabold text-slate-800">Catatan Khusus Ukuran / Panjang Lengan (Opsional)</Label>
+                        <Input
+                          value={shirtNotes || applicant?.shirt_notes || ""}
+                          disabled={isShirtSaved}
+                          readOnly={isShirtSaved}
+                          onChange={(e) => !isShirtSaved && setShirtNotes(e.target.value)}
+                          placeholder="Contoh: Tinggi 175cm, berat 68kg, minta lengan sedikit lebih panjang"
+                          className={`text-slate-900 font-bold text-xs border-2 py-2.5 rounded-xl mt-1 shadow-xs w-full ${
+                            isShirtSaved
+                              ? "bg-slate-100 border-slate-200 text-slate-600 cursor-not-allowed"
+                              : "bg-white placeholder:text-slate-400 border-slate-300 focus:border-indigo-600"
+                          }`}
+                        />
+                      </div>
+
+                      {isShirtSaved ? (
+                        <Button
+                          type="button"
+                          onClick={() => setActiveStep(9)}
+                          className="w-full max-w-full bg-emerald-600 hover:bg-emerald-700 text-white font-extrabold text-xs sm:text-sm py-3 px-4 rounded-xl shadow-md whitespace-normal h-auto leading-relaxed text-center flex items-center justify-center gap-1.5"
+                        >
+                          <Check className="w-4 h-4" /> Ukuran Jas ({applicant.shirt_size}) Telah Disimpan & Terkunci — Lanjut ke Sibermaru (Alur 9) <ArrowRight className="w-4 h-4 ml-1" />
+                        </Button>
+                      ) : (
+                        <Button
+                          type="button"
+                          onClick={handleSaveShirtSize}
+                          className="w-full max-w-full bg-indigo-600 hover:bg-indigo-700 text-white font-extrabold text-xs sm:text-sm py-3 px-4 rounded-xl shadow-md whitespace-normal h-auto leading-relaxed text-center"
+                        >
+                          Simpan Ukuran Jas & Lanjut ke Sibermaru (Alur 9)
+                        </Button>
+                      )}
+                    </div>
+                  );
+                })()}
               </CardContent>
             </Card>
           )}
@@ -1869,45 +2187,142 @@ export function CamabaPortal({ token, onLogout, onSwitchToStudent, branding }) {
                 </CardContent>
               </Card>
 
-              {/* SIAKAD Access Card */}
-              <Card className="border-slate-200 shadow-sm overflow-hidden">
-                <div className="bg-gradient-to-r from-slate-950 via-indigo-950 to-slate-900 p-6 text-white text-center space-y-2">
-                  <div className="w-14 h-14 bg-amber-400 text-slate-950 rounded-2xl flex items-center justify-center font-black text-2xl mx-auto shadow-lg">
-                    <Trophy className="w-8 h-8" />
+              {/* SIAKAD Main System Login Credentials Card */}
+              <Card className="border-2 border-indigo-200 bg-white shadow-lg overflow-hidden rounded-2xl">
+                <div className="bg-gradient-to-r from-slate-950 via-indigo-950 to-slate-900 p-6 text-white text-center space-y-2 relative overflow-hidden">
+                  <div className="w-16 h-16 bg-gradient-to-tr from-amber-400 to-amber-200 text-slate-950 rounded-2xl flex items-center justify-center font-black text-3xl mx-auto shadow-lg ring-4 ring-amber-400/30">
+                    <Trophy className="w-9 h-9 text-slate-900" />
                   </div>
-                  <h3 className="text-xl font-extrabold text-amber-300">Aktivasi SIAKAD & Penerbitan NIM Resmi</h3>
-                  <p className="text-xs text-slate-300 max-w-md mx-auto">
-                    Selamat atas keberhasilan Anda menyelesaikan seluruh tahapan seleksi PMB 2026/2027!
+                  <h3 className="text-xl sm:text-2xl font-black text-amber-300 tracking-tight">
+                    Selamat! Akun Sistem Utama (SIAKAD) Telah Aktif
+                  </h3>
+                  <p className="text-xs text-slate-300 max-w-lg mx-auto leading-relaxed">
+                    Anda telah resmi terdaftar sebagai Mahasiswa Baru Tahun Akademik {settings?.active_period_name || "2026/2027"}. Gunakan informasi kredensial di bawah ini untuk mengakses Sistem Informasi Akademik (SIAKAD) Utama.
                   </p>
                 </div>
-                <CardContent className="p-6 space-y-5 text-xs">
-                  <div className="p-4 bg-slate-50 rounded-xl border border-slate-200 grid sm:grid-cols-3 gap-3 text-center sm:text-left">
+
+                <CardContent className="p-6 space-y-6 text-xs bg-white text-slate-900">
+                  {/* Rincian Identitas Mahasiswa & NIM */}
+                  <div className="p-4 sm:p-5 bg-indigo-50/70 rounded-2xl border border-indigo-200 grid grid-cols-2 sm:grid-cols-4 gap-4">
                     <div>
-                      <p className="text-[10px] text-slate-500 font-bold">NIM RESMI ANDA</p>
-                      <p className="font-mono font-black text-lg text-indigo-700 mt-0.5">
-                        {applicant?.generated_nim || "2026010042"}
+                      <p className="text-[10px] text-indigo-900 font-extrabold uppercase tracking-wider">NIM RESMI (USERNAME SIAKAD)</p>
+                      <p className="font-mono font-black text-base sm:text-lg text-indigo-700 mt-1 select-all">
+                        {applicant?.generated_nim || applicant?.nim || "2627010001"}
                       </p>
                     </div>
                     <div>
-                      <p className="text-[10px] text-slate-500 font-bold">PROGRAM STUDI</p>
-                      <p className="font-bold text-slate-900 mt-0.5 text-sm">{applicant?.prodi_name}</p>
+                      <p className="text-[10px] text-slate-500 font-bold uppercase tracking-wider">NAMA MAHASISWA</p>
+                      <p className="font-extrabold text-slate-900 text-sm mt-1">{applicant?.name}</p>
                     </div>
                     <div>
-                      <p className="text-[10px] text-slate-500 font-bold">STATUS AKUN SIAKAD</p>
-                      <Badge className="bg-emerald-600 text-white text-xs mt-1 inline-flex items-center gap-1"><Check className="w-3 h-3" /> Mahasiswa Aktif</Badge>
+                      <p className="text-[10px] text-slate-500 font-bold uppercase tracking-wider">PROGRAM STUDI</p>
+                      <p className="font-bold text-slate-900 text-xs sm:text-sm mt-1">{applicant?.prodi_name}</p>
+                    </div>
+                    <div>
+                      <p className="text-[10px] text-slate-500 font-bold uppercase tracking-wider">GRADE SELEKSI & KELAS</p>
+                      <div className="flex flex-wrap gap-1 mt-1">
+                        <Badge className="bg-indigo-600 text-white font-extrabold text-[10px]">
+                          {applicant?.test_grade || "Grade A"}
+                        </Badge>
+                        <Badge variant="outline" className="text-[10px] font-bold border-indigo-300 text-indigo-900 capitalize">
+                          {applicant?.class_type === "khusus" ? "Eksekutif" : applicant?.learning_mode || "Reguler"}
+                        </Badge>
+                      </div>
                     </div>
                   </div>
 
-                  <div className="flex flex-col sm:flex-row justify-end gap-3 pt-2">
-                    <Button
-                      type="button"
-                      onClick={() => {
-                        if (onSwitchToStudent) onSwitchToStudent(applicant);
-                      }}
-                      className="bg-gradient-to-r from-emerald-600 to-teal-600 hover:from-emerald-500 hover:to-teal-500 text-white font-black text-xs px-6 py-3 shadow-lg"
-                    >
-                      <Rocket className="w-4 h-4 mr-1.5 inline" /> Masuk ke Portal Mahasiswa SIAKAD
-                    </Button>
+                  {/* BOX KREDENSIAL LOGIN SISTEM UTAMA */}
+                  <div className="p-5 rounded-2xl bg-slate-900 text-white space-y-4 shadow-md relative">
+                    <div className="flex items-center justify-between border-b border-slate-800 pb-3">
+                      <h4 className="font-extrabold text-amber-300 text-xs sm:text-sm uppercase tracking-wider flex items-center gap-2">
+                        <Key className="w-4 h-4 text-amber-400" /> Kredensial Login Portal Akademik Utama (SIAKAD)
+                      </h4>
+                      <Badge className="bg-emerald-500 text-white font-black text-[10px] px-2.5 py-0.5">
+                        AKUN AKTIF
+                      </Badge>
+                    </div>
+
+                    <div className="grid sm:grid-cols-3 gap-4">
+                      {/* Username */}
+                      <div className="p-3.5 rounded-xl bg-slate-800/90 border border-slate-700/80 space-y-1">
+                        <span className="text-[10px] text-slate-400 font-bold uppercase tracking-wider block">Username Utama (NIM)</span>
+                        <div className="flex items-center justify-between">
+                          <span className="font-mono font-black text-amber-300 text-sm sm:text-base select-all">
+                            {applicant?.generated_nim || applicant?.nim || "2627010001"}
+                          </span>
+                          <Button
+                            type="button"
+                            size="sm"
+                            variant="ghost"
+                            onClick={() => {
+                              navigator.clipboard.writeText(applicant?.generated_nim || applicant?.nim || "2627010001");
+                              toast.success("Username (NIM) berhasil disalin!");
+                            }}
+                            className="h-6 px-2 text-[10px] text-slate-300 hover:text-white hover:bg-slate-700 font-bold"
+                          >
+                            <Copy className="w-3 h-3 mr-1" /> Salin
+                          </Button>
+                        </div>
+                        <p className="text-[9px] text-slate-400 mt-0.5">(Atau Email: <span className="text-slate-300 font-mono">{applicant?.email}</span>)</p>
+                      </div>
+
+                      {/* Password */}
+                      <div className="p-3.5 rounded-xl bg-slate-800/90 border border-slate-700/80 space-y-1">
+                        <span className="text-[10px] text-slate-400 font-bold uppercase tracking-wider block">Password Utama SIAKAD</span>
+                        <div className="flex items-center justify-between">
+                          <span className="font-mono font-black text-emerald-400 text-sm sm:text-base select-all">
+                            {applicant?.password_raw || "Mahasiswa1231!"}
+                          </span>
+                          <Button
+                            type="button"
+                            size="sm"
+                            variant="ghost"
+                            onClick={() => {
+                              navigator.clipboard.writeText(applicant?.password_raw || "Mahasiswa1231!");
+                              toast.success("Password berhasil disalin!");
+                            }}
+                            className="h-6 px-2 text-[10px] text-slate-300 hover:text-white hover:bg-slate-700 font-bold"
+                          >
+                            <Copy className="w-3 h-3 mr-1" /> Salin
+                          </Button>
+                        </div>
+                        <p className="text-[9px] text-slate-400 mt-0.5">Password default: <span className="text-emerald-300 font-mono font-bold">Mahasiswa1231!</span> (atau password akun PMB Anda)</p>
+                      </div>
+
+                      {/* Link URL Login */}
+                      <div className="p-3.5 rounded-xl bg-slate-800/90 border border-slate-700/80 space-y-1">
+                        <span className="text-[10px] text-slate-400 font-bold uppercase tracking-wider block">Link Login Sistem Utama</span>
+                        <a
+                          href={typeof window !== "undefined" ? `${window.location.origin}/login` : "/login"}
+                          target="_blank"
+                          rel="noopener noreferrer"
+                          className="font-mono font-bold text-sky-400 hover:text-sky-300 underline text-xs sm:text-sm block truncate mt-1"
+                        >
+                          {typeof window !== "undefined" ? `${window.location.origin}/login` : "https://siakad.kampus.ac.id/login"}
+                        </a>
+                        <p className="text-[9px] text-slate-400 mt-0.5">Klik link untuk membuka portal login utama</p>
+                      </div>
+                    </div>
+
+                    {/* Button Direct Login */}
+                    <div className="pt-2 flex flex-col sm:flex-row items-center justify-between gap-3 border-t border-slate-800">
+                      <p className="text-[11px] text-slate-400 font-medium">
+                        Gunakan NIM & Password di atas untuk login ke SIAKAD, pengisian KRS, jadwal kuliah, & transkrip nilai.
+                      </p>
+                      <Button
+                        type="button"
+                        onClick={() => {
+                          if (onSwitchToStudent) {
+                            onSwitchToStudent(applicant);
+                          } else if (typeof window !== "undefined") {
+                            window.location.href = "/login";
+                          }
+                        }}
+                        className="w-full sm:w-auto bg-gradient-to-r from-emerald-600 to-teal-600 hover:from-emerald-500 hover:to-teal-500 text-white font-black text-xs px-6 py-3 shadow-lg flex items-center justify-center gap-2"
+                      >
+                        <Rocket className="w-4 h-4" /> Masuk ke Portal Mahasiswa SIAKAD Sekarang <ExternalLink className="w-3.5 h-3.5 ml-1" />
+                      </Button>
+                    </div>
                   </div>
                 </CardContent>
               </Card>

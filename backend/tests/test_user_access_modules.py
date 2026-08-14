@@ -3,6 +3,7 @@ from routers.user_access import (
     SYSTEM_MODULES,
     merge_permission_matrices,
     normalize_permission_matrix,
+    normalize_template_permissions,
     position_accesses_from_assignments,
     role_default_permission_matrix,
     template_matches_user_role,
@@ -16,6 +17,8 @@ def test_system_module_catalog_covers_current_siakad_areas():
         "keuangan", "pmb", "academic_structure", "student_records",
         "lecturer_records", "feeder", "old_siakad_migration",
         "database_backup", "data_maintenance", "academic_calendar",
+        "progres_nilai_prodi", "analisis_mahasiswa_prodi", "analisis_rps_prodi",
+        "sk_mengajar", "sk_jabatan",
     }.issubset(module_keys)
     assert "data_master" not in module_keys
     assert "system_settings" not in module_keys
@@ -80,12 +83,34 @@ def test_structural_assignment_adds_role_template_and_program_scope():
     assert accesses[0]["access_role"] == "kaprodi"
     assert accesses[0]["prodi_id"] == "prodi-ti"
     assert accesses[0]["permissions"]["academic_structure"]["view"] is True
+    assert accesses[0]["permissions"]["progres_nilai_prodi"]["view"] is True
+    assert accesses[0]["permissions"]["analisis_mahasiswa_prodi"]["view"] is True
+    assert accesses[0]["permissions"]["analisis_rps_prodi"]["edit"] is True
+    assert accesses[0]["permissions"]["sk_mengajar"]["view"] is True
+    assert accesses[0]["permissions"]["sk_jabatan"]["view"] is False
 
     effective = merge_permission_matrices([
         role_default_permission_matrix("lecturer"),
         accesses[0]["permissions"],
     ])
     assert effective["academic_structure"]["view"] is True
+    assert effective["sk_jabatan"]["view"] is False
+
+
+def test_legacy_kaprodi_template_cannot_inherit_sk_jabatan_access():
+    permissions = normalize_template_permissions({
+        "id": "tpl_kaprodi",
+        "role_target": "lecturer",
+        "permissions": {
+            "academic_documents": {
+                "view": True, "create": True, "edit": True, "delete": False, "export": True,
+            },
+        },
+    })
+
+    assert permissions["sk_mengajar"]["view"] is True
+    assert permissions["sk_jabatan"]["view"] is False
+    assert permissions["sk_jabatan"]["export"] is False
 
 
 def test_functional_rank_never_derives_system_access():

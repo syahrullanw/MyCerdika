@@ -73,3 +73,15 @@ Setelah deployment versi baru:
 3. Login sebagai admin, dosen, dan mahasiswa untuk memastikan menu **Panduan LMS** tampil.
 4. Uji alur pada kelas percobaan: request → approval → submission → penilaian → berakhir → finalisasi → arsip → periode baru.
 5. Jangan menghapus kelas historis untuk rollover. Arsipkan kelas lama dan buat kelas periode baru.
+
+## Kelengkapan data fisik mahasiswa
+
+Mahasiswa dapat mengunggah Ijazah, Transkrip Nilai, KTP, KK, Akta Kelahiran, KIP-K, dan Surat Keterangan dari menu **Profil**. Format yang diterima adalah PDF, JPG, JPEG, PNG, atau WEBP dengan batas default 10 MB per file (`PHYSICAL_DOCUMENT_MAX_FILE_MB`).
+
+Pada login pertama setelah fitur ini aktif, mahasiswa yang belum lengkap akan melihat pengingat dan tombol menuju Profil. Pengingat hanya ditampilkan sekali; status kelengkapan tetap dapat dilihat dan diperbarui dari menu Profil.
+
+Jika Google Drive sudah dikonfigurasi melalui menu admin, setiap file disinkronkan otomatis ke struktur:
+
+`[Folder Drive Utama] / Kelengkapan Data Fisik / [Angkatan] / [NIM - Nama]`
+
+Status **Menunggu sinkronisasi Drive**, **Tersimpan di Google Drive**, atau **Drive belum tersinkron** ditampilkan pada kartu dokumen. Pastikan folder Drive dibagikan ke email service account dengan akses Editor agar upload dapat berjalan.

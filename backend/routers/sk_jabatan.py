@@ -26,14 +26,13 @@ from pydantic import BaseModel
 from postgres_database import PostgresDatabase
 from routers.master_data import (
     _pejabat_ident,
-    get_current_user,
-    require_admin_or_kaprodi,
 )
 from routers.sk_mengajar import (
     _dosen_profile,
     _kop_from_settings,
     _resolve_pejabat_blocks,
 )
+from routers.user_access import require_admin as require_authenticated_admin
 
 
 router = APIRouter(prefix="/api/v1/sk-jabatan", tags=["Persuratan Akademik — SK Jabatan Akademik"])
@@ -99,7 +98,7 @@ async def rekap_dosen_sk_jabatan(
     q: Optional[str] = None,
     jabatan: Optional[str] = None,
     db: PostgresDatabase = Depends(get_db),
-    _: Dict[str, Any] = Depends(require_admin_or_kaprodi),
+    _: Dict[str, Any] = Depends(require_authenticated_admin),
 ):
     users = await db.users.find(
         {"role": "lecturer", "status": {"$ne": "deleted"}},
@@ -146,7 +145,7 @@ async def generate_sk_jabatan(
     body: SkJabatanGenerateInput,
     request: Request,
     db: PostgresDatabase = Depends(get_db),
-    user: Dict[str, Any] = Depends(require_admin_or_kaprodi),
+    user: Dict[str, Any] = Depends(require_authenticated_admin),
 ):
     jabatan_baru = (body.jabatan_akademik or "").strip()
     if not jabatan_baru:
@@ -259,7 +258,7 @@ async def list_sk_jabatan(
     status: Optional[str] = None,
     q: Optional[str] = None,
     db: PostgresDatabase = Depends(get_db),
-    _: Dict[str, Any] = Depends(require_admin_or_kaprodi),
+    _: Dict[str, Any] = Depends(require_authenticated_admin),
 ):
     query: Dict[str, Any] = {"status": {"$ne": "deleted"}}
     if tahun_sk:
@@ -416,7 +415,7 @@ async def detail_sk_jabatan(
     sk_id: str,
     request: Request,
     db: PostgresDatabase = Depends(get_db),
-    _: Dict[str, Any] = Depends(require_admin_or_kaprodi),
+    _: Dict[str, Any] = Depends(require_authenticated_admin),
 ):
     doc = await db.sk_jabatan.find_one({"id": sk_id, "status": {"$ne": "deleted"}}, {"_id": 0})
     if not doc:
@@ -435,7 +434,7 @@ async def update_sk_jabatan_draft(
     body: SkJabatanUpdateInput,
     request: Request,
     db: PostgresDatabase = Depends(get_db),
-    _: Dict[str, Any] = Depends(require_admin_or_kaprodi),
+    _: Dict[str, Any] = Depends(require_authenticated_admin),
 ):
     """Operator mengisi manual nomor, tanggal, dan rincian jabatan pada draft."""
     doc = await db.sk_jabatan.find_one({"id": sk_id, "status": {"$ne": "deleted"}}, {"_id": 0})
@@ -478,7 +477,7 @@ async def finalize_sk_jabatan(
     body: SkJabatanUpdateInput,
     request: Request,
     db: PostgresDatabase = Depends(get_db),
-    _: Dict[str, Any] = Depends(require_admin_or_kaprodi),
+    _: Dict[str, Any] = Depends(require_authenticated_admin),
 ):
     doc = await db.sk_jabatan.find_one({"id": sk_id, "status": {"$ne": "deleted"}}, {"_id": 0})
     if not doc:
@@ -518,7 +517,7 @@ async def delete_sk_jabatan(
     sk_id: str,
     request: Request,
     db: PostgresDatabase = Depends(get_db),
-    _: Dict[str, Any] = Depends(require_admin_or_kaprodi),
+    _: Dict[str, Any] = Depends(require_authenticated_admin),
 ):
     doc = await db.sk_jabatan.find_one({"id": sk_id, "status": {"$ne": "deleted"}}, {"_id": 0})
     if not doc:
@@ -551,7 +550,7 @@ async def cetak_sk_jabatan(
     body: SkJabatanCetakInput,
     request: Request,
     db: PostgresDatabase = Depends(get_db),
-    user: Dict[str, Any] = Depends(require_admin_or_kaprodi),
+    user: Dict[str, Any] = Depends(require_authenticated_admin),
 ):
     doc = await db.sk_jabatan.find_one({"id": sk_id, "status": {"$ne": "deleted"}}, {"_id": 0})
     if not doc:

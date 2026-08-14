@@ -17,6 +17,7 @@ from routers.pmb import (
     PmbReregisterPayInput,
     PmbShirtSizeInput,
     PmbSibermaruConfirmInput,
+    PmbSettingsInput,
 )
 
 
@@ -26,6 +27,11 @@ def test_password_hashing_and_verification():
     assert pw_hash != password
     assert verify_password(password, pw_hash) is True
     assert verify_password("WrongPassword123", pw_hash) is False
+
+
+def test_pmb_settings_accepts_separate_landing_logo():
+    settings = PmbSettingsInput(landing_logo_url="/api/files/pmb-landing-logo-test/inline")
+    assert settings.landing_logo_url == "/api/files/pmb-landing-logo-test/inline"
 
 
 def test_pmb_registration_input_validation():

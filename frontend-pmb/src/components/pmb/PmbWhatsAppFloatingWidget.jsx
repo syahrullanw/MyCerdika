@@ -61,8 +61,8 @@ export function PmbWhatsAppFloatingWidget({ settings, branding }) {
 
   const rawPhone = branding?.campus_whatsapp || branding?.campus_phone || settings?.landing_contact_whatsapp || settings?.landing_contact_phone || "0812-3456-7890";
   const waNumber = normalizeWhatsAppNumber(rawPhone);
-  const campusName = branding?.campus_name || branding?.name || "Politeknik SCI";
-  const campusLogoUrl = branding?.campus_logo_url || branding?.logo_url;
+  const campusName = branding?.campus_code?.trim() || branding?.campus_name?.trim() || branding?.name?.trim() || "Politeknik SCI";
+  const campusLogoUrl = settings?.landing_logo_url || branding?.pmb_logo_url || branding?.campus_logo_url || branding?.logo_url;
 
   const handleSend = (textToSend) => {
     const finalMsg = (textToSend || message || "Halo Admin PMB, saya ingin berkonsultasi seputar pendaftaran mahasiswa baru.").trim();
@@ -89,7 +89,7 @@ export function PmbWhatsAppFloatingWidget({ settings, branding }) {
             <div className="flex items-center gap-3">
               <div className="relative">
                 {campusLogoUrl ? (
-                  <div className="w-10 h-10 rounded-xl bg-white p-1 flex items-center justify-center shadow-md overflow-hidden">
+                  <div className="h-10 w-16 rounded-xl bg-transparent p-0 flex items-center justify-center shadow-md overflow-hidden">
                     <img
                       src={resolveMediaUrl(campusLogoUrl)}
                       alt="Logo"

@@ -32,6 +32,9 @@ import { StudentAttendancePage } from "@/components/StudentAttendanceComponents"
 import { KurikulumMasterPage } from "@/components/KurikulumComponents";
 import { UserAccessPage } from "@/components/UserAccessComponents";
 import { IntegrationSettingsPage } from "@/components/IntegrationSettingsPage";
+import { ProgresNilaiProdiPage } from "@/components/ProgresNilaiProdiComponents";
+import { AnalisisMahasiswaProdiPage } from "@/components/AnalisisMahasiswaProdiComponents";
+import { AnalisisRpsProdiPage } from "@/components/AnalisisRpsProdiComponents";
 import { CamabaPortal, AdminPmbHub, PmbLandingPage } from "@/components/PmbComponents";
 import { apiErrorMessage } from "@/lib/utils";
 import { Button } from "@/components/ui/button";
@@ -39,6 +42,7 @@ import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { Textarea } from "@/components/ui/textarea";
 import { Badge } from "@/components/ui/badge";
+import { Switch } from "@/components/ui/switch";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import {
   Table,
@@ -64,6 +68,7 @@ import {
   HelpCircle,
   Moon,
   ClipboardList,
+  ClipboardCheck,
   Copy,
   Download,
   Eye,
@@ -249,18 +254,63 @@ const defaultSsoForm = {
   local_login_enabled: true,
   clear_client_secret: false,
 };
+const DEFAULT_META_DESCRIPTION =
+  "Sistem Informasi Akademik terpadu untuk mengelola pembelajaran, presensi, penilaian, dan layanan akademik perguruan tinggi.";
 const defaultBranding = {
   app_name: "E-Learning Dosen",
+  meta_description: DEFAULT_META_DESCRIPTION,
   campus_name: "",
+  app_logo_url: "",
   campus_logo_url: "",
+};
+
+const PHYSICAL_DOCUMENT_TYPES = [
+  { type: "ijazah", label: "Ijazah" },
+  { type: "transkip", label: "Transkrip Nilai" },
+  { type: "ktp", label: "KTP" },
+  { type: "kk", label: "Kartu Keluarga (KK)" },
+  { type: "akte", label: "Akta Kelahiran" },
+  { type: "kip_k", label: "KIP-K" },
+  { type: "surat_keterangan", label: "Surat Keterangan" },
+];
+
+const PHYSICAL_DOCUMENT_DRIVE_STATUS = {
+  synced: { label: "Tersimpan di Google Drive", className: "border-emerald-200 bg-emerald-50 text-emerald-700" },
+  pending: { label: "Menunggu sinkronisasi Drive", className: "border-amber-200 bg-amber-50 text-amber-700" },
+  failed: { label: "Drive belum tersinkron", className: "border-red-200 bg-red-50 text-red-700" },
+  not_configured: { label: "Drive belum dikonfigurasi", className: "border-slate-200 bg-slate-100 text-slate-600" },
 };
 
 function brandingName(branding) {
   return branding?.app_name?.trim() || defaultBranding.app_name;
 }
 
+function brandingMetaDescription(branding) {
+  return branding?.meta_description?.trim() || DEFAULT_META_DESCRIPTION;
+}
+
+function updateMetaContent(attribute, key, content) {
+  let element = document.head.querySelector(`meta[${attribute}="${key}"]`);
+  if (!element) {
+    element = document.createElement("meta");
+    element.setAttribute(attribute, key);
+    document.head.appendChild(element);
+  }
+  element.setAttribute("content", content);
+}
+
+function updateAppIcon(href) {
+  let element = document.head.querySelector('link[rel="icon"]');
+  if (!element) {
+    element = document.createElement("link");
+    element.setAttribute("rel", "icon");
+    document.head.appendChild(element);
+  }
+  element.setAttribute("href", href);
+}
+
 function brandingLogo(branding) {
-  const url = branding?.campus_logo_url?.trim() || "";
+  const url = branding?.app_logo_url?.trim() || branding?.campus_logo_url?.trim() || "";
   if (url) return url.startsWith("http") ? url : `${BACKEND_URL}${url}`;
   return logoUrl;
 }
@@ -349,13 +399,43 @@ const ACADEMIC_CALENDAR_CATEGORY_LABELS = {
 
 const CALENDAR_EVENT_TYPE_LABELS = {
   academic: "Agenda kampus",
+  academic_deadline: "Deadline akademik",
   deadline: "Deadline tugas",
   tayang: "Tayang tugas",
   materi: "Materi dibuka",
 };
 
+const ACADEMIC_DEADLINE_DEFINITIONS = [
+  {
+    key: "curriculum_setup",
+    title: "Setting Kurikulum",
+    targetLabel: "Kaprodi",
+    description: "Batas waktu penyiapan dan penetapan kurikulum.",
+  },
+  {
+    key: "rps_submission",
+    title: "Pengisian RPS",
+    targetLabel: "Dosen",
+    description: "Batas waktu dosen melengkapi RPS kelas.",
+  },
+  {
+    key: "grade_entry",
+    title: "Pengisian Nilai",
+    targetLabel: "Dosen",
+    description: "Batas waktu dosen menyelesaikan nilai mahasiswa.",
+  },
+];
+
 function calendarDateInputValue(value) {
   return String(value || "").slice(0, 10);
+}
+
+function calendarDateTimeInputValue(value) {
+  if (!value) return "";
+  const date = new Date(value);
+  if (Number.isNaN(date.getTime())) return "";
+  const localDate = new Date(date.getTime() - date.getTimezoneOffset() * 60000);
+  return localDate.toISOString().slice(0, 16);
 }
 
 function calendarDayKey(value) {
@@ -486,6 +566,10 @@ function formatApiError(error, fallback) {
   if (typeof detail === "object")
     return detail.message || JSON.stringify(detail);
   return String(detail);
+}
+
+function isSessionError(error) {
+  return error?.response?.status === 401;
 }
 
 function isFutureDate(value) {
@@ -1922,6 +2006,188 @@ const ChangePasswordPanel = memo(function ChangePasswordPanel({ token }) {
   );
 });
 
+function PhysicalDocumentsPanel({ token, user, onUserUpdate }) {
+  const [status, setStatus] = useState(() => user.physical_document_status || null);
+  const [selectedFiles, setSelectedFiles] = useState({});
+  const [loading, setLoading] = useState(true);
+  const [busyType, setBusyType] = useState("");
+  const [inputVersion, setInputVersion] = useState(0);
+
+  const loadDocuments = useCallback(async () => {
+    setLoading(true);
+    try {
+      const { data } = await axios.get(`${API}/auth/physical-documents`, {
+        headers: { Authorization: `Bearer ${token}` },
+      });
+      setStatus(data);
+    } catch (error) {
+      toast.error(error.response?.data?.detail || "Kelengkapan dokumen fisik gagal dimuat");
+    } finally {
+      setLoading(false);
+    }
+  }, [token]);
+
+  useEffect(() => {
+    loadDocuments();
+  }, [loadDocuments]);
+
+  function handleFileChange(documentType, event) {
+    const file = event.target.files?.[0];
+    if (!file) return;
+    const maxMb = Number(status?.max_file_size_mb || 10);
+    if (file.size > maxMb * 1024 * 1024) {
+      toast.error(`Ukuran ${documentType} maksimal ${maxMb} MB`);
+      return;
+    }
+    setSelectedFiles((current) => ({ ...current, [documentType]: file }));
+  }
+
+  async function uploadDocument(documentType) {
+    const file = selectedFiles[documentType];
+    if (!file) {
+      toast.error("Pilih file dokumen terlebih dahulu");
+      return;
+    }
+    setBusyType(documentType);
+    const formData = new FormData();
+    formData.append("document_type", documentType);
+    formData.append("file", file);
+    try {
+      const { data } = await axios.post(`${API}/auth/physical-documents`, formData, {
+        headers: {
+          Authorization: `Bearer ${token}`,
+          "Content-Type": "multipart/form-data",
+        },
+      });
+      setStatus({ ...data.status, max_file_size_mb: status?.max_file_size_mb || 10 });
+      setSelectedFiles((current) => ({ ...current, [documentType]: null }));
+      setInputVersion((current) => current + 1);
+      if (data.user) onUserUpdate(data.user);
+      toast.success(`${PHYSICAL_DOCUMENT_TYPES.find((item) => item.type === documentType)?.label || "Dokumen"} berhasil diunggah`);
+    } catch (error) {
+      toast.error(error.response?.data?.detail || "Dokumen fisik gagal diunggah");
+    } finally {
+      setBusyType("");
+    }
+  }
+
+  async function deleteDocument(documentType) {
+    const label = PHYSICAL_DOCUMENT_TYPES.find((item) => item.type === documentType)?.label || "dokumen ini";
+    if (!window.confirm(`Hapus ${label}? Dokumen harus diunggah kembali agar status lengkap.`)) return;
+    setBusyType(documentType);
+    try {
+      const { data } = await axios.delete(`${API}/auth/physical-documents/${documentType}`, {
+        headers: { Authorization: `Bearer ${token}` },
+      });
+      setStatus({ ...data.status, max_file_size_mb: status?.max_file_size_mb || 10 });
+      if (data.user) onUserUpdate(data.user);
+      toast.success(`${label} dihapus`);
+    } catch (error) {
+      toast.error(error.response?.data?.detail || "Dokumen fisik gagal dihapus");
+    } finally {
+      setBusyType("");
+    }
+  }
+
+  const documents = status?.documents || {};
+  const maxFileSize = Number(status?.max_file_size_mb || 10);
+  return (
+    <Card className="rounded-xl border border-indigo-200 bg-white shadow-sm" data-testid="physical-documents-panel">
+      <CardHeader className="border-b border-indigo-100 bg-indigo-50/50 p-4 sm:px-6 sm:py-5">
+        <div className="flex flex-wrap items-start justify-between gap-3">
+          <div className="min-w-0 flex-1">
+            <CardTitle className="flex items-start gap-2 text-sm font-bold leading-5 text-indigo-900 sm:text-base">
+              <FileText className="mt-0.5 h-5 w-5 shrink-0 text-indigo-600" />
+              <span>Kelengkapan Data Fisik</span>
+            </CardTitle>
+            <p className="mt-1 break-words text-xs leading-5 text-indigo-700">
+              Unggah dokumen administrasi Anda. File akan disusun otomatis di Google Drive berdasarkan angkatan.
+            </p>
+          </div>
+          <Badge className={`shrink-0 whitespace-nowrap ${status?.is_complete ? "border-emerald-200 bg-emerald-50 text-emerald-700" : "border-amber-200 bg-amber-50 text-amber-700"}`}>
+            {loading ? "Memuat..." : `${status?.completed_count || 0}/${status?.total_count || PHYSICAL_DOCUMENT_TYPES.length} dokumen`}
+          </Badge>
+        </div>
+      </CardHeader>
+      <CardContent className="space-y-3 p-4 sm:p-5">
+        {!status?.is_complete && !loading && (
+          <div className="flex items-start gap-2 rounded-lg border border-amber-200 bg-amber-50 p-3 text-xs text-amber-800" data-testid="physical-documents-warning">
+            <AlertTriangle className="mt-0.5 h-4 w-4 shrink-0" />
+            <span>Lengkapi seluruh dokumen berikut untuk menyelesaikan administrasi data fisik mahasiswa.</span>
+          </div>
+        )}
+        <div className="grid gap-3 md:grid-cols-2">
+          {PHYSICAL_DOCUMENT_TYPES.map(({ type, label }) => {
+            const document = documents[type];
+            const selected = selectedFiles[type];
+            const driveStatus = PHYSICAL_DOCUMENT_DRIVE_STATUS[document?.drive_sync_status] || PHYSICAL_DOCUMENT_DRIVE_STATUS.not_configured;
+            const busy = busyType === type;
+            return (
+              <div key={type} className="min-w-0 rounded-lg border border-slate-200 bg-slate-50 p-3" data-testid={`physical-document-${type}`}>
+                <div className="flex flex-wrap items-start justify-between gap-2">
+                  <div className="min-w-0 flex-1">
+                    <p className="break-words text-sm font-semibold text-slate-800">{label}</p>
+                    {document ? (
+                      <a
+                        href={authenticatedFileLink(document.file_url, token)}
+                        target="_blank"
+                        rel="noreferrer"
+                        className="mt-1 flex max-w-full items-center gap-1 text-xs font-medium text-indigo-700 underline"
+                      >
+                        <Eye className="h-3.5 w-3.5 shrink-0" />
+                        <span className="min-w-0 truncate">{document.file_name || "Lihat dokumen"}</span>
+                      </a>
+                    ) : (
+                      <p className="mt-1 text-xs text-slate-500">Belum diunggah</p>
+                    )}
+                  </div>
+                  {document && <Badge className={`max-w-full shrink-0 whitespace-normal text-center leading-4 ${driveStatus.className}`}>{driveStatus.label}</Badge>}
+                </div>
+                <Input
+                  key={`${type}-${inputVersion}`}
+                  type="file"
+                  accept=".pdf,.jpg,.jpeg,.png,.webp"
+                  className="mt-3 h-10 max-w-full bg-white text-xs"
+                  disabled={busy}
+                  data-testid={`physical-document-${type}-input`}
+                  onChange={(event) => handleFileChange(type, event)}
+                />
+                {selected && <p className="mt-1 truncate text-[11px] text-slate-500">File baru: {selected.name}</p>}
+                <div className="mt-2 flex flex-wrap gap-2">
+                  <Button
+                    type="button"
+                    size="sm"
+                    className="min-w-0 flex-1 bg-indigo-600 px-2 text-xs text-white hover:bg-indigo-700 sm:flex-none sm:px-3"
+                    disabled={busy || !selected}
+                    onClick={() => uploadDocument(type)}
+                    data-testid={`physical-document-${type}-upload-button`}
+                  >
+                    <Upload className="h-3.5 w-3.5" /> {busy ? "Mengunggah..." : document ? "Ganti dokumen" : "Unggah"}
+                  </Button>
+                  {document && (
+                    <Button
+                      type="button"
+                      size="sm"
+                      variant="outline"
+                      className="min-w-0 flex-1 px-2 text-xs text-red-600 hover:bg-red-50 sm:flex-none sm:px-3"
+                      disabled={busy}
+                      onClick={() => deleteDocument(type)}
+                      data-testid={`physical-document-${type}-delete-button`}
+                    >
+                      <Trash2 className="h-3.5 w-3.5" /> Hapus
+                    </Button>
+                  )}
+                </div>
+              </div>
+            );
+          })}
+        </div>
+        <p className="text-[11px] text-slate-500">Format yang diterima: PDF, JPG, JPEG, PNG, WEBP. Maksimal {maxFileSize} MB per file.</p>
+      </CardContent>
+    </Card>
+  );
+}
+
 function ProfilePage({ token, user, onUserUpdate, enrollments = [] }) {
   const [activeTab, setActiveTab] = useState("profile");
   const [form, setForm] = useState({
@@ -2086,19 +2352,19 @@ function ProfilePage({ token, user, onUserUpdate, enrollments = [] }) {
   const isLecturer = user.role === "lecturer" || user.role === "admin";
 
   return (
-    <div className="space-y-6" data-testid={`${isStudent ? "student" : "admin"}-profile-page`}>
+    <div className="min-w-0 space-y-4 overflow-x-hidden sm:space-y-6" data-testid={`${isStudent ? "student" : "admin"}-profile-page`}>
       {/* Header Banner */}
-      <div className="bg-white rounded-xl border border-slate-200 p-5 shadow-sm flex flex-col md:flex-row md:items-center justify-between gap-4">
-        <div className="flex items-center gap-4">
+      <div className="flex min-w-0 flex-col justify-between gap-4 rounded-xl border border-slate-200 bg-white p-4 shadow-sm sm:p-5 md:flex-row md:items-center">
+        <div className="flex min-w-0 items-start gap-3 sm:items-center sm:gap-4">
           <div className="relative group shrink-0">
             {user.avatar_url || avatarPreview ? (
               <img
                 src={avatarPreview || authenticatedFileLink(user.avatar_url, token)}
                 alt={user.name}
-                className="w-16 h-16 rounded-full object-cover border-2 border-indigo-500 shadow-md"
+                className="h-14 w-14 rounded-full border-2 border-indigo-500 object-cover shadow-md sm:h-16 sm:w-16"
               />
             ) : (
-              <div className="w-16 h-16 rounded-full bg-indigo-600 flex items-center justify-center text-white text-2xl font-bold font-display shadow-md">
+              <div className="flex h-14 w-14 items-center justify-center rounded-full bg-indigo-600 font-display text-xl font-bold text-white shadow-md sm:h-16 sm:w-16 sm:text-2xl">
                 {(user.name || "U").charAt(0).toUpperCase()}
               </div>
             )}
@@ -2111,21 +2377,21 @@ function ProfilePage({ token, user, onUserUpdate, enrollments = [] }) {
               <Pencil className="w-5 h-5" />
             </button>
           </div>
-          <div>
-            <h2 className="text-xl font-bold text-slate-900 font-display flex items-center gap-2">
-              {user.name}
+          <div className="min-w-0 flex-1">
+            <h2 className="flex flex-wrap items-center gap-2 font-display text-lg font-bold leading-tight text-slate-900 sm:text-xl">
+              <span className="min-w-0 break-words">{user.name}</span>
               <Badge className="bg-indigo-100 text-indigo-700 hover:bg-indigo-200 border-none capitalize text-xs">
                 {user.role === "admin" ? "Dosen / Admin" : user.role === "lecturer" ? "Dosen" : "Mahasiswa"}
               </Badge>
             </h2>
-            <p className="text-xs text-slate-500 mt-0.5 flex items-center gap-3">
-              <span>Email: {user.email || "-"}</span>
-              <span>·</span>
-              <span>Username: {user.username || "-"}</span>
+            <p className="mt-1 flex min-w-0 flex-col gap-0.5 text-xs leading-5 text-slate-500 sm:flex-row sm:flex-wrap sm:items-center sm:gap-x-2">
+              <span className="min-w-0 break-all">Email: {user.email || "-"}</span>
+              <span className="hidden sm:inline">·</span>
+              <span className="min-w-0 break-all">Username: {user.username || "-"}</span>
               {(user.prodi_name || user.homebase) && (
                 <>
-                  <span>·</span>
-                  <span className="font-medium text-slate-700">{user.prodi_name || user.homebase}</span>
+                  <span className="hidden sm:inline">·</span>
+                  <span className="min-w-0 break-words font-medium text-slate-700">{user.prodi_name || user.homebase}</span>
                 </>
               )}
             </p>
@@ -2133,11 +2399,11 @@ function ProfilePage({ token, user, onUserUpdate, enrollments = [] }) {
         </div>
 
         {/* Tab Navigation */}
-        <div className="flex items-center gap-2 bg-slate-100 p-1 rounded-lg shrink-0">
+        <div className="grid w-full shrink-0 grid-cols-2 gap-1 rounded-lg bg-slate-100 p-1 md:w-auto">
           <button
             type="button"
             onClick={() => setActiveTab("profile")}
-            className={`px-4 py-2 rounded-md text-xs font-semibold transition ${
+            className={`min-h-10 rounded-md px-2 py-2 text-xs font-semibold leading-4 transition sm:px-4 ${
               activeTab === "profile"
                 ? "bg-white text-slate-900 shadow-sm"
                 : "text-slate-600 hover:text-slate-900"
@@ -2148,7 +2414,7 @@ function ProfilePage({ token, user, onUserUpdate, enrollments = [] }) {
           <button
             type="button"
             onClick={() => setActiveTab("password")}
-            className={`px-4 py-2 rounded-md text-xs font-semibold transition ${
+            className={`min-h-10 rounded-md px-2 py-2 text-xs font-semibold leading-4 transition sm:px-4 ${
               activeTab === "password"
                 ? "bg-white text-slate-900 shadow-sm"
                 : "text-slate-600 hover:text-slate-900"
@@ -2161,17 +2427,17 @@ function ProfilePage({ token, user, onUserUpdate, enrollments = [] }) {
 
       {activeTab === "profile" ? (
         <Card className="rounded-xl border border-slate-200 shadow-sm bg-white" data-testid="profile-editor-card">
-          <CardHeader className="border-b border-slate-100 pb-4">
-            <CardTitle className="text-base font-bold text-slate-800 flex items-center gap-2" data-testid="profile-editor-title">
-              <User className="w-5 h-5 text-indigo-600" />
-              Kelengkapan Data Profil {isStudent ? "Mahasiswa" : "Dosen / Pengajar"}
+          <CardHeader className="border-b border-slate-100 p-4 sm:px-6 sm:py-5">
+            <CardTitle className="flex items-start gap-2 text-sm font-bold leading-5 text-slate-800 sm:text-base" data-testid="profile-editor-title">
+              <User className="mt-0.5 h-5 w-5 shrink-0 text-indigo-600" />
+              <span>Kelengkapan Data Profil {isStudent ? "Mahasiswa" : "Dosen / Pengajar"}</span>
             </CardTitle>
           </CardHeader>
-          <CardContent className="p-6">
-            <form onSubmit={saveProfile} className="space-y-6" data-testid="profile-editor-form">
+          <CardContent className="p-4 sm:p-6">
+            <form onSubmit={saveProfile} className="min-w-0 space-y-5 sm:space-y-6" data-testid="profile-editor-form">
               {/* SECTION: Upload Foto Profil */}
-              <div className="bg-slate-50 p-4 rounded-xl border border-slate-200 space-y-3">
-                <h4 className="text-xs font-bold text-indigo-600 uppercase tracking-wider border-b border-slate-200 pb-1 flex items-center gap-2">
+              <div className="min-w-0 space-y-3 rounded-xl border border-slate-200 bg-slate-50 p-3 sm:p-4">
+                <h4 className="flex items-start gap-2 border-b border-slate-200 pb-1 text-xs font-bold uppercase leading-5 tracking-wider text-indigo-600">
                   <ImagePlus className="w-4 h-4" /> Foto Profil Resmi
                 </h4>
                 <div className="flex flex-col sm:flex-row items-center gap-4">
@@ -2188,8 +2454,8 @@ function ProfilePage({ token, user, onUserUpdate, enrollments = [] }) {
                       </div>
                     )}
                   </div>
-                  <div className="space-y-2 text-center sm:text-left flex-1">
-                    <p className="text-xs text-slate-600">
+                  <div className="min-w-0 flex-1 space-y-2 text-center sm:text-left">
+                    <p className="break-words text-xs leading-5 text-slate-600">
                       Upload foto formal Anda (Format JPG, PNG, WEBP, atau GIF, maks 5 MB). Foto ini akan ditampilkan pada header dan profil.
                     </p>
                     <input
@@ -2199,13 +2465,13 @@ function ProfilePage({ token, user, onUserUpdate, enrollments = [] }) {
                       className="hidden"
                       onChange={handleAvatarFileChange}
                     />
-                    <div className="flex flex-wrap gap-2 justify-center sm:justify-start">
+                    <div className="flex flex-col gap-2 min-[420px]:flex-row min-[420px]:flex-wrap min-[420px]:justify-center sm:justify-start">
                       <Button
                         type="button"
                         variant="outline"
                         size="sm"
                         onClick={() => avatarInputRef.current?.click()}
-                        className="gap-1.5 text-xs"
+                        className="w-full gap-1.5 text-xs min-[420px]:w-auto"
                       >
                         <Upload className="w-3.5 h-3.5 text-indigo-600" />
                         Pilih Foto
@@ -2216,7 +2482,7 @@ function ProfilePage({ token, user, onUserUpdate, enrollments = [] }) {
                           size="sm"
                           disabled={uploadingAvatar}
                           onClick={handleUploadAvatar}
-                          className="bg-indigo-600 hover:bg-indigo-700 text-white gap-1.5 text-xs"
+                          className="w-full gap-1.5 bg-indigo-600 text-xs text-white hover:bg-indigo-700 min-[420px]:w-auto"
                         >
                           {uploadingAvatar ? "Mengunggah..." : "Simpan Foto Baru"}
                         </Button>
@@ -2228,7 +2494,7 @@ function ProfilePage({ token, user, onUserUpdate, enrollments = [] }) {
                           size="sm"
                           disabled={uploadingAvatar}
                           onClick={handleRemoveAvatar}
-                          className="text-red-600 hover:text-red-700 hover:bg-red-50 gap-1.5 text-xs"
+                          className="w-full gap-1.5 text-xs text-red-600 hover:bg-red-50 hover:text-red-700 min-[420px]:w-auto"
                         >
                           <Trash2 className="w-3.5 h-3.5" />
                           Hapus Foto
@@ -2236,7 +2502,7 @@ function ProfilePage({ token, user, onUserUpdate, enrollments = [] }) {
                       )}
                     </div>
                     {selectedAvatarFile && (
-                      <p className="text-[11px] text-emerald-600 font-medium">
+                      <p className="break-all text-[11px] font-medium text-emerald-600">
                         File terpilih: {selectedAvatarFile.name} ({Math.round(selectedAvatarFile.size / 1024)} KB)
                       </p>
                     )}
@@ -2246,7 +2512,7 @@ function ProfilePage({ token, user, onUserUpdate, enrollments = [] }) {
 
               {/* SECTION 1: Akses & Kredensial */}
               <div className="space-y-3">
-                <h4 className="text-xs font-bold text-indigo-600 uppercase tracking-wider border-b border-slate-100 pb-1">
+                <h4 className="break-words border-b border-slate-100 pb-1 text-xs font-bold uppercase leading-5 tracking-wider text-indigo-600">
                   1. Kredensial Akses Utama
                 </h4>
                 <div className="grid gap-4 sm:grid-cols-2">
@@ -2293,7 +2559,7 @@ function ProfilePage({ token, user, onUserUpdate, enrollments = [] }) {
               {/* SECTION 2: Data Akademik & Dosen (If Lecturer / Admin) */}
               {isLecturer && (
                 <div className="space-y-3 pt-2 border-t border-slate-100">
-                  <h4 className="text-xs font-bold text-indigo-600 uppercase tracking-wider border-b border-slate-100 pb-1">
+                  <h4 className="break-words border-b border-slate-100 pb-1 text-xs font-bold uppercase leading-5 tracking-wider text-indigo-600">
                     2. Data Akademik & Homebase Dosen
                   </h4>
                   <div className="grid gap-4 sm:grid-cols-2 lg:grid-cols-4">
@@ -2383,7 +2649,7 @@ function ProfilePage({ token, user, onUserUpdate, enrollments = [] }) {
               {isStudent && (
                 <>
                   <div className="space-y-3 pt-2 border-t border-slate-100">
-                    <h4 className="text-xs font-bold text-indigo-600 uppercase tracking-wider border-b border-slate-100 pb-1">
+                    <h4 className="break-words border-b border-slate-100 pb-1 text-xs font-bold uppercase leading-5 tracking-wider text-indigo-600">
                       2. Data Kemahasiswaan & Akademik
                     </h4>
                     <div className="grid gap-4 sm:grid-cols-2 lg:grid-cols-4">
@@ -2408,8 +2674,14 @@ function ProfilePage({ token, user, onUserUpdate, enrollments = [] }) {
                     </div>
                   </div>
 
+                  <PhysicalDocumentsPanel
+                    token={token}
+                    user={user}
+                    onUserUpdate={onUserUpdate}
+                  />
+
                   <div className="space-y-3 pt-2 border-t border-slate-100">
-                    <h4 className="text-xs font-bold text-indigo-600 uppercase tracking-wider border-b border-slate-100 pb-1">
+                    <h4 className="break-words border-b border-slate-100 pb-1 text-xs font-bold uppercase leading-5 tracking-wider text-indigo-600">
                       3. Data Orang Tua / Wali Mahasiswa
                     </h4>
                     <div className="grid gap-4 sm:grid-cols-2 lg:grid-cols-3">
@@ -2450,7 +2722,7 @@ function ProfilePage({ token, user, onUserUpdate, enrollments = [] }) {
                     </Field>
                   </div>
 
-                  <div className="border border-slate-200 bg-slate-50 p-4 rounded-xl text-sm" data-testid="profile-enrollments">
+                  <div className="min-w-0 rounded-xl border border-slate-200 bg-slate-50 p-3 text-sm sm:p-4" data-testid="profile-enrollments">
                     <p className="mb-2 font-semibold text-slate-700">Kelas Yang Diikuti ({enrollments.length})</p>
                     <div className="flex flex-wrap gap-2">
                       {enrollments.length === 0 ? (
@@ -2459,9 +2731,9 @@ function ProfilePage({ token, user, onUserUpdate, enrollments = [] }) {
                         enrollments.map((item) => (
                           <Badge
                             key={item.id}
-                            className={statusClass(
+                            className={`max-w-full whitespace-normal break-words text-left leading-4 ${statusClass(
                               item.status === "approved" ? "Aman" : "Risiko Rendah",
-                            )}
+                            )}`}
                           >
                             {item.class_name}: {item.status}
                           </Badge>
@@ -2474,7 +2746,7 @@ function ProfilePage({ token, user, onUserUpdate, enrollments = [] }) {
 
               {/* SECTION 4: Biodata & Kontak Alamat */}
               <div className="space-y-3 pt-2 border-t border-slate-100">
-                <h4 className="text-xs font-bold text-indigo-600 uppercase tracking-wider border-b border-slate-100 pb-1">
+                <h4 className="break-words border-b border-slate-100 pb-1 text-xs font-bold uppercase leading-5 tracking-wider text-indigo-600">
                   {isLecturer ? "3. Biodata Diri & Alamat Domisili" : "4. Biodata Diri & Alamat Tempat Tinggal"}
                 </h4>
                 <div className="grid gap-4 sm:grid-cols-2 lg:grid-cols-4">
@@ -2566,8 +2838,8 @@ function ProfilePage({ token, user, onUserUpdate, enrollments = [] }) {
                 </Field>
               </div>
 
-              <div className="pt-4 border-t border-slate-100 flex items-center justify-end gap-3">
-                <Button type="submit" className="bg-indigo-600 hover:bg-indigo-700 text-white font-semibold text-sm px-6 h-10" data-testid="profile-save-button">
+              <div className="flex items-center justify-end gap-3 border-t border-slate-100 pt-4">
+                <Button type="submit" className="h-10 w-full bg-indigo-600 px-4 text-sm font-semibold text-white hover:bg-indigo-700 sm:w-auto sm:px-6" data-testid="profile-save-button">
                   <CheckCircle2 className="w-4 h-4 mr-1.5" /> Simpan Perubahan Profil
                 </Button>
               </div>
@@ -2579,6 +2851,45 @@ function ProfilePage({ token, user, onUserUpdate, enrollments = [] }) {
           <ChangePasswordPanel token={token} />
         </div>
       )}
+    </div>
+  );
+}
+
+function PhysicalDocumentsReminderModal({ user, onOpenProfile, onDismiss }) {
+  const status = user?.physical_document_status || {};
+  const missingCount = Math.max(
+    0,
+    Number(status.total_count || PHYSICAL_DOCUMENT_TYPES.length) - Number(status.completed_count || 0),
+  );
+  return (
+    <div className="fixed inset-0 z-[10000] flex items-center justify-center bg-slate-950/60 p-4" data-testid="physical-documents-reminder-modal">
+      <div className="w-full max-w-lg rounded-2xl bg-white p-6 shadow-2xl">
+        <div className="flex items-start gap-3">
+          <div className="rounded-xl bg-amber-100 p-3 text-amber-700">
+            <AlertTriangle className="h-6 w-6" />
+          </div>
+          <div>
+            <h2 className="text-lg font-bold text-slate-900">Lengkapi data fisik mahasiswa</h2>
+            <p className="mt-1 text-sm text-slate-600">
+              Selamat datang, {user?.name || "Mahasiswa"}. Masih ada {missingCount} dokumen fisik yang belum diunggah.
+            </p>
+          </div>
+        </div>
+        <div className="mt-5 rounded-xl border border-indigo-100 bg-indigo-50 p-4 text-sm text-indigo-900">
+          <p className="font-semibold">Dokumen yang perlu disiapkan</p>
+          <p className="mt-1 text-xs leading-5 text-indigo-700">
+            Ijazah, transkrip nilai, KTP, KK, akta kelahiran, KIP-K, dan surat keterangan. Anda dapat mengunggahnya dari menu Profil.
+          </p>
+        </div>
+        <div className="mt-6 flex flex-wrap justify-end gap-2">
+          <Button type="button" variant="ghost" onClick={onDismiss} data-testid="physical-documents-reminder-dismiss-button">
+            Nanti
+          </Button>
+          <Button type="button" className="bg-indigo-600 text-white hover:bg-indigo-700" onClick={onOpenProfile} data-testid="physical-documents-reminder-open-profile-button">
+            <Upload className="h-4 w-4" /> Lengkapi sekarang
+          </Button>
+        </div>
+      </div>
     </div>
   );
 }
@@ -3525,8 +3836,8 @@ function DrivePage({
           </div>
           {items.length === 0 ? (
             <EmptyState
-              title="Belum ada file tugas"
-              description="File tugas, materi, dan lampiran soal akan muncul di sini setelah upload."
+              title="Belum ada file tersinkron"
+              description="File tugas, materi, lampiran, dan dokumen fisik mahasiswa akan muncul di sini setelah upload."
             />
           ) : (
             <Table>
@@ -3578,10 +3889,10 @@ function DrivePage({
                     <TableCell>
                       <div>
                         <p className="font-medium">
-                          {item.assignment_title || item.lecturer_name || "-"}
+                          {item.assignment_title || item.document_label || item.lecturer_name || "-"}
                         </p>
                         <p className="text-xs text-slate-500">
-                          {[item.course_name, item.class_name]
+                          {[item.angkatan ? `Angkatan ${item.angkatan}` : "", item.course_name, item.class_name]
                             .filter(Boolean)
                             .join(" · ")}
                         </p>
@@ -3988,6 +4299,7 @@ function AdminApp({
   token,
   user,
   onLogout,
+  onSessionExpired,
   branding,
   onBrandingUpdate,
   onUserUpdate,
@@ -4258,11 +4570,13 @@ function AdminApp({
     },
     settings: {
       app_name: "E-Learning Dosen",
+      meta_description: DEFAULT_META_DESCRIPTION,
       campus_name: "",
       campus_address: "",
       program_name: "",
       lecturer_name: "",
       lecturer_email: "",
+      app_logo_url: "",
       campus_logo_url: "",
       active_academic_year: "2025/2026",
       active_semester: "Ganjil",
@@ -4496,6 +4810,10 @@ function AdminApp({
       else secondary.catch(() => {});
       if (operation) progress.finish(operation, "Data terbaru dimuat");
     } catch (error) {
+      if (isSessionError(error)) {
+        onSessionExpired?.();
+        return;
+      }
       if (operation)
         progress.fail(
           operation,
@@ -5595,14 +5913,17 @@ function AdminApp({
       label: "Kurikulum & Penugasan",
       items: [
         ["master_kurikulum", BookOpen, "Kurikulum & Dosen MK", isCampusAdmin || isKaprodi],
+        ["progres_nilai_prodi", Award, "Progres Nilai Prodi", isCampusAdmin || isKaprodi],
+        ["analisis_rps_prodi", ClipboardCheck, "Analisis & Approval RPS", isCampusAdmin || isKaprodi],
         ["master_jadwal_mengajar", CalendarClock, "Jadwal Mengajar", isCampusAdmin || isKaprodi],
         ["sk_mengajar", FileText, "SK Mengajar Dosen", isCampusAdmin || isKaprodi],
-        ["sk_jabatan", BadgeCheck, "SK Jabatan Akademik Dosen", isCampusAdmin || isKaprodi],
+        ["sk_jabatan", BadgeCheck, "SK Jabatan Akademik Dosen", isCampusAdmin],
       ],
     },
     {
       label: "Sivitas & Perwalian",
       items: [
+        ["analisis_mahasiswa_prodi", BarChart3, "Analisis Mahasiswa Prodi", isCampusAdmin || isKaprodi],
         ["students", Users, "Data Mahasiswa"],
         ["lecturers", Users, "Data Dosen", isCampusAdmin],
         ["master_jabatan_akademik", ShieldCheck, "Jabatan Akademik Dosen", isCampusAdmin],
@@ -5678,7 +5999,7 @@ function AdminApp({
         <div className="admin-sidebar-brand flex items-center gap-3">
           <div className="admin-sidebar-logo">
             <img
-              src={brandingLogo(data.settings || branding)}
+              src={brandingLogo({ ...(data.settings || {}), ...branding })}
               alt="Logo"
               className="h-9 w-9 object-contain"
               data-testid="admin-sidebar-logo-image"
@@ -5899,13 +6220,16 @@ function AdminApp({
           {page === "wizard_semester" && <WizardSemesterBaru onDone={() => setPage("dashboard")} />}
           {page === "master_tahun_ajaran" && <TahunAjaranPage />}
           {page === "master_kurikulum" && <KurikulumMasterPage user={user} />}
+          {page === "progres_nilai_prodi" && <ProgresNilaiProdiPage user={user} token={token} selectedSemester={selectedSemester} />}
+          {page === "analisis_mahasiswa_prodi" && <AnalisisMahasiswaProdiPage user={user} token={token} selectedSemester={selectedSemester} />}
+          {page === "analisis_rps_prodi" && <AnalisisRpsProdiPage user={user} token={token} selectedSemester={selectedSemester} />}
           {page === "master_fakultas" && <FakultasPage />}
           {page === "master_prodi" && <ProdiMasterPage />}
           {page === "master_gedung" && <GedungPage />}
           {page === "master_ruangan" && <RuanganPage />}
           {page === "master_jadwal_mengajar" && <JadwalMengajarPage />}
           {page === "sk_mengajar" && <SkMengajarPage />}
-          {page === "sk_jabatan" && <SkJabatanPage />}
+          {page === "sk_jabatan" && isCampusAdmin && <SkJabatanPage />}
           {page === "master_assign_prodi" && <MahasiswaProdiPage />}
           {page === "enroll_wizard" && <EnrollWizardPage />}
           {page === "master_dosen_wali" && <DosenWaliPage user={user} />}
@@ -6077,6 +6401,7 @@ function AdminApp({
               lecturers={data.lecturers}
               token={token}
               setPage={setPage}
+              onBrandingUpdate={onBrandingUpdate}
             />
           )}
           {page === "integrasi" && isCampusAdmin && <IntegrationSettingsPage token={token} />}
@@ -7540,6 +7865,19 @@ const DashboardPage = memo(function DashboardPage({
         .slice(0, 5),
     [data.assignments],
   );
+  const academicOperationalDeadlines = useMemo(
+    () =>
+      [...(data.calendar || [])]
+        .filter((item) => {
+          const deadline = new Date(item.date).getTime();
+          return item.source === "academic_deadline" && Number.isFinite(deadline);
+        })
+        .sort(
+          (left, right) =>
+            new Date(left.date).getTime() - new Date(right.date).getTime(),
+        ),
+    [data.calendar],
+  );
   const recentSubmissions = useMemo(
     () =>
       [...submissions]
@@ -7712,6 +8050,37 @@ const DashboardPage = memo(function DashboardPage({
           </div>
         </div>
       </section>
+
+      {academicOperationalDeadlines.length > 0 && (
+        <section className="dashboard-attention-section" data-testid="dashboard-academic-deadlines">
+          <div className="dashboard-section-heading">
+            <div>
+              <p>Deadline akademik aktif</p>
+              <h3>Countdown pekerjaan sesuai peran Anda</h3>
+            </div>
+            <Button type="button" variant="outline" size="sm" onClick={() => onNavigate("calendar")}>
+              <CalendarDays /> Buka kalender
+            </Button>
+          </div>
+          <div className="grid gap-4 md:grid-cols-2 xl:grid-cols-3">
+            {academicOperationalDeadlines.map((deadline) => (
+              <Card key={deadline.id} className="rounded-xl border-orange-200 bg-gradient-to-br from-orange-50 via-white to-white shadow-none" data-testid={`dashboard-academic-deadline-${deadline.deadline_type}`}>
+                <CardContent className="p-4">
+                  <div className="flex items-start justify-between gap-3">
+                    <span className="flex h-10 w-10 shrink-0 items-center justify-center rounded-xl bg-orange-100 text-orange-700"><CalendarClock /></span>
+                    <Badge className={deadline.target_role === "kaprodi" ? "border-indigo-200 bg-indigo-50 text-indigo-700" : "border-blue-200 bg-blue-50 text-blue-700"}>{deadline.target_label || "Dosen"}</Badge>
+                  </div>
+                  <h4 className="mt-3 text-sm font-bold text-slate-900">{deadline.title}</h4>
+                  <p className="mt-1 text-xs text-slate-500" data-testid={`dashboard-academic-deadline-date-${deadline.deadline_type}`}>{fmtDate(deadline.date)}</p>
+                  <div className="mt-3">
+                    <DeadlineCountdown deadline={deadline.date} compact testid={`dashboard-academic-deadline-countdown-${deadline.deadline_type}`} />
+                  </div>
+                </CardContent>
+              </Card>
+            ))}
+          </div>
+        </section>
+      )}
 
       <div className="dashboard-metric-grid" data-testid="dashboard-stat-grid">
         {isCampusAdmin ? (
@@ -14800,6 +15169,7 @@ const GradeRecapPage = memo(function GradeRecapPage({ data, exportGradeRecap }) 
 });
 
 function calendarEventTone(event) {
+  if (event.type === "academic_deadline") return "border-orange-200 bg-orange-50 text-orange-700";
   if (event.type === "deadline") return "border-rose-200 bg-rose-50 text-rose-700";
   if (event.type === "tayang") return "border-violet-200 bg-violet-50 text-violet-700";
   if (event.type === "materi") return "border-sky-200 bg-sky-50 text-sky-700";
@@ -14926,6 +15296,25 @@ function emptyAcademicCalendarForm(academicYearId = "") {
   };
 }
 
+function academicDeadlineForm(settings = {}, academicYearId = "") {
+  const storedDeadlines = settings?.deadlines || {};
+  return {
+    academic_year_id: settings?.academic_year_id ?? academicYearId,
+    deadlines: Object.fromEntries(
+      ACADEMIC_DEADLINE_DEFINITIONS.map((definition) => {
+        const stored = storedDeadlines[definition.key] || {};
+        return [
+          definition.key,
+          {
+            enabled: Boolean(stored.enabled),
+            deadline_at: calendarDateTimeInputValue(stored.deadline_at),
+          },
+        ];
+      }),
+    ),
+  };
+}
+
 function CalendarPage({
   events = [],
   token = "",
@@ -14940,6 +15329,12 @@ function CalendarPage({
   const [editorOpen, setEditorOpen] = useState(false);
   const [savingEvent, setSavingEvent] = useState(false);
   const [eventForm, setEventForm] = useState(() => emptyAcademicCalendarForm(selectedSemester));
+  const [deadlineForm, setDeadlineForm] = useState(() => academicDeadlineForm(
+    {},
+    selectedSemester === "all" ? "" : selectedSemester,
+  ));
+  const [loadingDeadlines, setLoadingDeadlines] = useState(false);
+  const [savingDeadlines, setSavingDeadlines] = useState(false);
   const auth = useMemo(() => ({ headers: { Authorization: `Bearer ${token}` } }), [token]);
   const orderedEvents = useMemo(
     () => [...events].sort((left, right) => String(left.date || "").localeCompare(String(right.date || ""))),
@@ -14951,7 +15346,14 @@ function CalendarPage({
     return Number.isFinite(time) && time >= nowMs - 86400000;
   });
   const institutionEvents = orderedEvents.filter((event) => event.source === "academic_calendar");
+  const academicDeadlines = orderedEvents.filter((event) => event.source === "academic_deadline");
   const assignmentDeadlines = orderedEvents.filter((event) => event.type === "deadline");
+  const selectedAcademicYear = (tahunAjaran || []).find(
+    (item) => String(item.id) === String(selectedSemester),
+  );
+  const deadlinePeriodLabel = selectedSemester === "all"
+    ? "Berlaku umum (lintas periode)"
+    : selectedAcademicYear?.nama || [selectedAcademicYear?.tahun, selectedAcademicYear?.semester].filter(Boolean).join(" ") || selectedSemester;
 
   const loadManagedEvents = useCallback(async () => {
     if (!canManage || !token) return;
@@ -14968,9 +15370,30 @@ function CalendarPage({
     }
   }, [auth, canManage, selectedSemester, token]);
 
+  const loadAcademicDeadlines = useCallback(async () => {
+    if (!canManage || !token) return;
+    const academicYearId = selectedSemester === "all" ? "" : selectedSemester;
+    setLoadingDeadlines(true);
+    try {
+      const response = await axios.get(`${API}/calendar/deadlines`, {
+        ...auth,
+        params: { academic_year_id: academicYearId },
+      });
+      setDeadlineForm(academicDeadlineForm(response.data, academicYearId));
+    } catch (error) {
+      toast.error(formatApiError(error, "Gagal memuat pengaturan deadline akademik"));
+    } finally {
+      setLoadingDeadlines(false);
+    }
+  }, [auth, canManage, selectedSemester, token]);
+
   useEffect(() => {
     loadManagedEvents();
   }, [loadManagedEvents]);
+
+  useEffect(() => {
+    loadAcademicDeadlines();
+  }, [loadAcademicDeadlines]);
 
   useEffect(() => {
     setEventForm((current) => (
@@ -14982,6 +15405,19 @@ function CalendarPage({
 
   function updateEventForm(patch) {
     setEventForm((current) => ({ ...current, ...patch }));
+  }
+
+  function updateDeadlineForm(deadlineType, patch) {
+    setDeadlineForm((current) => ({
+      ...current,
+      deadlines: {
+        ...current.deadlines,
+        [deadlineType]: {
+          ...current.deadlines[deadlineType],
+          ...patch,
+        },
+      },
+    }));
   }
 
   function openNewEvent() {
@@ -15052,6 +15488,47 @@ function CalendarPage({
     }
   }
 
+  async function saveAcademicDeadlines() {
+    const missingDate = ACADEMIC_DEADLINE_DEFINITIONS.find((definition) => {
+      const item = deadlineForm.deadlines[definition.key];
+      return item?.enabled && !item?.deadline_at;
+    });
+    if (missingDate) {
+      toast.error(`Tanggal deadline ${missingDate.title} wajib diisi saat switch aktif`);
+      return;
+    }
+
+    const payload = {
+      academic_year_id: selectedSemester === "all" ? "" : selectedSemester,
+      deadlines: Object.fromEntries(
+        ACADEMIC_DEADLINE_DEFINITIONS.map((definition) => {
+          const item = deadlineForm.deadlines[definition.key] || {};
+          const parsedDate = item.deadline_at ? new Date(item.deadline_at) : null;
+          return [
+            definition.key,
+            {
+              enabled: Boolean(item.enabled),
+              deadline_at: parsedDate && !Number.isNaN(parsedDate.getTime())
+                ? parsedDate.toISOString()
+                : "",
+            },
+          ];
+        }),
+      ),
+    };
+    setSavingDeadlines(true);
+    try {
+      const response = await axios.put(`${API}/calendar/deadlines`, payload, auth);
+      setDeadlineForm(academicDeadlineForm(response.data, payload.academic_year_id));
+      toast.success("Pengaturan deadline akademik disimpan");
+      await Promise.resolve(onCalendarChange?.());
+    } catch (error) {
+      toast.error(formatApiError(error, "Pengaturan deadline akademik gagal disimpan"));
+    } finally {
+      setSavingDeadlines(false);
+    }
+  }
+
   return (
     <div className="space-y-5" data-testid="calendar-page">
       <section className="rounded-2xl border border-indigo-100 bg-gradient-to-br from-indigo-50 via-white to-sky-50 px-5 py-6 shadow-sm md:px-7">
@@ -15059,16 +15536,80 @@ function CalendarPage({
           <div className="max-w-3xl">
             <div className="mb-2 flex items-center gap-2 text-xs font-bold uppercase tracking-[0.18em] text-indigo-600"><CalendarDays className="h-4 w-4" /> Kontrol Akademik</div>
             <h2 className="font-display text-2xl font-bold text-slate-900 md:text-3xl" data-testid="calendar-title">Kalender akademik & deadline</h2>
-            <p className="mt-2 text-sm leading-6 text-slate-600">Agenda institusi yang dipublikasikan tampil untuk pengguna sesuai sasaran. Deadline tugas kelas tetap digabungkan otomatis agar seluruh aktivitas akademik terpantau dari satu kalender.</p>
+            <p className="mt-2 text-sm leading-6 text-slate-600">Agenda institusi dan deadline operasional yang aktif tampil sesuai peran pengguna. Deadline tugas kelas tetap digabungkan otomatis agar seluruh aktivitas akademik terpantau dari satu kalender.</p>
           </div>
           {canManage && <Button type="button" onClick={openNewEvent} data-testid="calendar-add-event-button"><Plus /> Tambah agenda kampus</Button>}
         </div>
-        <div className="mt-5 grid gap-3 sm:grid-cols-3">
+        <div className="mt-5 grid gap-3 sm:grid-cols-2 xl:grid-cols-4">
           <div className="rounded-xl border border-white bg-white/80 px-4 py-3"><strong className="block text-2xl text-slate-900">{institutionEvents.length}</strong><span className="text-xs font-medium text-slate-500">Agenda institusi</span></div>
           <div className="rounded-xl border border-white bg-white/80 px-4 py-3"><strong className="block text-2xl text-slate-900">{upcomingEvents.length}</strong><span className="text-xs font-medium text-slate-500">Agenda mendatang</span></div>
+          <div className="rounded-xl border border-white bg-white/80 px-4 py-3"><strong className="block text-2xl text-slate-900">{academicDeadlines.length}</strong><span className="text-xs font-medium text-slate-500">Deadline akademik aktif</span></div>
           <div className="rounded-xl border border-white bg-white/80 px-4 py-3"><strong className="block text-2xl text-slate-900">{assignmentDeadlines.length}</strong><span className="text-xs font-medium text-slate-500">Deadline tugas</span></div>
         </div>
       </section>
+
+      {canManage && (
+        <Card className="rounded-xl border-orange-200 shadow-none" data-testid="calendar-deadline-settings">
+          <CardHeader className="flex flex-col gap-3 border-b border-orange-100 bg-orange-50/50 py-4 sm:flex-row sm:items-center sm:justify-between">
+            <div>
+              <p className="text-xs font-bold uppercase tracking-[0.16em] text-orange-600">Deadline operasional</p>
+              <CardTitle className="mt-1 text-lg">Countdown Kaprodi & Dosen</CardTitle>
+              <p className="mt-1 text-xs text-slate-500">Periode: {deadlinePeriodLabel}. Switch aktif akan menampilkan deadline di kalender dan dashboard peran terkait.</p>
+            </div>
+            <Button type="button" onClick={saveAcademicDeadlines} disabled={loadingDeadlines || savingDeadlines} data-testid="calendar-deadline-save-button">
+              {savingDeadlines ? <Loader2 className="animate-spin" /> : <Save />} Simpan deadline
+            </Button>
+          </CardHeader>
+          <CardContent className="pt-5">
+            {loadingDeadlines ? (
+              <div className="flex items-center gap-2 py-6 text-sm text-slate-500"><Loader2 className="animate-spin" /> Memuat pengaturan deadline...</div>
+            ) : (
+              <div className="grid gap-4 lg:grid-cols-3">
+                {ACADEMIC_DEADLINE_DEFINITIONS.map((definition) => {
+                  const deadline = deadlineForm.deadlines[definition.key] || {};
+                  return (
+                    <article key={definition.key} className={`rounded-xl border p-4 transition ${deadline.enabled ? "border-orange-200 bg-orange-50/40" : "border-slate-200 bg-white"}`} data-testid={`calendar-deadline-${definition.key}`}>
+                      <div className="flex items-start justify-between gap-3">
+                        <div>
+                          <Badge className={definition.targetLabel === "Kaprodi" ? "border-indigo-200 bg-indigo-50 text-indigo-700" : "border-blue-200 bg-blue-50 text-blue-700"}>{definition.targetLabel}</Badge>
+                          <h3 className="mt-2 text-sm font-bold text-slate-900">{definition.title}</h3>
+                          <p className="mt-1 text-xs leading-5 text-slate-500">{definition.description}</p>
+                        </div>
+                        <div className="flex shrink-0 items-center gap-2">
+                          <span className={`text-[11px] font-bold ${deadline.enabled ? "text-emerald-700" : "text-slate-400"}`}>{deadline.enabled ? "ON" : "OFF"}</span>
+                          <Switch
+                            checked={Boolean(deadline.enabled)}
+                            onCheckedChange={(checked) => updateDeadlineForm(definition.key, { enabled: checked })}
+                            aria-label={`Aktifkan deadline ${definition.title}`}
+                            data-testid={`calendar-deadline-${definition.key}-switch`}
+                          />
+                        </div>
+                      </div>
+                      <div className="mt-4">
+                        <Label htmlFor={`calendar-deadline-${definition.key}-date`} className="text-xs font-semibold text-slate-600">Tanggal & waktu deadline</Label>
+                        <Input
+                          id={`calendar-deadline-${definition.key}-date`}
+                          type="datetime-local"
+                          className="mt-1.5"
+                          value={deadline.deadline_at || ""}
+                          onChange={(event) => updateDeadlineForm(definition.key, { deadline_at: event.target.value })}
+                          data-testid={`calendar-deadline-${definition.key}-date`}
+                        />
+                      </div>
+                      {deadline.enabled && deadline.deadline_at && (
+                        <div className="mt-3 flex items-center justify-between gap-2 text-xs text-slate-500">
+                          <span>{fmtDate(deadline.deadline_at)}</span>
+                          <DeadlineCountdown deadline={deadline.deadline_at} compact />
+                        </div>
+                      )}
+                    </article>
+                  );
+                })}
+              </div>
+            )}
+          </CardContent>
+        </Card>
+      )}
 
       {canManage && editorOpen && (
         <Card className="rounded-xl border-indigo-200 shadow-none" data-testid="calendar-editor">
@@ -15108,7 +15649,7 @@ function CalendarPage({
             {orderedEvents.length === 0 ? <EmptyState title="Kalender kosong" description="Agenda institusi, deadline tugas, dan pembukaan materi akan muncul di sini." /> : orderedEvents.map((event) => (
               <article key={`${event.type}-${event.id}`} className="flex flex-col gap-3 rounded-xl border border-slate-200 p-3.5 sm:flex-row sm:items-start" data-testid={`calendar-event-${event.id}`}>
                 <div className="min-w-32 text-sm"><p className="font-semibold text-slate-800" data-testid={`calendar-event-date-${event.id}`}>{fmtDate(event.date)}</p>{event.end_at && calendarDayKey(event.end_at) !== calendarDayKey(event.date) && <p className="mt-1 text-xs text-slate-500">s.d. {fmtDate(event.end_at)}</p>}</div>
-                <div className="min-w-0 flex-1"><div className="flex flex-wrap items-center gap-2"><p className="font-semibold text-slate-900" data-testid={`calendar-event-title-${event.id}`}>{event.title}</p><Badge className={calendarEventTone(event)} data-testid={`calendar-event-type-${event.id}`}>{calendarEventLabel(event)}</Badge></div>{event.class_name && <p className="mt-1 text-xs text-slate-500">Kelas: {event.class_name}</p>}{event.description && <p className="mt-1 text-sm text-slate-600">{event.description}</p>}{event.location && <p className="mt-1 text-xs text-slate-500">Lokasi: {event.location}</p>}{event.link && <a className="mt-1 inline-block text-xs font-semibold text-indigo-600 hover:underline" href={event.link} target="_blank" rel="noreferrer">Buka informasi</a>}</div>
+                <div className="min-w-0 flex-1"><div className="flex flex-wrap items-center gap-2"><p className="font-semibold text-slate-900" data-testid={`calendar-event-title-${event.id}`}>{event.title}</p><Badge className={calendarEventTone(event)} data-testid={`calendar-event-type-${event.id}`}>{calendarEventLabel(event)}</Badge>{event.type === "academic_deadline" && <Badge className="border-slate-200 bg-slate-50 text-slate-600">Untuk {event.target_label}</Badge>}</div>{event.class_name && <p className="mt-1 text-xs text-slate-500">Kelas: {event.class_name}</p>}{event.description && <p className="mt-1 text-sm text-slate-600">{event.description}</p>}{event.location && <p className="mt-1 text-xs text-slate-500">Lokasi: {event.location}</p>}{event.link && <a className="mt-1 inline-block text-xs font-semibold text-indigo-600 hover:underline" href={event.link} target="_blank" rel="noreferrer">Buka informasi</a>}{event.type === "academic_deadline" && <div className="mt-2"><DeadlineCountdown deadline={event.date} compact /></div>}</div>
               </article>
             ))}
           </CardContent>
@@ -15550,9 +16091,10 @@ const SettingsPage = memo(function SettingsPage({
   lecturers = [],
   token,
   setPage,
+  onBrandingUpdate,
 }) {
   const s = forms.settings || {};
-  const [uploading, setUploading] = useState({ logo: false, header: false, footer: false });
+  const [uploading, setUploading] = useState({ appLogo: false, logo: false, header: false, footer: false });
 
   const updateSetting = (key, val) => {
     setForms({
@@ -15613,7 +16155,8 @@ const SettingsPage = memo(function SettingsPage({
     formData.append("file", file);
 
     let endpoint = "";
-    if (type === "logo") endpoint = `${API}/settings/upload-logo`;
+    if (type === "appLogo") endpoint = `${API}/settings/upload-app-logo`;
+    else if (type === "logo") endpoint = `${API}/settings/upload-logo`;
     else if (type === "header") endpoint = `${API}/settings/upload-kop-header`;
     else if (type === "footer") endpoint = `${API}/settings/upload-kop-footer`;
 
@@ -15626,7 +16169,11 @@ const SettingsPage = memo(function SettingsPage({
       const data = await res.json();
       if (!res.ok) throw new Error(data.detail || "Gagal mengunggah file");
 
-      if (type === "logo") {
+      if (type === "appLogo") {
+        updateSetting("app_logo_url", data.app_logo_url);
+        if (onBrandingUpdate) onBrandingUpdate({ app_logo_url: data.app_logo_url });
+        toast.success("Logo aplikasi utama berhasil diunggah & disimpan!");
+      } else if (type === "logo") {
         updateSetting("campus_logo_url", data.logo_url);
         toast.success("Logo kampus berhasil diunggah & disimpan!");
       } else if (type === "header") {
@@ -15746,6 +16293,22 @@ const SettingsPage = memo(function SettingsPage({
                 onChange={(e) => updateSetting("campus_motto", e.target.value)}
                 placeholder="e.g. Unggul, Berkarakter, Berbasis Industri & Teknologi"
               />
+            </Field>
+
+            <Field id="settings-meta-description" label="Meta Description Aplikasi (SEO)">
+              <Textarea
+                id="settings-meta-description"
+                rows={4}
+                maxLength={320}
+                value={s.meta_description || ""}
+                onChange={(e) => updateSetting("meta_description", e.target.value)}
+                placeholder="Deskripsi singkat aplikasi SIAKAD untuk hasil pencarian Google..."
+                data-testid="settings-meta-description"
+              />
+              <div className="mt-1.5 flex items-start justify-between gap-3 text-[11px] text-slate-500">
+                <span>Gunakan kalimat informatif dan unik. Panjang yang disarankan untuk hasil pencarian: 120–160 karakter.</span>
+                <span className="shrink-0 font-medium">{(s.meta_description || "").length}/320</span>
+              </div>
             </Field>
           </CardContent>
         </Card>
@@ -15934,14 +16497,44 @@ const SettingsPage = memo(function SettingsPage({
           </CardContent>
         </Card>
 
-        {/* SECTION 4: Upload Logo Resmi & Banner KOP Header/Footer */}
+        {/* SECTION 4: Upload Logo Aplikasi, Logo Resmi & Banner KOP Header/Footer */}
         <Card className="rounded-xl shadow-sm border border-slate-200">
           <CardHeader className="border-b border-slate-100 bg-slate-50/50 py-3.5">
             <CardTitle className="text-base font-bold flex items-center gap-2 text-slate-800">
-              <FileSpreadsheet className="w-4 h-4 text-indigo-600" /> Branding Logo & Banner KOP Surat
+              <FileSpreadsheet className="w-4 h-4 text-indigo-600" /> Branding Aplikasi & Banner KOP Surat
             </CardTitle>
           </CardHeader>
           <CardContent className="p-5 space-y-5 text-xs">
+
+            {/* Upload Logo Aplikasi Utama */}
+            <div className="space-y-2 border-b border-slate-100 pb-4" data-testid="settings-app-logo-upload">
+              <label className="font-semibold text-slate-700 block">Logo Aplikasi Utama</label>
+              <div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:gap-4">
+                {s.app_logo_url ? (
+                  <div className="w-16 h-16 rounded-lg border border-slate-200 bg-white p-1 flex items-center justify-center shrink-0 shadow-sm">
+                    <img src={resolveMediaUrl(s.app_logo_url)} alt="Logo Aplikasi Utama" className="max-w-full max-h-full object-contain" />
+                  </div>
+                ) : (
+                  <div className="w-16 h-16 rounded-lg border border-dashed border-slate-300 bg-slate-50 flex items-center justify-center shrink-0 text-center text-[10px] text-slate-400">
+                    Logo default
+                  </div>
+                )}
+                <div className="min-w-0 flex-1 space-y-1.5">
+                  <input
+                    type="file"
+                    accept=".jpg,.jpeg,.png,.webp,.svg,image/*"
+                    className="block w-full max-w-full text-xs text-slate-500 file:mr-3 file:py-1.5 file:px-3 file:rounded-md file:border-0 file:text-xs file:font-semibold file:bg-indigo-50 file:text-indigo-700 hover:file:bg-indigo-100"
+                    onChange={(e) => handleUploadFile("appLogo", e.target.files[0])}
+                    disabled={uploading.appLogo}
+                    data-testid="settings-app-logo-input"
+                  />
+                  <p className="text-[11px] leading-4 text-slate-400">
+                    Digunakan pada halaman login, sidebar, dan header aplikasi utama. Format PNG, JPG, WEBP, atau SVG; maksimal 5 MB.
+                  </p>
+                  {uploading.appLogo && <p className="text-[11px] font-semibold text-indigo-600">Mengunggah logo aplikasi...</p>}
+                </div>
+              </div>
+            </div>
 
             {/* Upload Logo Kampus */}
             <div className="space-y-2 border-b border-slate-100 pb-4">
@@ -16107,14 +16700,14 @@ const GUIDE_AUTHORITY_PROFILES = {
     scope: "Program studi yang ditugaskan",
     allowed: ["Memantau dan mengelola kurikulum, jadwal, penugasan dosen wali, serta dokumen akademik prodi.", "Melihat rekap akademik pada scope program studi penugasan."],
     limits: ["Tidak otomatis mendapat akses administrasi sistem, pengaturan kampus, atau data prodi lain.", "Penugasan dicabut berarti akses scope prodi ikut dicabut."],
-    actions: [["master_kurikulum", "Kurikulum Prodi"], ["master_dosen_wali", "Dosen Wali"]],
+    actions: [["master_kurikulum", "Kurikulum Prodi"], ["progres_nilai_prodi", "Progres Nilai Prodi"], ["master_dosen_wali", "Dosen Wali"]],
   },
   sekprodi: {
     title: "Sekretaris Program Studi (Sekprodi)",
     scope: "Program studi yang ditugaskan",
     allowed: ["Membantu administrasi kurikulum, jadwal, dokumen akademik, dan perwalian pada prodi penugasan.", "Mengakses informasi akademik yang diperlukan untuk operasional prodi."],
     limits: ["Wewenang tetap terbatas pada scope prodi dan tidak menggantikan akses Administrator Kampus.", "Tidak dapat mengubah pengaturan sistem atau data lintas prodi."],
-    actions: [["master_kurikulum", "Kurikulum Prodi"], ["master_jadwal_mengajar", "Jadwal Mengajar"]],
+    actions: [["master_kurikulum", "Kurikulum Prodi"], ["progres_nilai_prodi", "Progres Nilai Prodi"], ["master_jadwal_mengajar", "Jadwal Mengajar"]],
   },
   academic_operator: {
     title: "Operator Akademik / BAAK",
@@ -16895,6 +17488,8 @@ const RpsPage = memo(function RpsPage({ data, token, isLecturer }) {
   const [searchClassQuery, setSearchClassQuery] = useState("");
   const [rps, setRps] = useState(null);
   const [loading, setLoading] = useState(false);
+  const [rpsUploading, setRpsUploading] = useState(false);
+  const [rpsExtraction, setRpsExtraction] = useState(null);
   const [editingMeeting, setEditingMeeting] = useState(null);
   const [cpmkForm, setCpmkForm] = useState({
     course_code: "",
@@ -16952,10 +17547,68 @@ const RpsPage = memo(function RpsPage({ data, token, isLecturer }) {
         references: res.data.references || "",
         document_url: res.data.document_url || "",
       });
+      setRpsExtraction(res.data.document_extraction || null);
     } catch (e) {
       toast.error("Gagal memuat data RPS");
     } finally {
       setLoading(false);
+    }
+  }
+
+  async function handleUploadRps(event) {
+    const file = event.target.files?.[0];
+    event.target.value = "";
+    if (!file) return;
+    if (!/\.(pdf|docx|doc)$/i.test(file.name)) {
+      toast.error("Dokumen RPS harus berupa PDF, DOCX, atau Word .doc");
+      return;
+    }
+    if (file.size > 20 * 1024 * 1024) {
+      toast.error("Ukuran dokumen RPS maksimal 20 MB");
+      return;
+    }
+
+    const formData = new FormData();
+    formData.append("file", file);
+    setRpsUploading(true);
+    try {
+      const res = await axios.post(`${API}/classes/${selectedClassId}/rps/upload`, formData, {
+        headers: { Authorization: `Bearer ${token}` },
+      });
+      const extractedValues = {
+        ...(res.data.fallback || {}),
+        ...(res.data.extracted || {}),
+      };
+      setCpmkForm((current) => {
+        const next = { ...current };
+        Object.entries(extractedValues).forEach(([key, value]) => {
+          if (key in next && String(value || "").trim()) next[key] = value;
+        });
+        next.document_url = res.data.document_url || current.document_url;
+        return next;
+      });
+      setRps((current) => ({
+        ...(current || {}),
+        document_url: res.data.document_url || current?.document_url || "",
+        document_file: res.data.document_file || current?.document_file,
+        document_extraction: {
+          stats: res.data.stats || {},
+          warnings: res.data.warnings || [],
+        },
+        ...(res.data.meetings?.length ? { meetings: res.data.meetings } : {}),
+      }));
+      setRpsExtraction({
+        stats: res.data.stats || {},
+        warnings: res.data.warnings || [],
+      });
+      const meetingCount = res.data.meetings?.length || 0;
+      toast.success(
+        `Dokumen RPS berhasil diproses. ${meetingCount ? `${meetingCount} pertemuan` : "Data pertemuan belum terbaca"}; periksa hasil sebelum menyimpan.`,
+      );
+    } catch (error) {
+      toast.error(formatApiError(error, "Dokumen RPS gagal diproses"));
+    } finally {
+      setRpsUploading(false);
     }
   }
 
@@ -17058,7 +17711,7 @@ const RpsPage = memo(function RpsPage({ data, token, isLecturer }) {
             <p className="meeting-overline">Rencana Pembelajaran Semester</p>
             <h2 className="font-display text-2xl font-semibold">Pilih Mata Kuliah Pengampuan</h2>
             <p className="meeting-description">
-              Pilih kelas perkuliahan di bawah ini untuk menyusun, mengunggah PDF, dan mengelola 16 Pertemuan RPS.
+              Pilih kelas perkuliahan di bawah ini untuk menyusun, mengunggah dokumen RPS, dan mengelola 16 Pertemuan RPS.
             </p>
           </div>
         </section>
@@ -17378,7 +18031,7 @@ const RpsPage = memo(function RpsPage({ data, token, isLecturer }) {
 
           <div className="bg-white p-5 rounded-xl border border-slate-200 shadow-sm space-y-4">
             <h3 className="font-semibold text-slate-900 text-base flex items-center gap-2 border-b border-slate-100 pb-3">
-              <BookOpen className="w-5 h-5 text-indigo-600" /> Deskripsi, CPMK, Referensi & Dokumen RPS Resmi
+              <BookOpen className="w-5 h-5 text-indigo-600" /> Deskripsi, CPMK, Referensi & Upload RPS Resmi
             </h3>
 
             <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
@@ -17433,29 +18086,62 @@ const RpsPage = memo(function RpsPage({ data, token, isLecturer }) {
               </div>
 
               <div className="md:col-span-2">
-                <label className="block text-xs font-semibold text-slate-700 mb-1">
-                  Link / File Dokumen RPS Resmi (PDF)
+                <label className="block text-xs font-semibold text-slate-700 mb-1" htmlFor="rps-pdf-upload">
+                  Upload RPS Resmi (PDF / Word)
                 </label>
-                <div className="flex gap-2">
-                  <Input
-                    type="text"
-                    disabled={!isLecturer}
-                    placeholder="https://drive.google.com/... atau URL PDF RPS"
-                    className="text-xs"
-                    value={cpmkForm.document_url}
-                    onChange={(e) => setCpmkForm({ ...cpmkForm, document_url: e.target.value })}
-                  />
+                <div className="flex flex-col sm:flex-row sm:items-center gap-2">
+                  <label
+                    htmlFor="rps-pdf-upload"
+                    className={`btn btn-secondary text-xs inline-flex items-center justify-center gap-1.5 w-fit ${
+                      !isLecturer || rpsUploading ? "opacity-60 cursor-not-allowed" : "cursor-pointer"
+                    }`}
+                  >
+                    {rpsUploading ? <Loader2 className="w-3.5 h-3.5 animate-spin" /> : <Upload className="w-3.5 h-3.5" />}
+                    {rpsUploading ? "Mengekstrak data..." : "Pilih Dokumen & Ekstrak Otomatis"}
+                    <input
+                      id="rps-pdf-upload"
+                      type="file"
+                      accept=".pdf,.docx,.doc,application/pdf,application/vnd.openxmlformats-officedocument.wordprocessingml.document,application/msword"
+                      className="sr-only"
+                      disabled={!isLecturer || rpsUploading}
+                      onChange={handleUploadRps}
+                      data-testid="rps-pdf-upload-input"
+                    />
+                  </label>
                   {cpmkForm.document_url && (
                     <a
-                      href={cpmkForm.document_url}
+                      href={authenticatedFileLink(cpmkForm.document_url, token)}
                       target="_blank"
                       rel="noopener noreferrer"
-                      className="btn btn-secondary text-xs flex items-center gap-1 shrink-0"
+                      className="btn btn-secondary text-xs flex items-center gap-1 w-fit"
+                      data-testid="rps-official-pdf-link"
                     >
-                      <Download className="w-3.5 h-3.5" /> Buka PDF
+                      <Download className="w-3.5 h-3.5" /> Buka dokumen tersimpan
                     </a>
                   )}
                 </div>
+                <p className="text-[11px] text-slate-500 mt-1.5">
+                  PDF/DOCX/Word maksimal 20 MB. Data yang terbaca akan mengisi identitas, CPL, CPMK, deskripsi, referensi, dan tabel pertemuan.
+                </p>
+                {rps?.document_file?.file_name && (
+                  <p className="text-[11px] text-slate-600 mt-1">
+                    Dokumen tersimpan: <span className="font-semibold">{rps.document_file.file_name}</span>
+                  </p>
+                )}
+                {rpsExtraction && (
+                  <div className="mt-3 rounded-lg border border-indigo-100 bg-indigo-50/60 p-3 text-[11px] text-indigo-900" data-testid="rps-extraction-summary">
+                    <div className="flex flex-wrap items-center gap-x-4 gap-y-1 font-semibold">
+                      <span>{rpsExtraction.stats?.fields_found || 0}/{rpsExtraction.stats?.fields_total || 14} field terbaca</span>
+                      <span>{rpsExtraction.stats?.meetings_found || 0}/16 pertemuan terbaca</span>
+                    </div>
+                    <p className="mt-1 text-indigo-800">Hasil ekstraksi adalah draft. Tinjau dan edit kolom di bawah sebelum klik Simpan RPS.</p>
+                    {(rpsExtraction.warnings || []).length > 0 && (
+                      <ul className="mt-1 list-disc pl-4 text-amber-800">
+                        {rpsExtraction.warnings.map((warning) => <li key={warning}>{warning}</li>)}
+                      </ul>
+                    )}
+                  </div>
+                )}
               </div>
             </div>
           </div>
@@ -17515,12 +18201,32 @@ const RpsPage = memo(function RpsPage({ data, token, isLecturer }) {
       )}
 
       {editingMeeting && (
-        <div className="fixed inset-0 z-50 bg-black/50 flex items-center justify-center p-4">
-          <form onSubmit={handleSaveMeeting} className="bg-white rounded-xl max-w-lg w-full p-6 space-y-4 shadow-xl">
-            <h3 className="font-semibold text-slate-900 text-base border-b pb-2">
-              Edit Detail Sesi Pertemuan {editingMeeting.meeting_number}
-            </h3>
-            <div className="space-y-3 text-xs">
+        <div
+          className="fixed inset-0 z-50 flex items-end justify-center bg-black/50 p-0 sm:items-center sm:p-4"
+          data-testid="rps-meeting-editor-modal"
+        >
+          <form
+            onSubmit={handleSaveMeeting}
+            className="flex max-h-[92dvh] w-full max-w-2xl flex-col overflow-hidden rounded-t-2xl bg-white shadow-xl sm:max-h-[calc(100dvh-2rem)] sm:rounded-xl"
+          >
+            <div className="flex shrink-0 items-center justify-between gap-3 border-b border-slate-200 bg-white px-4 py-3 sm:px-6 sm:py-4">
+              <div className="min-w-0">
+                <p className="text-[11px] font-bold uppercase tracking-[0.14em] text-indigo-600">RPS · Pertemuan {editingMeeting.meeting_number}</p>
+                <h3 className="truncate text-base font-semibold text-slate-900">
+                  Edit Detail Sesi Pertemuan
+                </h3>
+              </div>
+              <button
+                type="button"
+                onClick={() => setEditingMeeting(null)}
+                className="flex h-9 w-9 shrink-0 items-center justify-center rounded-full border border-slate-200 text-slate-500 transition hover:bg-slate-100 hover:text-slate-900"
+                aria-label="Tutup editor pertemuan"
+              >
+                <X className="h-4 w-4" />
+              </button>
+            </div>
+            <div className="min-h-0 flex-1 overflow-y-auto overscroll-contain p-4 sm:p-6">
+              <div className="space-y-3 text-xs">
               <div>
                 <label className="block font-semibold mb-1">Judul Topik Sesi</label>
                 <Input
@@ -17645,16 +18351,17 @@ const RpsPage = memo(function RpsPage({ data, token, isLecturer }) {
                   placeholder="cth: Kuis singkat & latihan mandiri"
                 />
               </div>
+              </div>
             </div>
-            <div className="flex justify-end gap-2 pt-2 border-t">
+            <div className="flex shrink-0 gap-2 border-t border-slate-200 bg-white px-4 pb-[calc(env(safe-area-inset-bottom,0px)+1rem)] pt-3 sm:justify-end sm:px-6 sm:pb-4">
               <button
                 type="button"
                 onClick={() => setEditingMeeting(null)}
-                className="btn btn-secondary text-xs"
+                className="btn btn-secondary flex-1 text-xs sm:flex-none"
               >
                 Batal
               </button>
-              <button type="submit" className="btn btn-primary text-xs">
+              <button type="submit" className="btn btn-primary flex-1 text-xs sm:flex-none" data-testid="rps-meeting-save-button">
                 Simpan Sesi
               </button>
             </div>
@@ -18955,7 +19662,17 @@ const LecturerReportsPage = memo(function LecturerReportsPage({ data, token, use
   );
 });
 
-function StudentApp({ token, user, onLogout, branding, onUserUpdate, version }) {
+function StudentApp({
+  token,
+  user,
+  onLogout,
+  onSessionExpired,
+  branding,
+  onUserUpdate,
+  version,
+  showPhysicalDocumentsReminder = false,
+  onDismissPhysicalDocumentsReminder,
+}) {
   const [selectedSemester, setSelectedSemester] = useState("all");
   const [data, setData] = useState({
     assignments: [],
@@ -19029,7 +19746,13 @@ function StudentApp({ token, user, onLogout, branding, onUserUpdate, version }) 
     }));
   }
   useEffect(() => {
-    loadStudent().catch(() => toast.error("Gagal memuat ruang mahasiswa"));
+    loadStudent().catch((error) => {
+      if (isSessionError(error)) {
+        onSessionExpired?.();
+        return;
+      }
+      toast.error("Gagal memuat ruang mahasiswa");
+    });
     // Learning content is loaded first; calendar and administration data
     // follow in the same background hydration pass.
     // eslint-disable-next-line react-hooks/exhaustive-deps
@@ -20394,13 +21117,23 @@ function StudentApp({ token, user, onLogout, branding, onUserUpdate, version }) 
               <Icon />
               <span>{label}</span>
             </button>
-          ))}
+        ))}
       </nav>
+      {showPhysicalDocumentsReminder && (
+        <PhysicalDocumentsReminderModal
+          user={user}
+          onDismiss={onDismissPhysicalDocumentsReminder}
+          onOpenProfile={() => {
+            onDismissPhysicalDocumentsReminder?.();
+            setStudentPage("profile");
+          }}
+        />
+      )}
     </div>
   );
 }
 
-const ChatWidget = memo(function ChatWidget({ token, user }) {
+const ChatWidget = memo(function ChatWidget({ token, user, onSessionExpired }) {
   const [open, setOpen] = useState(false);
   const [query, setQuery] = useState("");
   const [contacts, setContacts] = useState([]);
@@ -20446,7 +21179,11 @@ const ChatWidget = memo(function ChatWidget({ token, user }) {
         params: { q: search },
       });
       setContacts(data);
-    } catch {
+    } catch (error) {
+      if (isSessionError(error)) {
+        onSessionExpired?.();
+        return;
+      }
       toast.error("Daftar chat gagal dimuat");
     }
   }
@@ -20456,7 +21193,11 @@ const ChatWidget = memo(function ChatWidget({ token, user }) {
     try {
       const { data } = await axios.get(`${API}/chat/lecturers`, auth);
       setLecturers(data);
-    } catch {
+    } catch (error) {
+      if (isSessionError(error)) {
+        onSessionExpired?.();
+        return;
+      }
       toast.error("Kontak dosen gagal dimuat");
     }
   }
@@ -20527,7 +21268,11 @@ const ChatWidget = memo(function ChatWidget({ token, user }) {
         }
       };
       socket.onerror = () => {};
-      socket.onclose = () => {
+      socket.onclose = (event) => {
+        if (event.code === 1008) {
+          onSessionExpired?.();
+          return;
+        }
         if (!disposed) retryTimer = window.setTimeout(connect, 1500);
       };
     }
@@ -20570,7 +21315,12 @@ const ChatWidget = memo(function ChatWidget({ token, user }) {
           : items.filter((id) => id !== data.contact.id),
       );
       progress.finish(operation, "Percakapan dimuat");
-    } catch {
+    } catch (error) {
+      if (isSessionError(error)) {
+        onSessionExpired?.();
+        progress.fail(operation, "Sesi login telah berakhir");
+        return;
+      }
       progress.fail(operation, "Pesan gagal dimuat");
       toast.error("Pesan gagal dimuat");
     }
@@ -20607,6 +21357,11 @@ const ChatWidget = memo(function ChatWidget({ token, user }) {
       await loadContacts(query);
       progress.finish(operation, "Pesan terkirim");
     } catch (error) {
+      if (isSessionError(error)) {
+        onSessionExpired?.();
+        progress.fail(operation, "Sesi login telah berakhir");
+        return;
+      }
       const detail = formatApiError(error, "Pesan gagal dikirim");
       progress.fail(operation, detail);
       toast.error(detail);
@@ -21156,6 +21911,8 @@ function App() {
   const [branding, setBranding] = useState(defaultBranding);
   const [appVersion, setAppVersion] = useState(null);
   const [ssoError, setSsoError] = useState(ssoQuery.error);
+  const [showPhysicalDocumentsReminder, setShowPhysicalDocumentsReminder] = useState(false);
+  const sessionExpiredRef = useRef(false);
   useEffect(() => {
     axios
       .get(`${API}/settings/public`)
@@ -21167,7 +21924,13 @@ function App() {
       .catch(() => setAppVersion(null));
   }, []);
   useEffect(() => {
+    const description = brandingMetaDescription(branding);
     document.title = brandingName(branding);
+    document.documentElement.lang = "id";
+    updateMetaContent("name", "description", description);
+    updateMetaContent("property", "og:description", description);
+    updateMetaContent("name", "twitter:description", description);
+    updateAppIcon(brandingLogo(branding));
   }, [branding]);
   useEffect(() => {
     if (resetQuery.active) {
@@ -21177,11 +21940,25 @@ function App() {
       setUser(null);
     }
   }, [resetQuery.active]);
+  const handleSessionExpired = useCallback(() => {
+    if (sessionExpiredRef.current) return;
+    sessionExpiredRef.current = true;
+    localStorage.removeItem("elearn_token");
+    localStorage.removeItem("elearn_user");
+    setToken("");
+    setUser(null);
+    setShowPhysicalDocumentsReminder(false);
+    toast.error("Sesi login telah berakhir. Silakan masuk kembali.");
+  }, []);
   const handleAuth = useCallback((payload) => {
+    sessionExpiredRef.current = false;
     localStorage.setItem("elearn_token", payload.token);
     localStorage.setItem("elearn_user", JSON.stringify(payload.user));
     setToken(payload.token);
     setUser(payload.user);
+    setShowPhysicalDocumentsReminder(
+      Boolean(payload.user?.show_physical_documents_reminder && payload.user?.role === "student"),
+    );
   }, []);
   useEffect(() => {
     if (ssoExchangeStarted.current || (!ssoQuery.ticket && !ssoQuery.error))
@@ -21214,8 +21991,10 @@ function App() {
     axios
       .get(`${API}/auth/me`, { headers: { Authorization: `Bearer ${token}` } })
       .then(({ data }) => handleUserUpdate(data))
-      .catch(() => {});
-  }, [handleUserUpdate, token]);
+      .catch((error) => {
+        if (isSessionError(error)) handleSessionExpired();
+      });
+  }, [handleSessionExpired, handleUserUpdate, token]);
   const handleBrandingUpdate = useCallback((updated) => {
     setBranding((current) => ({ ...current, ...updated }));
   }, []);
@@ -21237,6 +22016,7 @@ function App() {
       localStorage.removeItem("elearn_user");
       setToken("");
       setUser(null);
+      setShowPhysicalDocumentsReminder(false);
     }
     if (logoutUrl) window.location.assign(logoutUrl);
   }, [token]);
@@ -21317,22 +22097,30 @@ function App() {
               token={token}
               user={user}
               onLogout={logout}
+              onSessionExpired={handleSessionExpired}
               branding={branding}
               onBrandingUpdate={handleBrandingUpdate}
               onUserUpdate={handleUserUpdate}
               version={appVersion}
+              showPhysicalDocumentsReminder={showPhysicalDocumentsReminder}
+              onDismissPhysicalDocumentsReminder={() => setShowPhysicalDocumentsReminder(false)}
             />
           ) : (
             <StudentApp
               token={token}
               user={user}
               onLogout={logout}
+              onSessionExpired={handleSessionExpired}
               branding={branding}
               onUserUpdate={handleUserUpdate}
               version={appVersion}
             />
           )}
-          <ChatWidget token={token} user={user} />
+          <ChatWidget
+            token={token}
+            user={user}
+            onSessionExpired={handleSessionExpired}
+          />
         </>
       )}
     </ActionProgressProvider>

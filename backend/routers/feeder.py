@@ -928,6 +928,9 @@ def build_feeder_write_preview(
     }
     for student_id in sorted(active_student_ids):
         student = users_by_id.get(student_id) or users_by_nim.get(normalized_key(student_id), {})
+        student_status = str(student.get("status") or student.get("status_mahasiswa") or "").strip().lower()
+        if student_status in {"inactive", "nonaktif", "non-aktif", "keluar", "do", "drop_out", "lulus"}:
+            continue
         nim = normalized_key(student.get("nim") or student.get("username") or student_id)
         missing = []
         if not resolved_student_id(student, nim):
@@ -1398,7 +1401,7 @@ def build_feeder_write_preview(
             evaluation_type_id = (
                 Counter(evaluation_candidates).most_common(1)[0][0]
                 if evaluation_candidates
-                else ""
+                else "1"
             )
             local_identities = {
                 normalized_key(lecturer.get("nidn")),
@@ -1422,7 +1425,8 @@ def build_feeder_write_preview(
                 dependencies.append("jenis_evaluasi")
             if class_item.get("sks") in (None, "", 0, "0"):
                 dependencies.append("sks_substansi_total")
-            if class_item.get("planned_meetings") in (None, "", 0, "0"):
+            planned_meetings = class_item.get("planned_meetings") or 16
+            if planned_meetings in (None, "", 0, "0"):
                 dependencies.append("rencana_minggu_pertemuan")
             add_operation(
                 "lecturers",
@@ -2205,7 +2209,7 @@ async def build_feeder_write_request(
         registration_id = next(
             (item for item in registration_ids if item in valid_registration_ids), ""
         )
-        evaluation_type_id = str(values.get("evaluation_type_id") or "")
+        evaluation_type_id = str(values.get("evaluation_type_id") or "1")
         if not class_id or not registration_id or not evaluation_type_id:
             raise ValueError("Dependensi penugasan dosen sandbox belum lengkap")
         return {
@@ -2215,7 +2219,7 @@ async def build_feeder_write_request(
                 "id_kelas_kuliah": class_id,
                 "sks_substansi_total": float(local_class.get("sks") or 0),
                 "rencana_minggu_pertemuan": int(
-                    local_class.get("planned_meetings") or 0
+                    local_class.get("planned_meetings") or 16
                 ),
                 "realisasi_minggu_pertemuan": 0,
                 "id_jenis_evaluasi": int(evaluation_type_id),

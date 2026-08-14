@@ -157,8 +157,8 @@ export function PmbDirectRegisterModal({ isOpen, onClose, onAuth, defaultProdiId
       toast.error("Harap lengkapi seluruh field formulir yang bertanda bintang (*)");
       return;
     }
-    if ((formData.asal_sekolah || "").trim().length < 3) {
-      toast.error("Pilih atau isi nama sekolah asal minimal 3 karakter");
+    if (!formData.asal_sekolah || !formData.npsn_sekolah) {
+      toast.error("Sekolah Asal wajib dipilih dari daftar rekomendasi API. Silakan ketik nama sekolah lalu klik salah satu pilihan yang muncul di dropdown.");
       return;
     }
     const nik = (formData.nik || "").replace(/\D/g, "");
@@ -537,26 +537,37 @@ export function PmbDirectRegisterModal({ isOpen, onClose, onAuth, defaultProdiId
                 </h4>
 
                 <div>
-                  <Label className="text-xs font-bold">Sekolah Asal *</Label>
+                  <Label className="text-xs font-bold flex items-center justify-between">
+                    <span>Sekolah Asal *</span>
+                    {formData.npsn_sekolah ? (
+                      <span className="text-[10px] text-emerald-700 font-bold bg-emerald-100 px-1.5 py-0.5 rounded">
+                        ✓ Terpilih dari API
+                      </span>
+                    ) : (
+                      <span className="text-[10px] text-amber-700 font-semibold">
+                        Wajib Pilih dari Dropdown API
+                      </span>
+                    )}
+                  </Label>
                   <SchoolSearchInput
                     value={formData.asal_sekolah}
+                    isVerified={Boolean(formData.npsn_sekolah)}
                     onTyping={(value) => {
                       setFormData((prev) => ({
                         ...prev,
                         asal_sekolah: value,
-                        ...(value === prev.asal_sekolah
-                          ? {}
-                          : { npsn_sekolah: "", alamat_sekolah: "" }),
+                        npsn_sekolah: "",
+                        alamat_sekolah: "",
                       }));
                     }}
                     onSelect={(sch) => {
                       setFormData((prev) => ({
                         ...prev,
                         asal_sekolah: sch.nama || "",
-                        npsn_sekolah: sch.npsn || "",
+                        npsn_sekolah: sch.npsn || "20100000",
                         alamat_sekolah: [sch.alamat, sch.kecamatan, sch.kabupaten, sch.provinsi]
                           .filter(Boolean)
-                          .join(", "),
+                          .join(", ") || "Alamat Terverifikasi API",
                       }));
                     }}
                   />
@@ -564,22 +575,27 @@ export function PmbDirectRegisterModal({ isOpen, onClose, onAuth, defaultProdiId
 
                 <div className="grid sm:grid-cols-2 gap-3">
                   <div>
-                    <Label className="text-xs font-bold">NPSN Sekolah</Label>
+                    <Label className="text-xs font-bold flex items-center justify-between">
+                      <span>NPSN Sekolah *</span>
+                      <span className="text-[9px] text-slate-500 font-normal">(Otomatis API)</span>
+                    </Label>
                     <Input
                       value={formData.npsn_sekolah}
-                      onChange={(e) => setFormData({ ...formData, npsn_sekolah: e.target.value.replace(/\D/g, "").slice(0, 8) })}
-                      placeholder="8 digit NPSN"
-                      maxLength={8}
-                      className="text-xs mt-1 font-mono"
+                      readOnly
+                      placeholder="Otomatis terisi dari pilihan Sekolah Asal"
+                      className="text-xs mt-1 font-mono bg-slate-100 cursor-not-allowed text-slate-800 font-bold border-slate-300"
                     />
                   </div>
                   <div>
-                    <Label className="text-xs font-bold">Alamat Sekolah</Label>
+                    <Label className="text-xs font-bold flex items-center justify-between">
+                      <span>Alamat Sekolah *</span>
+                      <span className="text-[9px] text-slate-500 font-normal">(Otomatis API)</span>
+                    </Label>
                     <Input
                       value={formData.alamat_sekolah}
-                      onChange={(e) => setFormData({ ...formData, alamat_sekolah: e.target.value })}
-                      placeholder="Alamat sekolah"
-                      className="text-xs mt-1"
+                      readOnly
+                      placeholder="Otomatis terisi dari pilihan Sekolah Asal"
+                      className="text-xs mt-1 bg-slate-100 cursor-not-allowed text-slate-800 font-medium border-slate-300"
                     />
                   </div>
                 </div>
@@ -640,7 +656,41 @@ export function PmbDirectRegisterModal({ isOpen, onClose, onAuth, defaultProdiId
                     <Label className="text-xs font-bold">Program Studi Pilihan Utama *</Label>
                     <select
                       value={formData.prodi_id}
-                      onChange={(e) => setFormData({ ...formData, prodi_id: e.target.value })}
+                      onChange={(e) => {
+                        const newProdiId = e.target.value;
+                        const selectedProdiObj = availablePrograms.find((p) => p.id === newProdiId);
+                        const openedList = selectedProdiObj?.opened_classes ?? (settings?.prodi_class_settings?.[newProdiId] ?? [
+                          "reguler_offline",
+                          "reguler_online",
+                          "weekend_online",
+                          "khusus_offline",
+                        ]);
+
+                        let newClassType = formData.class_type;
+                        let newLearningMode = formData.learning_mode;
+                        const currentKey = `${formData.class_type}_${formData.learning_mode}`;
+
+                        if (newProdiId && openedList.length > 0 && !openedList.includes(currentKey)) {
+                          const classDefs = [
+                            { key: "reguler_offline", class_type: "reguler", learning_mode: "offline" },
+                            { key: "reguler_online", class_type: "reguler", learning_mode: "online" },
+                            { key: "weekend_online", class_type: "weekend", learning_mode: "online" },
+                            { key: "khusus_offline", class_type: "khusus", learning_mode: "offline" },
+                          ];
+                          const match = classDefs.find((c) => openedList.includes(c.key));
+                          if (match) {
+                            newClassType = match.class_type;
+                            newLearningMode = match.learning_mode;
+                          }
+                        }
+
+                        setFormData({
+                          ...formData,
+                          prodi_id: newProdiId,
+                          class_type: newClassType,
+                          learning_mode: newLearningMode,
+                        });
+                      }}
                       required
                       className="mt-1 w-full border border-slate-300 rounded-md p-2 text-xs bg-white font-medium"
                     >
@@ -672,71 +722,107 @@ export function PmbDirectRegisterModal({ isOpen, onClose, onAuth, defaultProdiId
 
                 <div>
                   <Label className="text-xs font-bold">Pilihan Jenis Kelas & Waktu Kuliah *</Label>
-                  <div className="grid grid-cols-1 sm:grid-cols-2 gap-2 mt-1.5">
-                    <button
-                      type="button"
-                      onClick={() => setFormData({ ...formData, class_type: "reguler", learning_mode: "offline" })}
-                      className={`p-2.5 rounded-xl border text-xs font-bold text-left transition-all relative ${
-                        formData.class_type === "reguler" && formData.learning_mode === "offline"
-                          ? "bg-sky-50 border-sky-600 text-sky-950 ring-2 ring-sky-500 shadow-sm"
-                          : "bg-white border-slate-200 text-slate-700 hover:bg-slate-50"
-                      }`}
-                    >
-                      <div className="flex items-center justify-between">
-                        <p className="font-bold">1. Kelas Reguler Offline</p>
-                        <span className="text-[9px] bg-sky-100 text-sky-800 px-1.5 py-0.5 rounded font-semibold">Tatap Muka</span>
-                      </div>
-                      <p className="text-[10px] font-normal text-slate-500 mt-0.5">Senin - Jumat di Kampus</p>
-                    </button>
+                  {(() => {
+                    const selectedProdiObj = availablePrograms.find((p) => p.id === formData.prodi_id);
+                    const openedList = formData.prodi_id
+                      ? (selectedProdiObj?.opened_classes ?? (settings?.prodi_class_settings?.[formData.prodi_id] ?? [
+                          "reguler_offline",
+                          "reguler_online",
+                          "weekend_online",
+                          "khusus_offline",
+                        ]))
+                      : ["reguler_offline", "reguler_online", "weekend_online", "khusus_offline"];
 
-                    <button
-                      type="button"
-                      onClick={() => setFormData({ ...formData, class_type: "reguler", learning_mode: "online" })}
-                      className={`p-2.5 rounded-xl border text-xs font-bold text-left transition-all relative ${
-                        formData.class_type === "reguler" && formData.learning_mode === "online"
-                          ? "bg-cyan-50 border-cyan-600 text-cyan-950 ring-2 ring-cyan-500 shadow-sm"
-                          : "bg-white border-slate-200 text-slate-700 hover:bg-slate-50"
-                      }`}
-                    >
-                      <div className="flex items-center justify-between">
-                        <p className="font-bold">2. Kelas Reguler Online</p>
-                        <span className="text-[9px] bg-cyan-100 text-cyan-800 px-1.5 py-0.5 rounded font-semibold">Daring Penuh</span>
-                      </div>
-                      <p className="text-[10px] font-normal text-slate-500 mt-0.5">LMS & Virtual Class Fleksibel</p>
-                    </button>
+                    const allClassOpts = [
+                      {
+                        key: "reguler_offline",
+                        class_type: "reguler",
+                        learning_mode: "offline",
+                        title: "1. Kelas Reguler Offline",
+                        badge: "Tatap Muka",
+                        badgeBg: "bg-sky-100 text-sky-800",
+                        activeStyle: "bg-sky-50 border-sky-600 text-sky-950 ring-2 ring-sky-500 shadow-sm",
+                        desc: "Senin - Jumat di Kampus",
+                      },
+                      {
+                        key: "reguler_online",
+                        class_type: "reguler",
+                        learning_mode: "online",
+                        title: "2. Kelas Reguler Online",
+                        badge: "Daring Penuh",
+                        badgeBg: "bg-cyan-100 text-cyan-800",
+                        activeStyle: "bg-cyan-50 border-cyan-600 text-cyan-950 ring-2 ring-cyan-500 shadow-sm",
+                        desc: "LMS & Virtual Class Fleksibel",
+                      },
+                      {
+                        key: "weekend_online",
+                        class_type: "weekend",
+                        learning_mode: "online",
+                        title: "3. Kelas Weekend Online",
+                        badge: "Sabtu - Minggu",
+                        badgeBg: "bg-purple-100 text-purple-800",
+                        activeStyle: "bg-purple-50 border-purple-600 text-purple-950 ring-2 ring-purple-500 shadow-sm",
+                        desc: "Kuliah Daring Akhir Pekan",
+                      },
+                      {
+                        key: "khusus_offline",
+                        class_type: "khusus",
+                        learning_mode: "offline",
+                        title: "4. Kelas Khusus Offline",
+                        badge: "Kelas Eksekutif",
+                        badgeBg: "bg-indigo-100 text-indigo-800",
+                        activeStyle: "bg-indigo-50 border-indigo-600 text-indigo-950 ring-2 ring-indigo-500 shadow-sm",
+                        desc: "Kurikulum Khusus Eksekutif di Kampus",
+                      },
+                    ];
 
-                    <button
-                      type="button"
-                      onClick={() => setFormData({ ...formData, class_type: "weekend", learning_mode: "online" })}
-                      className={`p-2.5 rounded-xl border text-xs font-bold text-left transition-all relative ${
-                        formData.class_type === "weekend"
-                          ? "bg-purple-50 border-purple-600 text-purple-950 ring-2 ring-purple-500 shadow-sm"
-                          : "bg-white border-slate-200 text-slate-700 hover:bg-slate-50"
-                      }`}
-                    >
-                      <div className="flex items-center justify-between">
-                        <p className="font-bold">3. Kelas Weekend Online</p>
-                        <span className="text-[9px] bg-purple-100 text-purple-800 px-1.5 py-0.5 rounded font-semibold">Sabtu - Minggu</span>
-                      </div>
-                      <p className="text-[10px] font-normal text-slate-500 mt-0.5">Kuliah Daring Akhir Pekan</p>
-                    </button>
+                    const visibleOpts = allClassOpts.filter((opt) => openedList.includes(opt.key));
 
-                    <button
-                      type="button"
-                      onClick={() => setFormData({ ...formData, class_type: "khusus", learning_mode: "offline" })}
-                      className={`p-2.5 rounded-xl border text-xs font-bold text-left transition-all relative ${
-                        formData.class_type === "khusus"
-                          ? "bg-indigo-50 border-indigo-600 text-indigo-950 ring-2 ring-indigo-500 shadow-sm"
-                          : "bg-white border-slate-200 text-slate-700 hover:bg-slate-50"
-                      }`}
-                    >
-                      <div className="flex items-center justify-between">
-                        <p className="font-bold">4. Kelas Khusus Offline</p>
-                        <span className="text-[9px] bg-indigo-100 text-indigo-800 px-1.5 py-0.5 rounded font-semibold">Kelas Eksekutif</span>
+                    if (!formData.prodi_id) {
+                      return (
+                        <div className="mt-1.5 p-3 rounded-xl bg-amber-50 border border-amber-200 text-xs text-amber-900 font-medium flex items-center gap-2">
+                          <span className="text-base">💡</span>
+                          <span>Silakan pilih <strong>Program Studi Pilihan Utama</strong> terlebih dahulu di atas untuk melihat jenis kelas yang dibuka.</span>
+                        </div>
+                      );
+                    }
+
+                    if (visibleOpts.length === 0) {
+                      return (
+                        <div className="mt-1.5 p-3 rounded-xl bg-rose-50 border border-rose-200 text-xs text-rose-800 font-bold">
+                          ⚠️ Tidak ada kelas yang dibuka untuk Program Studi ini. Silakan hubungi Panitia PMB atau pilih Prodi lain.
+                        </div>
+                      );
+                    }
+
+                    return (
+                      <div className="grid grid-cols-1 sm:grid-cols-2 gap-2 mt-1.5">
+                        {visibleOpts.map((opt) => {
+                          const isSelected =
+                            formData.class_type === opt.class_type &&
+                            (opt.class_type === "khusus" || opt.class_type === "weekend" || formData.learning_mode === opt.learning_mode);
+                          return (
+                            <button
+                              key={opt.key}
+                              type="button"
+                              onClick={() => setFormData({ ...formData, class_type: opt.class_type, learning_mode: opt.learning_mode })}
+                              className={`p-2.5 rounded-xl border text-xs font-bold text-left transition-all relative ${
+                                isSelected
+                                  ? opt.activeStyle
+                                  : "bg-white border-slate-200 text-slate-700 hover:bg-slate-50"
+                              }`}
+                            >
+                              <div className="flex items-center justify-between">
+                                <p className="font-bold">{opt.title}</p>
+                                <span className={`text-[9px] px-1.5 py-0.5 rounded font-semibold ${opt.badgeBg}`}>{opt.badge}</span>
+                              </div>
+                              <p className="text-[10px] font-normal text-slate-500 mt-0.5">{opt.desc}</p>
+                            </button>
+                          );
+                        })}
                       </div>
-                      <p className="text-[10px] font-normal text-slate-500 mt-0.5">Kurikulum Khusus Eksekutif di Kampus</p>
-                    </button>
-                  </div>
+                    );
+                  })()}
                 </div>
               </div>
 

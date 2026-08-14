@@ -186,5 +186,6 @@ def test_public_branding_matches_saved_application_identity():
     public_doc = public.json()
     assert public_doc["app_name"] == settings_doc["app_name"]
     assert public_doc["campus_name"] == settings_doc["campus_name"]
+    assert public_doc["app_logo_url"] == settings_doc["app_logo_url"]
     assert public_doc["campus_logo_url"] == settings_doc["campus_logo_url"]
     assert "campus_address" not in public_doc

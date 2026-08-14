@@ -66,6 +66,7 @@ try:
     from .user_activity import aggregate_user_activity, classify_activity
     from .user_notifications import finalize_notifications, notification_event
     from .youtube_urls import normalize_youtube_url
+    from .rps_parser import RPSPdfDependencyError, RPSPdfParseError, parse_rps_document
 except ImportError:  # Supports `uvicorn server:app` from the backend directory.
     from postgres_database import PostgresDatabase
     from app_version import version_payload
@@ -85,6 +86,7 @@ except ImportError:  # Supports `uvicorn server:app` from the backend directory.
     from user_activity import aggregate_user_activity, classify_activity
     from user_notifications import finalize_notifications, notification_event
     from youtube_urls import normalize_youtube_url
+    from rps_parser import RPSPdfDependencyError, RPSPdfParseError, parse_rps_document
 
 
 ROOT_DIR = Path(__file__).parent
@@ -572,10 +574,68 @@ def public_doc(doc: Optional[Dict[str, Any]]) -> Optional[Dict[str, Any]]:
     doc.pop("local_path", None)
     doc.pop("drive_error", None)
     doc.pop("drive_hierarchy", None)
+    if doc.get("role") == "student":
+        doc["physical_document_status"] = physical_document_status_payload(doc)
     return doc
 
 
+PHYSICAL_DOCUMENT_TYPES: Dict[str, str] = {
+    "ijazah": "Ijazah",
+    "transkip": "Transkrip Nilai",
+    "ktp": "KTP",
+    "kk": "Kartu Keluarga (KK)",
+    "akte": "Akta Kelahiran",
+    "kip_k": "KIP-K",
+    "surat_keterangan": "Surat Keterangan",
+}
+PHYSICAL_DOCUMENT_TYPE_ALIASES = {
+    "transkrip": "transkip",
+    "kip-k": "kip_k",
+    "kipkuliah": "kip_k",
+    "surat-keterangan": "surat_keterangan",
+}
+PHYSICAL_DOCUMENT_ALLOWED_EXTENSIONS = {".pdf", ".jpg", ".jpeg", ".png", ".webp"}
+PHYSICAL_DOCUMENT_MAX_FILE_MB = max(
+    1.0,
+    float(os.environ.get("PHYSICAL_DOCUMENT_MAX_FILE_MB", "10")),
+)
+
+
+def normalize_physical_document_type(value: str) -> str:
+    normalized = re.sub(r"\s+", "_", str(value or "").strip().lower())
+    normalized = PHYSICAL_DOCUMENT_TYPE_ALIASES.get(normalized, normalized)
+    if normalized not in PHYSICAL_DOCUMENT_TYPES:
+        raise HTTPException(status_code=400, detail="Jenis dokumen fisik tidak dikenal")
+    return normalized
+
+
+def physical_document_status_payload(user: Dict[str, Any]) -> Dict[str, Any]:
+    raw_documents = user.get("physical_documents") or {}
+    documents: Dict[str, Any] = {}
+    for document_type, label in PHYSICAL_DOCUMENT_TYPES.items():
+        item = raw_documents.get(document_type)
+        if isinstance(item, dict) and (item.get("file_id") or item.get("id")):
+            documents[document_type] = {
+                **enrich_file_urls(dict(item)),
+                "document_type": document_type,
+                "label": label,
+            }
+    completed_count = len(documents)
+    return {
+        "required": [
+            {"type": document_type, "label": label}
+            for document_type, label in PHYSICAL_DOCUMENT_TYPES.items()
+        ],
+        "documents": documents,
+        "completed_count": completed_count,
+        "total_count": len(PHYSICAL_DOCUMENT_TYPES),
+        "is_complete": completed_count == len(PHYSICAL_DOCUMENT_TYPES),
+        "angkatan": str(user.get("angkatan") or user.get("academic_year") or "").strip(),
+    }
+
+
 STORAGE_ROOT = ROOT_DIR / "storage" / "E-Learning Dosen"
+PMB_STORAGE_ROOT = ROOT_DIR / "storage" / "pmb"
 DEFAULT_SUBMISSION_MAX_FILE_MB = 5
 STORAGE_POLICY_TIMEZONE = ZoneInfo(os.environ.get("STORAGE_POLICY_TIMEZONE", "Asia/Jakarta"))
 STORAGE_MAINTENANCE_INTERVAL_SECONDS = max(
@@ -1077,6 +1137,7 @@ def default_app_settings() -> Dict[str, Any]:
     return {
         "id": "main",
         "app_name": "SIAKAD ONE",
+        "meta_description": "Sistem Informasi Akademik terpadu untuk mengelola pembelajaran, presensi, penilaian, dan layanan akademik perguruan tinggi.",
         "campus_name": "POLITEKNIK SCI",
         "campus_code": "POLTEK-SCI",
         "institution_type": "Politeknik",
@@ -1091,6 +1152,7 @@ def default_app_settings() -> Dict[str, Any]:
         "program_name": "Program Studi",
         "lecturer_name": "Syahrul Anwar, M.Kom",
         "lecturer_email": "syahrul@politekniksci.ac.id",
+        "app_logo_url": "",
         "campus_logo_url": "",
         "rector_name": "Prof. Dr. Ir. H. Ahmad Dahlan, M.T.",
         "rector_nidn": "0012056801",
@@ -1718,11 +1780,150 @@ CALENDAR_EVENT_CATEGORIES = {
 }
 CALENDAR_EVENT_AUDIENCES = {"all", "student", "lecturer"}
 CALENDAR_EVENT_STATUSES = {"draft", "published", "archived"}
+ACADEMIC_DEADLINE_DEFINITIONS = {
+    "curriculum_setup": {
+        "title": "Deadline Setting Kurikulum",
+        "target_role": "kaprodi",
+        "target_label": "Kaprodi",
+        "description": "Batas waktu penyiapan dan penetapan kurikulum oleh Ketua Program Studi.",
+    },
+    "rps_submission": {
+        "title": "Deadline Pengisian RPS",
+        "target_role": "lecturer",
+        "target_label": "Dosen",
+        "description": "Batas waktu dosen melengkapi Rencana Pembelajaran Semester.",
+    },
+    "grade_entry": {
+        "title": "Deadline Pengisian Nilai",
+        "target_role": "lecturer",
+        "target_label": "Dosen",
+        "description": "Batas waktu dosen menyelesaikan pengisian nilai mahasiswa.",
+    },
+}
 
 
 def can_manage_academic_calendar(user: Dict[str, Any]) -> bool:
     """Administrasi kalender berada pada Admin Kampus dan operator akademik."""
     return is_campus_admin(user) or "academic_operator" in (user.get("access_roles") or [])
+
+
+def is_kaprodi_user(user: Dict[str, Any]) -> bool:
+    access_roles = {
+        str(role or "").strip().lower()
+        for role in (user.get("access_roles") or [])
+    }
+    designation = " ".join(
+        str(user.get(field) or "").strip().lower()
+        for field in ("jabatan_akademik", "tugas_tambahan", "jabatan")
+    )
+    return bool(
+        user.get("is_kaprodi") is True
+        or str(user.get("is_kaprodi") or "").lower() == "true"
+        or user.get("kaprodi_prodi_id")
+        or "kaprodi" in access_roles
+        or "sekprodi" in access_roles
+        or "kaprodi" in designation
+        or "ketua prodi" in designation
+    )
+
+
+def academic_deadline_visible_to_user(deadline_type: str, user: Dict[str, Any]) -> bool:
+    definition = ACADEMIC_DEADLINE_DEFINITIONS.get(deadline_type)
+    if not definition:
+        return False
+    if can_manage_academic_calendar(user):
+        return True
+    if str(user.get("role") or "").lower() not in {"lecturer", "dosen"}:
+        return False
+    if definition["target_role"] == "lecturer":
+        return True
+    return definition["target_role"] == "kaprodi" and is_kaprodi_user(user)
+
+
+def default_academic_deadlines() -> Dict[str, Dict[str, Any]]:
+    return {
+        deadline_type: {
+            "deadline_type": deadline_type,
+            **definition,
+            "enabled": False,
+            "deadline_at": "",
+        }
+        for deadline_type, definition in ACADEMIC_DEADLINE_DEFINITIONS.items()
+    }
+
+
+def academic_deadline_settings_payload(document: Dict[str, Any]) -> Dict[str, Any]:
+    deadlines = default_academic_deadlines()
+    stored_deadlines = document.get("deadlines") or {}
+    for deadline_type, item in deadlines.items():
+        stored = stored_deadlines.get(deadline_type) or {}
+        item["enabled"] = bool(stored.get("enabled", False))
+        item["deadline_at"] = str(stored.get("deadline_at") or "")
+    return {
+        "id": document.get("id", ""),
+        "academic_year_id": str(document.get("academic_year_id") or ""),
+        "deadlines": deadlines,
+        "updated_at": document.get("updated_at", ""),
+        "updated_by": document.get("updated_by", ""),
+    }
+
+
+def validate_academic_deadline_settings(
+    payload: AcademicDeadlineSettingsInput,
+) -> Dict[str, Any]:
+    unknown_types = sorted(set(payload.deadlines) - set(ACADEMIC_DEADLINE_DEFINITIONS))
+    if unknown_types:
+        raise HTTPException(
+            status_code=400,
+            detail=f"Jenis deadline akademik tidak valid: {', '.join(unknown_types)}",
+        )
+
+    normalized = default_academic_deadlines()
+    for deadline_type, item in normalized.items():
+        submitted = payload.deadlines.get(deadline_type)
+        if not submitted:
+            continue
+        deadline_at = normalize_optional_datetime(
+            submitted.deadline_at,
+            item["title"],
+        )
+        if submitted.enabled and not deadline_at:
+            raise HTTPException(
+                status_code=400,
+                detail=f"Tanggal {item['title']} wajib diisi saat switch diaktifkan",
+            )
+        item["enabled"] = bool(submitted.enabled)
+        item["deadline_at"] = deadline_at
+
+    return {
+        "academic_year_id": str(payload.academic_year_id or "").strip(),
+        "deadlines": normalized,
+    }
+
+
+def academic_deadline_event_payload(
+    deadline_type: str,
+    item: Dict[str, Any],
+    academic_year_id: str,
+) -> Dict[str, Any]:
+    definition = ACADEMIC_DEADLINE_DEFINITIONS[deadline_type]
+    return {
+        "id": f"academic-deadline-{academic_year_id or 'global'}-{deadline_type}",
+        "source": "academic_deadline",
+        "type": "academic_deadline",
+        "deadline_type": deadline_type,
+        "category": "academic",
+        "title": definition["title"],
+        "date": item.get("deadline_at", ""),
+        "end_at": "",
+        "all_day": False,
+        "academic_year_id": academic_year_id,
+        "audience": "lecturer",
+        "target_role": definition["target_role"],
+        "target_label": definition["target_label"],
+        "description": definition["description"],
+        "enabled": bool(item.get("enabled", False)),
+    }
 
 
 def user_calendar_prodi_ids(user: Dict[str, Any]) -> set[str]:
@@ -2273,7 +2474,7 @@ class StudentInput(BaseModel):
     registration: Dict[str, Any] = Field(default_factory=dict)
     pddikti_ids: Dict[str, Any] = Field(default_factory=dict)
     status: str = "active"
-    password: str = "Mahasiswa123!"
+    password: str = "Mahasiswa1231!"
 
 
 class StudentUpdateInput(BaseModel):
@@ -2534,6 +2735,16 @@ class AcademicCalendarEventInput(BaseModel):
     status: str = "published"
 
 
+class AcademicDeadlineItemInput(BaseModel):
+    enabled: bool = False
+    deadline_at: str = ""
+
+
+class AcademicDeadlineSettingsInput(BaseModel):
+    academic_year_id: str = ""
+    deadlines: Dict[str, AcademicDeadlineItemInput] = Field(default_factory=dict)
+
+
 class GradeItem(BaseModel):
     criterion: str
     weight: float
@@ -2596,6 +2807,10 @@ class ResetPasswordInput(BaseModel):
 
 class AppSettingsInput(BaseModel):
     app_name: str = "SIAKAD ONE"
+    meta_description: str = Field(
+        default="Sistem Informasi Akademik terpadu untuk mengelola pembelajaran, presensi, penilaian, dan layanan akademik perguruan tinggi.",
+        max_length=320,
+    )
     campus_name: str = ""
     campus_code: Optional[str] = ""
     institution_type: Optional[str] = "Politeknik"
@@ -2610,6 +2825,7 @@ class AppSettingsInput(BaseModel):
     program_name: str = ""
     lecturer_name: str = ""
     lecturer_email: str = ""
+    app_logo_url: str = ""
     campus_logo_url: str = ""
     rector_name: Optional[str] = ""
     rector_nidn: Optional[str] = ""
@@ -2762,7 +2978,7 @@ async def seed_data() -> None:
             "name": "Alya Pratama",
             "email": "alya@demo.id",
             "whatsapp": "628123456789",
-            "password_hash": hash_password("Mahasiswa123!"),
+            "password_hash": hash_password("Mahasiswa1231!"),
             "status": "active",
             "class_ids": [class_id],
             "created_at": now_iso(),
@@ -3826,6 +4042,32 @@ async def refresh_embedded_file_references(file_id: str) -> None:
     if not updated:
         return
     public_file = enrich_file_urls(public_doc(updated.copy()))
+    if updated.get("record_type") == "physical_document":
+        document_type = str(updated.get("document_type") or "").strip()
+        student_id = str(updated.get("student_id") or updated.get("uploaded_by") or "").strip()
+        if document_type in PHYSICAL_DOCUMENT_TYPES and student_id:
+            public_file.update(
+                {
+                    "document_type": document_type,
+                    "document_label": PHYSICAL_DOCUMENT_TYPES[document_type],
+                    "student_id": student_id,
+                    "student_nim": str(updated.get("student_nim") or ""),
+                    "student_name": str(updated.get("student_name") or ""),
+                    "angkatan": str(updated.get("angkatan") or ""),
+                }
+            )
+            await db.users.update_one(
+                {
+                    "id": student_id,
+                    f"physical_documents.{document_type}.file_id": file_id,
+                },
+                {
+                    "$set": {
+                        f"physical_documents.{document_type}": public_file,
+                        "physical_documents_updated_at": now_iso(),
+                    }
+                },
+            )
     await db.submissions.update_many(
         {"file.file_id": file_id},
         {"$set": {"file": public_file}},
@@ -4478,6 +4720,7 @@ async def sso_exchange(payload: SsoExchangeInput):
         if expires_at <= datetime.now(timezone.utc):
             raise HTTPException(status_code=401, detail="Tiket login SCI-ID sudah kedaluwarsa")
     user = await find_user(ticket["user_id"])
+    user, show_physical_documents_reminder = await auth_user_physical_document_reminder(user)
     token = new_id() + new_id()
     await db.sessions.insert_one(
         {
@@ -4495,7 +4738,9 @@ async def sso_exchange(payload: SsoExchangeInput):
         200,
         action_override="login",
     )
-    return {"token": token, "user": public_doc(user)}
+    response_user = public_doc(user)
+    response_user["show_physical_documents_reminder"] = show_physical_documents_reminder
+    return {"token": token, "user": response_user}
 
 
 async def try_camaba_login(identifier: str, password: str) -> Optional[Dict[str, Any]]:
@@ -4543,6 +4788,23 @@ async def try_camaba_login(identifier: str, password: str) -> Optional[Dict[str,
     return {"token": token, "user": camaba}
 
 
+async def auth_user_physical_document_reminder(
+    user: Dict[str, Any],
+) -> tuple[Dict[str, Any], bool]:
+    """Mark and expose the one-time physical-document reminder for students."""
+    show_reminder = bool(
+        user.get("role") == "student"
+        and not user.get("physical_documents_reminder_seen_at")
+        and not physical_document_status_payload(user).get("is_complete")
+    )
+    if show_reminder:
+        await db.users.update_one(
+            {"id": user["id"]},
+            {"$set": {"physical_documents_reminder_seen_at": now_iso()}},
+        )
+    return user, show_reminder
+
+
 @api_router.post("/auth/login")
 async def login(payload: LoginInput):
     local_login_enabled = bool(oidc_settings()["local_login_enabled"])
@@ -4563,6 +4825,7 @@ async def login(payload: LoginInput):
         raise HTTPException(status_code=401, detail="Identitas login atau password salah")
     if user.get("status", "active") != "active":
         raise HTTPException(status_code=403, detail="Akun tidak aktif. Hubungi admin kampus.")
+    user, show_physical_documents_reminder = await auth_user_physical_document_reminder(user)
     token = new_id() + new_id()
     await db.sessions.insert_one({"token": token, "user_id": user["id"], "created_at": now_iso()})
     await db.users.update_one({"id": user["id"]}, {"$set": {"last_login_at": now_iso()}})
@@ -4574,6 +4837,7 @@ async def login(payload: LoginInput):
         action_override="login",
     )
     user = public_doc(user)
+    user["show_physical_documents_reminder"] = show_physical_documents_reminder
     return {"token": token, "user": user}
 
 
@@ -4854,6 +5118,129 @@ async def join_class(payload: JoinClassInput):
 @api_router.get("/auth/me")
 async def me(user: Dict[str, Any] = Depends(get_current_user)):
     return public_doc(user)
+
+
+@api_router.get("/auth/physical-documents")
+async def list_physical_documents(user: Dict[str, Any] = Depends(get_current_user)):
+    if user.get("role") != "student":
+        raise HTTPException(status_code=403, detail="Fitur ini hanya tersedia untuk mahasiswa")
+    fresh_user = await db.users.find_one({"id": user["id"]}, {"_id": 0, "password_hash": 0}) or user
+    return {
+        **physical_document_status_payload(fresh_user),
+        "max_file_size_mb": PHYSICAL_DOCUMENT_MAX_FILE_MB,
+        "allowed_extensions": sorted(PHYSICAL_DOCUMENT_ALLOWED_EXTENSIONS),
+    }
+
+
+@api_router.post("/auth/physical-documents")
+async def upload_physical_document(
+    background_tasks: BackgroundTasks,
+    document_type: str = Form(...),
+    file: UploadFile = File(...),
+    user: Dict[str, Any] = Depends(get_current_user),
+):
+    if user.get("role") != "student":
+        raise HTTPException(status_code=403, detail="Fitur ini hanya tersedia untuk mahasiswa")
+    normalized_type = normalize_physical_document_type(document_type)
+    if not file.filename:
+        raise HTTPException(status_code=400, detail="File dokumen fisik wajib dipilih")
+    extension = Path(file.filename).suffix.lower()
+    if extension not in PHYSICAL_DOCUMENT_ALLOWED_EXTENSIONS:
+        raise HTTPException(
+            status_code=400,
+            detail="Format dokumen harus PDF, JPG, JPEG, PNG, atau WEBP",
+        )
+    await validate_upload_file_sizes(
+        [file],
+        PHYSICAL_DOCUMENT_MAX_FILE_MB,
+        PHYSICAL_DOCUMENT_TYPES[normalized_type],
+    )
+
+    current_user = await db.users.find_one({"id": user["id"]}, {"_id": 0}) or user
+    old_document = (current_user.get("physical_documents") or {}).get(normalized_type) or {}
+    angkatan = str(
+        current_user.get("angkatan")
+        or current_user.get("academic_year")
+        or "Tanpa Angkatan"
+    ).strip()
+    file_doc = await save_uploaded_file_record(
+        file,
+        ["Kelengkapan Data Fisik", angkatan],
+        str(current_user.get("nim") or current_user.get("username") or current_user["id"]),
+        str(current_user.get("name") or "Mahasiswa"),
+        current_user["id"],
+        record_type="physical_document",
+        sync_drive=True,
+        background_tasks=background_tasks,
+        async_drive=True,
+    )
+    file_doc.update(
+        {
+            "document_type": normalized_type,
+            "document_label": PHYSICAL_DOCUMENT_TYPES[normalized_type],
+            "student_id": current_user["id"],
+            "student_nim": str(current_user.get("nim") or current_user.get("username") or ""),
+            "student_name": str(current_user.get("name") or "Mahasiswa"),
+            "angkatan": angkatan,
+        }
+    )
+    await db.stored_files.update_one(
+        {"id": file_doc["id"]},
+        {
+            "$set": {
+                "document_type": normalized_type,
+                "document_label": PHYSICAL_DOCUMENT_TYPES[normalized_type],
+                "student_id": current_user["id"],
+                "student_nim": file_doc["student_nim"],
+                "student_name": file_doc["student_name"],
+                "angkatan": angkatan,
+            }
+        },
+    )
+    await db.users.update_one(
+        {"id": current_user["id"]},
+        {
+            "$set": {
+                f"physical_documents.{normalized_type}": file_doc,
+                "physical_documents_updated_at": now_iso(),
+            }
+        },
+    )
+    old_file_id = str(old_document.get("file_id") or old_document.get("id") or "").strip()
+    if old_file_id and old_file_id != file_doc["id"]:
+        await delete_stored_files({"id": old_file_id})
+    fresh_user = await db.users.find_one({"id": current_user["id"]}, {"_id": 0}) or current_user
+    return {
+        "ok": True,
+        "document_type": normalized_type,
+        "document": file_doc,
+        "status": physical_document_status_payload(fresh_user),
+        "user": public_doc(fresh_user),
+    }
+
+
+@api_router.delete("/auth/physical-documents/{document_type}")
+async def delete_physical_document(
+    document_type: str,
+    user: Dict[str, Any] = Depends(get_current_user),
+):
+    if user.get("role") != "student":
+        raise HTTPException(status_code=403, detail="Fitur ini hanya tersedia untuk mahasiswa")
+    normalized_type = normalize_physical_document_type(document_type)
+    current_user = await db.users.find_one({"id": user["id"]}, {"_id": 0}) or user
+    old_document = (current_user.get("physical_documents") or {}).get(normalized_type) or {}
+    await db.users.update_one(
+        {"id": user["id"]},
+        {
+            "$unset": {f"physical_documents.{normalized_type}": ""},
+            "$set": {"physical_documents_updated_at": now_iso()},
+        },
+    )
+    old_file_id = str(old_document.get("file_id") or old_document.get("id") or "").strip()
+    if old_file_id:
+        await delete_stored_files({"id": old_file_id})
+    fresh_user = await db.users.find_one({"id": user["id"]}, {"_id": 0}) or user
+    return {"ok": True, "status": physical_document_status_payload(fresh_user), "user": public_doc(fresh_user)}
 
 
 @api_router.put("/auth/me")
@@ -5938,8 +6325,12 @@ def remove_local_stored_file(local_path: str) -> bool:
     if not local_path:
         return False
     path = Path(local_path).resolve()
-    storage_root = STORAGE_ROOT.resolve()
-    if storage_root not in path.parents:
+    storage_roots = (STORAGE_ROOT.resolve(), PMB_STORAGE_ROOT.resolve())
+    storage_root = next(
+        (root for root in storage_roots if root == path or root in path.parents),
+        None,
+    )
+    if storage_root is None:
         raise ValueError(f"Path file di luar storage root: {path}")
     existed = path.exists()
     path.unlink(missing_ok=True)
@@ -6369,7 +6760,12 @@ async def storage_status(_: Dict[str, Any] = Depends(require_campus_admin)):
 async def drive_sync_overview(limit: int = 50) -> Dict[str, Any]:
     query = {
         "record_type": {
-            "$in": ["submission", "assignment_attachment", "material_attachment"]
+            "$in": [
+                "submission",
+                "assignment_attachment",
+                "material_attachment",
+                "physical_document",
+            ]
         }
     }
     summary = {
@@ -6388,14 +6784,18 @@ async def drive_sync_overview(limit: int = 50) -> Dict[str, Any]:
     files = await db.stored_files.find(query, {"_id": 0}).sort("uploaded_at", -1).to_list(limit)
     submission_ids = [item.get("submission_id") for item in files if item.get("submission_id")]
     assignment_ids = [item.get("assignment_id") for item in files if item.get("assignment_id")]
+    student_ids = [item.get("student_id") for item in files if item.get("student_id")]
     submissions = await db.submissions.find({"id": {"$in": submission_ids}}, {"_id": 0}).to_list(limit) if submission_ids else []
     assignments = await db.assignments.find({"id": {"$in": assignment_ids}}, {"_id": 0}).to_list(limit) if assignment_ids else []
+    students = await db.users.find({"id": {"$in": student_ids}}, {"_id": 0, "id": 1, "name": 1, "nim": 1}).to_list(limit) if student_ids else []
     submissions_by_id = {item["id"]: item for item in submissions}
     assignments_by_id = {item["id"]: item for item in assignments}
+    students_by_id = {item["id"]: item for item in students}
     items = []
     for item in files:
         submission = submissions_by_id.get(item.get("submission_id", ""), {})
         assignment = assignments_by_id.get(item.get("assignment_id", ""), {})
+        student = students_by_id.get(item.get("student_id", ""), {})
         items.append(
             {
                 "id": item.get("id", ""),
@@ -6421,8 +6821,11 @@ async def drive_sync_overview(limit: int = 50) -> Dict[str, Any]:
                 "course_name": assignment.get("course_name", ""),
                 "class_name": assignment.get("class_name", ""),
                 "submission_id": item.get("submission_id", ""),
-                "student_name": submission.get("student_name", ""),
-                "student_nim": submission.get("student_nim", ""),
+                "student_name": item.get("student_name") or student.get("name") or submission.get("student_name", ""),
+                "student_nim": item.get("student_nim") or student.get("nim") or submission.get("student_nim", ""),
+                "document_type": item.get("document_type", ""),
+                "document_label": item.get("document_label") or PHYSICAL_DOCUMENT_TYPES.get(item.get("document_type", ""), ""),
+                "angkatan": item.get("angkatan", ""),
             }
         )
     return {"summary": summary, "items": items}
@@ -6583,7 +6986,7 @@ async def run_old_siap_migration(background_tasks: BackgroundTasks, _: Dict[str,
             migration_progress_state["progress_percent"] = 45
             migration_progress_state["logs"].append(f"Memigrasikan {len(raw_pegawai)} dosen & pegawai...")
             default_password_hash = hash_password("Dosen123!")
-            default_mhs_password_hash = hash_password("Mahasiswa123!")
+            default_mhs_password_hash = hash_password("Mahasiswa1231!")
             dosen_map = {}
             d_count = 0
 
@@ -7650,7 +8053,7 @@ async def reset_student_password(
     student = await db.users.find_one({"id": student_id, "role": "student"}, {"_id": 0})
     if not student:
         raise HTTPException(status_code=404, detail="Mahasiswa tidak ditemukan")
-    new_password = payload.password.strip() if payload.password.strip() else (student.get("nim") or "Mahasiswa123!")
+    new_password = payload.password.strip() if payload.password.strip() else (student.get("nim") or "Mahasiswa1231!")
     if len(new_password) < 3:
         raise HTTPException(status_code=400, detail="Password minimal 3 karakter")
     await db.users.update_one(
@@ -7733,6 +8136,482 @@ async def resolved_program_scope_values(
         if any(alias.upper() in lookup for alias in aliases if alias):
             scope_values.update(alias for alias in aliases if alias)
     return sorted(scope_values)
+
+
+def _analysis_period_year(value: Any) -> str:
+    match = re.search(r"(?:19|20)\d{2}", str(value or ""))
+    return match.group(0) if match else ""
+
+
+def _analysis_period_semester(value: Any) -> str:
+    raw = str(value or "").strip().lower()
+    if raw in {"1", "ganjil", "gasal", "odd"} or "ganjil" in raw or "gasal" in raw:
+        return "ganjil"
+    if raw in {"2", "genap", "even"} or "genap" in raw:
+        return "genap"
+    return raw
+
+
+def _analysis_class_matches_period(
+    class_doc: Dict[str, Any],
+    selector: str,
+    period_doc: Optional[Dict[str, Any]],
+) -> bool:
+    raw_selector = str(selector or "").strip()
+    if not raw_selector or raw_selector == "all":
+        return True
+    direct_period_ids = (
+        class_doc.get("tahun_ajaran_id"),
+        class_doc.get("academic_year_id"),
+        class_doc.get("academic_period_id"),
+        class_doc.get("period_id"),
+    )
+    if any(str(value or "").strip() == raw_selector for value in direct_period_ids):
+        return True
+
+    target_year = _analysis_period_year(
+        (period_doc or {}).get("tahun")
+        or (period_doc or {}).get("academic_year")
+        or (period_doc or {}).get("nama")
+        or raw_selector
+    )
+    target_semester = _analysis_period_semester(
+        (period_doc or {}).get("semester")
+        or ("Ganjil" if raw_selector[-1:] == "1" and raw_selector.isdigit() else "Genap" if raw_selector[-1:] == "2" and raw_selector.isdigit() else "")
+    )
+    class_year = _analysis_period_year(
+        class_doc.get("academic_year")
+        or class_doc.get("tahun_ajaran")
+        or class_doc.get("academic_year_label")
+    )
+    class_semester = _analysis_period_semester(class_doc.get("semester") or class_doc.get("term"))
+    if not target_year or not class_year or target_year != class_year:
+        return False
+    return bool(target_semester and class_semester and target_semester == class_semester)
+
+
+def _analysis_program_fields(document: Dict[str, Any]) -> List[str]:
+    return [
+        str(document.get(key) or "").strip()
+        for key in ("prodi_id", "prodi_kode", "program_id", "prodi_name", "program_name", "nama_prodi")
+        if str(document.get(key) or "").strip()
+    ]
+
+
+def _analysis_is_program_manager(
+    user: Dict[str, Any],
+    structural_scope: Optional[List[str]] = None,
+) -> bool:
+    designation_text = " ".join(
+        str(user.get(field) or "").strip().lower()
+        for field in ("jabatan_akademik", "tugas_tambahan", "jabatan")
+    )
+    access_roles = {
+        str(role).strip().lower()
+        for role in (user.get("access_roles") or [])
+    }
+    return (
+        user.get("role") == "admin"
+        or user.get("is_kaprodi") is True
+        or str(user.get("is_kaprodi")).lower() == "true"
+        or bool(user.get("kaprodi_prodi_id"))
+        or bool(structural_scope)
+        or "kaprodi" in access_roles
+        or "sekprodi" in access_roles
+        or "kaprodi" in designation_text
+        or "ketua prodi" in designation_text
+    )
+
+
+async def _analysis_resolve_program_scope(
+    user: Dict[str, Any],
+    requested_prodi: str = "",
+) -> tuple[List[str], List[str], List[str]]:
+    structural_scope = await active_program_manager_scope_values(user)
+    if not _analysis_is_program_manager(user, structural_scope):
+        raise HTTPException(
+            status_code=403,
+            detail="Halaman ini hanya tersedia untuk Ketua Prodi atau Admin Kampus",
+        )
+
+    own_scope_values = await resolved_program_scope_values(user, structural_scope)
+    requested_value = str(requested_prodi or "").strip()
+    if requested_value:
+        own_lookup = {value.upper() for value in own_scope_values}
+        if user.get("role") != "admin" and requested_value.upper() not in own_lookup:
+            raise HTTPException(status_code=403, detail="Prodi di luar kewenangan Anda")
+        scope_values = await resolved_program_scope_values(
+            {"prodi_id": requested_value},
+            [requested_value],
+        )
+    else:
+        scope_values = own_scope_values if user.get("role") != "admin" else []
+    return structural_scope, own_scope_values, scope_values
+
+
+def _analysis_student_identifiers(student: Dict[str, Any]) -> set[str]:
+    return {
+        str(student.get(key) or "").strip()
+        for key in ("id", "username", "nim")
+        if str(student.get(key) or "").strip()
+    }
+
+
+def _analysis_parse_inactive_days(value: Any) -> Optional[int]:
+    if not value:
+        return None
+    parsed = parse_iso_datetime(str(value))
+    if not parsed:
+        return None
+    return max(0, (datetime.now(timezone.utc) - parsed).days)
+
+
+def _analysis_is_late_submission(item: Dict[str, Any]) -> bool:
+    if str(item.get("status") or "").strip().lower() in {"terlambat", "late"}:
+        return True
+    try:
+        return float(item.get("late_days") or 0) > 0
+    except (TypeError, ValueError):
+        return False
+
+
+def _analysis_risk(
+    *,
+    attendance_percentage: Optional[float],
+    average_grade: float,
+    missing_assignments: int,
+    late_submissions: int,
+    inactive_days: Optional[int],
+    status: str,
+) -> Dict[str, Any]:
+    score = 0
+    reasons: List[str] = []
+    if attendance_percentage is not None:
+        if attendance_percentage < 60:
+            score += 4
+            reasons.append("Kehadiran di bawah 60%")
+        elif attendance_percentage < 75:
+            score += 2
+            reasons.append("Kehadiran di bawah 75%")
+    if average_grade > 0:
+        if average_grade < 60:
+            score += 3
+            reasons.append("Rata-rata nilai di bawah 60")
+        elif average_grade < 70:
+            score += 1
+            reasons.append("Rata-rata nilai di bawah 70")
+    if missing_assignments >= 3:
+        score += 3
+        reasons.append(f"{missing_assignments} tugas belum dikumpulkan")
+    elif missing_assignments > 0:
+        score += 1
+        reasons.append(f"{missing_assignments} tugas belum dikumpulkan")
+    if late_submissions >= 2:
+        score += 2
+        reasons.append(f"{late_submissions} tugas terlambat")
+    if inactive_days is None:
+        score += 1
+        reasons.append("Belum ada aktivitas login")
+    elif inactive_days > 14:
+        score += 2
+        reasons.append(f"Tidak aktif {inactive_days} hari")
+    if str(status or "active").lower() != "active":
+        score += 2
+        reasons.append("Status mahasiswa tidak aktif")
+    if score >= 8:
+        label = "Risiko Tinggi"
+    elif score >= 5:
+        label = "Perlu Perhatian"
+    elif score >= 2:
+        label = "Risiko Rendah"
+    else:
+        label = "Aman"
+    return {"score": score, "label": label, "reasons": reasons[:5]}
+
+
+@api_router.get("/prodi/analisis-mahasiswa")
+async def prodi_student_analysis(
+    semester_id: str = "",
+    prodi_id: str = "",
+    user: Dict[str, Any] = Depends(require_admin),
+):
+    """Analisis akademik dan risiko seluruh mahasiswa dalam scope Prodi."""
+    requested_prodi = str(prodi_id or "").strip()
+    structural_scope, own_scope_values, scope_values = await _analysis_resolve_program_scope(
+        user,
+        requested_prodi,
+    )
+
+    raw_semester_id = str(semester_id or "").strip()
+    period_doc = None
+    if raw_semester_id and raw_semester_id != "all":
+        period_doc = await db.tahun_ajaran.find_one(
+            {"$or": [{"id": raw_semester_id}, {"kode": raw_semester_id}, {"code": raw_semester_id}]},
+            {"_id": 0},
+        )
+        if not period_doc:
+            raise HTTPException(status_code=404, detail="Tahun ajaran yang dipilih tidak ditemukan")
+
+    class_docs = await db.classes.find({"status": {"$ne": "deleted"}}, {"_id": 0}).to_list(5000)
+    if scope_values:
+        scope_lookup = {str(value).upper() for value in scope_values}
+        class_docs = [
+            item for item in class_docs
+            if any(value.upper() in scope_lookup for value in _analysis_program_fields(item))
+        ]
+    elif user.get("role") != "admin":
+        # Fallback aman untuk akun struktural lama yang belum memiliki prodi_id.
+        # Jangan membuka semua kelas hanya karena field scope belum termigrasi.
+        assigned_class_ids = set(await lecturer_class_ids(user))
+        class_docs = [item for item in class_docs if str(item.get("id")) in assigned_class_ids]
+    if raw_semester_id and raw_semester_id != "all":
+        class_docs = [item for item in class_docs if _analysis_class_matches_period(item, raw_semester_id, period_doc)]
+
+    class_by_id = {str(item.get("id")): item for item in class_docs if item.get("id")}
+    class_ids = list(class_by_id)
+    all_students = await db.users.find(
+        {"role": "student"},
+        {"_id": 0, "password_hash": 0},
+    ).sort("name", 1).to_list(10000)
+    student_by_identifier: Dict[str, Dict[str, Any]] = {}
+    for student in all_students:
+        for identifier in _analysis_student_identifiers(student):
+            student_by_identifier.setdefault(identifier, student)
+
+    class_member_ids: Dict[str, set[str]] = {class_id: set() for class_id in class_ids}
+    student_class_ids: Dict[str, set[str]] = {}
+    for class_id, class_doc in class_by_id.items():
+        for raw_student_id in class_doc.get("student_ids", []):
+            student = student_by_identifier.get(str(raw_student_id).strip())
+            if student:
+                sid = str(student.get("id"))
+                class_member_ids[class_id].add(sid)
+                student_class_ids.setdefault(sid, set()).add(class_id)
+
+    if scope_values:
+        scope_lookup = {str(value).upper() for value in scope_values}
+        selected_students = [
+            student for student in all_students
+            if any(value.upper() in scope_lookup for value in _analysis_program_fields(student))
+            or str(student.get("id")) in student_class_ids
+        ]
+    else:
+        selected_students = list(all_students)
+    selected_students_by_id = {str(student.get("id")): student for student in selected_students if student.get("id")}
+    selected_student_ids = set(selected_students_by_id)
+
+    for student in selected_students:
+        sid = str(student.get("id"))
+        for raw_class_id in student.get("class_ids", []) or []:
+            class_id = str(raw_class_id).strip()
+            if class_id in class_by_id:
+                student_class_ids.setdefault(sid, set()).add(class_id)
+                class_member_ids.setdefault(class_id, set()).add(sid)
+
+    assignments = await db.assignments.find(
+        {"class_id": {"$in": class_ids}, "is_active": True}, {"_id": 0}
+    ).to_list(20000) if class_ids else []
+    assignments = [item for item in assignments if assignment_is_published(item)]
+    assignments_by_class: Dict[str, List[Dict[str, Any]]] = {}
+    for assignment in assignments:
+        assignments_by_class.setdefault(str(assignment.get("class_id")), []).append(assignment)
+
+    submissions = await db.submissions.find(
+        {"class_id": {"$in": class_ids}}, {"_id": 0}
+    ).to_list(50000) if class_ids else []
+    submissions_by_student: Dict[str, List[Dict[str, Any]]] = {}
+    for submission in submissions:
+        student = student_by_identifier.get(str(submission.get("student_id") or "").strip())
+        if student and str(student.get("id")) in selected_student_ids:
+            submissions_by_student.setdefault(str(student.get("id")), []).append(submission)
+
+    attendance_sessions = await db.attendance_sessions.find(
+        {"class_id": {"$in": class_ids}}, {"_id": 0}
+    ).to_list(10000) if class_ids else []
+    open_sessions_by_class: Dict[str, int] = {}
+    attendance_by_student: Dict[str, Dict[str, int]] = {}
+    for session in attendance_sessions:
+        if session.get("status") not in {"open", "closed"}:
+            continue
+        class_id = str(session.get("class_id") or "")
+        open_sessions_by_class[class_id] = open_sessions_by_class.get(class_id, 0) + 1
+        for record in session.get("records", []) or []:
+            student = student_by_identifier.get(str(record.get("student_id") or "").strip())
+            if not student or str(student.get("id")) not in selected_student_ids:
+                continue
+            sid = str(student.get("id"))
+            if class_id not in student_class_ids.get(sid, set()):
+                continue
+            stats = attendance_by_student.setdefault(sid, {"hadir": 0, "izin": 0, "sakit": 0, "alpa": 0})
+            status = str(record.get("status") or "Alpa").lower()
+            if status == "hadir":
+                stats["hadir"] += 1
+            elif status == "izin":
+                stats["izin"] += 1
+            elif status == "sakit":
+                stats["sakit"] += 1
+            else:
+                stats["alpa"] += 1
+
+    snapshot_grades_by_student: Dict[str, List[float]] = {}
+    for class_doc in class_docs:
+        snapshot = class_doc.get("final_grade_snapshot") or {}
+        for snapshot_student in snapshot.get("students", []) or []:
+            student = student_by_identifier.get(str(snapshot_student.get("student_id") or "").strip())
+            if not student:
+                student = student_by_identifier.get(str(snapshot_student.get("student_nim") or "").strip())
+            grade = snapshot_student.get("weighted_grade", snapshot_student.get("average"))
+            if student and isinstance(grade, (int, float)):
+                snapshot_grades_by_student.setdefault(str(student.get("id")), []).append(float(grade))
+
+    student_results: List[Dict[str, Any]] = []
+    class_metric_map: Dict[str, List[Dict[str, Any]]] = {}
+    for student in selected_students:
+        sid = str(student.get("id"))
+        student_class_set = student_class_ids.get(sid, set())
+        student_assignments = [
+            assignment
+            for class_id in student_class_set
+            for assignment in assignments_by_class.get(class_id, [])
+        ]
+        student_submissions = [
+            submission for submission in submissions_by_student.get(sid, [])
+            if str(submission.get("class_id") or "") in student_class_set
+        ]
+        submitted_assignment_ids = {str(item.get("assignment_id")) for item in student_submissions if item.get("assignment_id")}
+        graded_values = [
+            float(item.get("grade")) for item in student_submissions
+            if isinstance(item.get("grade"), (int, float))
+        ]
+        if not graded_values:
+            graded_values = snapshot_grades_by_student.get(sid, [])
+        average_grade = round(sum(graded_values) / len(graded_values), 1) if graded_values else 0.0
+        missing_assignments = len([
+            item for item in student_assignments
+            if str(item.get("id")) not in submitted_assignment_ids
+        ])
+        late_submissions = len([
+            item for item in student_submissions
+            if _analysis_is_late_submission(item)
+        ])
+        attendance_stats = attendance_by_student.get(sid, {"hadir": 0, "izin": 0, "sakit": 0, "alpa": 0})
+        total_open_sessions = sum(open_sessions_by_class.get(class_id, 0) for class_id in student_class_set)
+        attendance_percentage = round(attendance_stats["hadir"] / total_open_sessions * 100, 1) if total_open_sessions else None
+        submission_rate = round(len(submitted_assignment_ids) / len(student_assignments) * 100, 1) if student_assignments else None
+        inactive_days = _analysis_parse_inactive_days(student.get("last_login_at"))
+        risk = _analysis_risk(
+            attendance_percentage=attendance_percentage,
+            average_grade=average_grade,
+            missing_assignments=missing_assignments,
+            late_submissions=late_submissions,
+            inactive_days=inactive_days,
+            status=str(student.get("status") or "active"),
+        )
+        class_items = [
+            {
+                "id": class_id,
+                "name": class_by_id[class_id].get("name", ""),
+                "course_name": class_by_id[class_id].get("course_name", ""),
+                "course_code": class_by_id[class_id].get("course_code", ""),
+                "academic_year": class_by_id[class_id].get("academic_year", ""),
+                "semester": class_by_id[class_id].get("semester", ""),
+            }
+            for class_id in sorted(student_class_set)
+            if class_id in class_by_id
+        ]
+        result = {
+            "id": sid,
+            "name": student.get("name") or student.get("nama") or "Mahasiswa",
+            "nim": student.get("nim") or student.get("username") or "-",
+            "email": student.get("email", ""),
+            "prodi_id": student.get("prodi_id") or student.get("program_id") or "",
+            "prodi_name": student.get("prodi_name") or student.get("program_name") or "",
+            "angkatan": student.get("angkatan") or student.get("tahun_masuk") or "-",
+            "status": student.get("status") or "active",
+            "last_login_at": student.get("last_login_at", ""),
+            "inactive_days": inactive_days,
+            "class_count": len(class_items),
+            "classes": class_items,
+            "attendance": {
+                **attendance_stats,
+                "total_open": total_open_sessions,
+                "percentage": attendance_percentage,
+                "is_eligible_exam": attendance_percentage is None or attendance_percentage >= 75,
+            },
+            "grades": {
+                "average": average_grade,
+                "graded_count": len(graded_values),
+                "low_grade_count": len([value for value in graded_values if value < 60]),
+            },
+            "learning": {
+                "assignments_total": len(student_assignments),
+                "submitted": len(submitted_assignment_ids),
+                "missing": missing_assignments,
+                "late": late_submissions,
+                "submission_rate": submission_rate,
+            },
+            "risk": risk,
+        }
+        student_results.append(result)
+        for class_id in student_class_set:
+            class_metric_map.setdefault(class_id, []).append(result)
+
+    student_results.sort(key=lambda item: (-item["risk"]["score"], item["grades"]["average"], item["name"]))
+    average_attendance_values = [item["attendance"]["percentage"] for item in student_results if item["attendance"]["percentage"] is not None]
+    average_grade_values = [item["grades"]["average"] for item in student_results if item["grades"]["graded_count"]]
+    submission_rates = [item["learning"]["submission_rate"] for item in student_results if item["learning"]["submission_rate"] is not None]
+    risk_distribution = {label: len([item for item in student_results if item["risk"]["label"] == label]) for label in ("Risiko Tinggi", "Perlu Perhatian", "Risiko Rendah", "Aman")}
+    attendance_buckets = {
+        "<60%": len([item for item in student_results if item["attendance"]["percentage"] is not None and item["attendance"]["percentage"] < 60]),
+        "60-74%": len([item for item in student_results if item["attendance"]["percentage"] is not None and 60 <= item["attendance"]["percentage"] < 75]),
+        "≥75%": len([item for item in student_results if item["attendance"]["percentage"] is not None and item["attendance"]["percentage"] >= 75]),
+        "Belum ada data": len([item for item in student_results if item["attendance"]["percentage"] is None]),
+    }
+    class_summary = []
+    for class_id, class_doc in class_by_id.items():
+        metrics = class_metric_map.get(class_id, [])
+        class_grades = [item["grades"]["average"] for item in metrics if item["grades"]["graded_count"]]
+        class_attendance = [item["attendance"]["percentage"] for item in metrics if item["attendance"]["percentage"] is not None]
+        class_summary.append({
+            "id": class_id,
+            "name": class_doc.get("name", ""),
+            "course_name": class_doc.get("course_name", ""),
+            "course_code": class_doc.get("course_code", ""),
+            "student_count": len(metrics),
+            "average_grade": round(sum(class_grades) / len(class_grades), 1) if class_grades else 0,
+            "average_attendance": round(sum(class_attendance) / len(class_attendance), 1) if class_attendance else None,
+            "high_risk_count": len([item for item in metrics if item["risk"]["label"] == "Risiko Tinggi"]),
+        })
+    class_summary.sort(key=lambda item: (-item["high_risk_count"], item["average_grade"], item["course_name"]))
+
+    period_label = "Semua semester"
+    if period_doc:
+        period_label = period_doc.get("nama") or f"{period_doc.get('tahun', '')} {period_doc.get('semester', '')}".strip()
+    return {
+        "ok": True,
+        "scope": {
+            "is_admin": user.get("role") == "admin",
+            "prodi_id": requested_prodi or (own_scope_values[0] if own_scope_values else ""),
+            "prodi_name": user.get("prodi_nama") or user.get("prodi_name") or "Semua Program Studi",
+        },
+        "period": {"id": raw_semester_id or "all", "label": period_label},
+        "summary": {
+            "total_students": len(student_results),
+            "active_students": len([item for item in student_results if str(item["status"]).lower() == "active"]),
+            "high_risk": risk_distribution["Risiko Tinggi"],
+            "needs_attention": risk_distribution["Perlu Perhatian"],
+            "low_risk": risk_distribution["Risiko Rendah"],
+            "safe": risk_distribution["Aman"],
+            "average_attendance": round(sum(average_attendance_values) / len(average_attendance_values), 1) if average_attendance_values else None,
+            "average_grade": round(sum(average_grade_values) / len(average_grade_values), 1) if average_grade_values else 0,
+            "average_submission_rate": round(sum(submission_rates) / len(submission_rates), 1) if submission_rates else None,
+            "no_login_activity": len([item for item in student_results if item["inactive_days"] is None]),
+        },
+        "risk_distribution": risk_distribution,
+        "attendance_buckets": attendance_buckets,
+        "class_summary": class_summary,
+        "students": student_results,
+    }
 
 
 @api_router.get("/students")
@@ -8868,7 +9747,15 @@ async def stored_file_context(
     if not auth_token and authorization and authorization.startswith("Bearer "):
         auth_token = authorization.replace("Bearer ", "", 1).strip()
 
-    is_public = file_doc.get("record_type") in {"avatar", "campus_logo", "branding_logo", "kop_header", "kop_footer"}
+    is_public = file_doc.get("record_type") in {
+        "avatar",
+        "app_logo",
+        "campus_logo",
+        "branding_logo",
+        "pmb_landing_logo",
+        "kop_header",
+        "kop_footer",
+    }
     user: Dict[str, Any] = {}
     if auth_token:
         session = await db.sessions.find_one({"token": auth_token}, {"_id": 0})
@@ -8880,6 +9767,16 @@ async def stored_file_context(
         raise HTTPException(status_code=401, detail="Token diperlukan")
     if user.get("role") == "student" and file_doc.get("submission_id") and file_doc.get("uploaded_by") != user.get("id"):
         raise HTTPException(status_code=403, detail="Tidak punya akses ke file ini")
+    if (
+        file_doc.get("record_type") == "physical_document"
+        and user.get("role") == "student"
+        and str(file_doc.get("student_id") or file_doc.get("uploaded_by") or "") != str(user.get("id") or "")
+    ):
+        raise HTTPException(status_code=403, detail="Tidak punya akses ke dokumen fisik ini")
+    if file_doc.get("record_type") == "rps_document" and user.get("role") == "student":
+        rps_class_id = str(file_doc.get("class_id") or "").strip()
+        if not rps_class_id or rps_class_id not in user.get("class_ids", []):
+            raise HTTPException(status_code=403, detail="Dokumen RPS hanya dapat diakses oleh anggota kelas")
     if file_doc.get("record_type") == "chat_image" and user.get("id") not in file_doc.get("chat_participant_ids", []):
         raise HTTPException(status_code=403, detail="Tidak punya akses ke foto chat ini")
     if file_doc.get("record_type") == "comment_attachment" and user.get("role") == "student":
@@ -8910,8 +9807,8 @@ async def stored_file_context(
     local_path = str(file_doc.get("local_path") or "")
     if local_path:
         path = Path(local_path).resolve()
-        storage_root = STORAGE_ROOT.resolve()
-        if storage_root not in path.parents:
+        storage_roots = (STORAGE_ROOT.resolve(), PMB_STORAGE_ROOT.resolve())
+        if not any(root == path or root in path.parents for root in storage_roots):
             raise HTTPException(status_code=403, detail="Path file tidak valid")
         if path.exists() and path.is_file():
             return user, file_doc, path, False
@@ -9528,11 +10425,29 @@ async def calendar(user: Dict[str, Any] = Depends(get_current_user)):
     published_calendar_events = await db.academic_calendar_events.find(
         {"status": "published"}, {"_id": 0}
     ).to_list(2000)
+    deadline_settings_documents = await db.academic_deadline_settings.find(
+        {}, {"_id": 0}
+    ).to_list(1000)
     events = [
         calendar_event_payload(event)
         for event in published_calendar_events
         if calendar_event_visible_to_user(event, user)
     ]
+    for settings_document in deadline_settings_documents:
+        settings = academic_deadline_settings_payload(settings_document)
+        for deadline_type, item in settings["deadlines"].items():
+            if (
+                item.get("enabled")
+                and item.get("deadline_at")
+                and academic_deadline_visible_to_user(deadline_type, user)
+            ):
+                events.append(
+                    academic_deadline_event_payload(
+                        deadline_type,
+                        item,
+                        settings["academic_year_id"],
+                    )
+                )
     for assignment in assignments:
         if user["role"] in {"admin", "lecturer"} and assignment.get("published_at") and not assignment_is_published(assignment):
             events.append(
@@ -9570,6 +10485,54 @@ async def calendar(user: Dict[str, Any] = Depends(get_current_user)):
                 }
             )
     return sorted(events, key=lambda item: item.get("date", ""))
+
+
+@api_router.get("/calendar/deadlines")
+async def get_academic_deadline_settings(
+    academic_year_id: str = "",
+    user: Dict[str, Any] = Depends(get_current_user),
+):
+    if not can_manage_academic_calendar(user):
+        raise HTTPException(
+            status_code=403,
+            detail="Hanya Admin Kampus atau Operator Akademik yang dapat mengelola deadline",
+        )
+    normalized_academic_year_id = str(academic_year_id or "").strip()
+    document = await db.academic_deadline_settings.find_one(
+        {"academic_year_id": normalized_academic_year_id},
+        {"_id": 0},
+    ) or {
+        "id": f"academic-deadlines-{normalized_academic_year_id or 'global'}",
+        "academic_year_id": normalized_academic_year_id,
+        "deadlines": {},
+    }
+    return academic_deadline_settings_payload(document)
+
+
+@api_router.put("/calendar/deadlines")
+async def save_academic_deadline_settings(
+    payload: AcademicDeadlineSettingsInput,
+    user: Dict[str, Any] = Depends(get_current_user),
+):
+    if not can_manage_academic_calendar(user):
+        raise HTTPException(
+            status_code=403,
+            detail="Hanya Admin Kampus atau Operator Akademik yang dapat mengelola deadline",
+        )
+    validated = validate_academic_deadline_settings(payload)
+    academic_year_id = validated["academic_year_id"]
+    document = {
+        "id": f"academic-deadlines-{academic_year_id or 'global'}",
+        **validated,
+        "updated_by": user["id"],
+        "updated_at": now_iso(),
+    }
+    await db.academic_deadline_settings.update_one(
+        {"academic_year_id": academic_year_id},
+        {"$set": document},
+        upsert=True,
+    )
+    return academic_deadline_settings_payload(document)
 
 
 @api_router.get("/calendar/academic")
@@ -9953,7 +10916,8 @@ async def grade_recap(class_id: Optional[str] = None, user: Dict[str, Any] = Dep
 
 @api_router.get("/settings")
 async def get_settings(_: Dict[str, Any] = Depends(get_current_user)):
-    settings = await db.app_settings.find_one({"id": "main"}, {"_id": 0}) or default_app_settings()
+    stored_settings = await db.app_settings.find_one({"id": "main"}, {"_id": 0}) or {}
+    settings = {**default_app_settings(), **stored_settings}
     active_ta = await db.tahun_ajaran.find_one({"is_active": True}, {"_id": 0})
     if active_ta:
         settings["active_academic_year"] = active_ta.get("tahun") or settings.get("active_academic_year")
@@ -9970,6 +10934,7 @@ async def get_public_settings():
         # pada halaman publik. Field admin, integrasi, dan konfigurasi internal
         # tetap tidak ikut dikirim ke browser.
         "app_name": settings.get("app_name") or defaults["app_name"],
+        "meta_description": settings.get("meta_description") or defaults["meta_description"],
         "campus_name": settings.get("campus_name", defaults["campus_name"]),
         "campus_code": settings.get("campus_code", defaults["campus_code"]),
         "institution_type": settings.get("institution_type", defaults["institution_type"]),
@@ -9981,6 +10946,7 @@ async def get_public_settings():
         "campus_email": settings.get("campus_email", defaults["campus_email"]),
         "campus_website": settings.get("campus_website", defaults["campus_website"]),
         "campus_address": settings.get("campus_address", defaults["campus_address"]),
+        "app_logo_url": settings.get("app_logo_url", defaults["app_logo_url"]),
         "campus_logo_url": settings.get("campus_logo_url", defaults["campus_logo_url"]),
     }
 
@@ -10185,22 +11151,29 @@ class RPSInput(BaseModel):
     meetings: List[RPSMeetingItem] = []
 
 
+class RPSApprovalInput(BaseModel):
+    action: str = Field(..., description="approve atau reject")
+    note: str = ""
+
+
+RPS_UPLOAD_MAX_BYTES = 20 * 1024 * 1024
+
+
 def rps_meeting_label(meeting: Dict[str, Any]) -> str:
     return f"sesi {meeting.get('meeting_number', '?')}"
 
 
-async def class_rps_complete(class_id: str) -> tuple[bool, List[str]]:
-    """Cek apakah RPS kelas sudah disusun lengkap sesuai template.
-
-    Lengkap = dokumen RPS tersimpan, kolom header wajib terisi (CPMK,
-    deskripsi, daftar referensi), dan seluruh 16 pertemuan terisi kolom
-    topik + materi pembelajaran; pertemuan non-ujian juga wajib terisi
-    kemampuan yang diharapkan, metode, dan waktu.
-    """
-    rps = await db.rps.find_one({"class_id": class_id}, {"_id": 0})
+def rps_completeness_from_document(
+    rps: Optional[Dict[str, Any]],
+) -> tuple[bool, List[str]]:
+    """Cek kelengkapan RPS dari dokumen yang sudah dimuat."""
     if not rps:
         return False, ["RPS belum disusun"]
 
+    # Lengkap = dokumen RPS tersimpan, kolom header wajib terisi (CPMK,
+    # deskripsi, daftar referensi), dan seluruh 16 pertemuan terisi kolom
+    # topik + materi pembelajaran; pertemuan non-ujian juga wajib terisi
+    # kemampuan yang diharapkan, metode, dan waktu.
     missing: List[str] = []
     for field, label in (
         ("cpmk", "CPMK"),
@@ -10230,6 +11203,282 @@ async def class_rps_complete(class_id: str) -> tuple[bool, List[str]]:
                         missing.append(f"{label} {rps_meeting_label(m)}")
 
     return (not missing), sorted(set(missing))
+
+
+async def class_rps_complete(class_id: str) -> tuple[bool, List[str]]:
+    """Cek apakah RPS kelas sudah disusun lengkap sesuai template."""
+    rps = await db.rps.find_one({"class_id": class_id}, {"_id": 0})
+    return rps_completeness_from_document(rps)
+
+
+def rps_review_status(
+    rps: Optional[Dict[str, Any]],
+    complete: bool,
+) -> str:
+    if not rps:
+        return "not_started"
+    raw_status = str(rps.get("approval_status") or "").strip().lower()
+    if raw_status in {"approved", "rejected", "pending"}:
+        return raw_status
+    return "pending" if complete else "draft"
+
+
+def _rps_course_group_key(document: Dict[str, Any]) -> str:
+    return str(
+        document.get("course_id")
+        or document.get("course_code")
+        or document.get("code")
+        or document.get("course_name")
+        or document.get("name")
+        or document.get("id")
+        or "unknown"
+    ).strip().lower()
+
+
+def _rps_group_seed(document: Dict[str, Any]) -> Dict[str, Any]:
+    return {
+        "course_id": document.get("course_id") or document.get("id", ""),
+        "course_code": document.get("course_code") or document.get("code") or document.get("kode", ""),
+        "course_name": document.get("course_name") or document.get("name") or document.get("nama", "Mata Kuliah"),
+        "program_name": document.get("program_name") or document.get("prodi_name") or document.get("nama_prodi", ""),
+        "class_count": 0,
+        "rps_count": 0,
+        "complete_count": 0,
+        "not_started_count": 0,
+        "draft_count": 0,
+        "pending_count": 0,
+        "approved_count": 0,
+        "rejected_count": 0,
+        "classes": [],
+    }
+
+
+@api_router.get("/prodi/analisis-rps")
+async def prodi_rps_analysis(
+    semester_id: str = "",
+    prodi_id: str = "",
+    user: Dict[str, Any] = Depends(require_admin),
+):
+    """Analisis kelengkapan dan status approval RPS seluruh mata kuliah Prodi."""
+    requested_prodi = str(prodi_id or "").strip()
+    structural_scope, own_scope_values, scope_values = await _analysis_resolve_program_scope(
+        user,
+        requested_prodi,
+    )
+
+    raw_semester_id = str(semester_id or "").strip()
+    period_doc = None
+    if raw_semester_id and raw_semester_id != "all":
+        period_doc = await db.tahun_ajaran.find_one(
+            {"$or": [{"id": raw_semester_id}, {"kode": raw_semester_id}, {"code": raw_semester_id}]},
+            {"_id": 0},
+        )
+        if not period_doc:
+            raise HTTPException(status_code=404, detail="Tahun ajaran yang dipilih tidak ditemukan")
+
+    class_docs = await db.classes.find({"status": {"$ne": "deleted"}}, {"_id": 0}).to_list(5000)
+    if scope_values:
+        scope_lookup = {str(value).upper() for value in scope_values}
+        class_docs = [
+            item for item in class_docs
+            if any(value.upper() in scope_lookup for value in _analysis_program_fields(item))
+        ]
+    elif user.get("role") != "admin":
+        assigned_class_ids = set(await lecturer_class_ids(user))
+        class_docs = [item for item in class_docs if str(item.get("id")) in assigned_class_ids]
+    if raw_semester_id and raw_semester_id != "all":
+        class_docs = [
+            item for item in class_docs
+            if _analysis_class_matches_period(item, raw_semester_id, period_doc)
+        ]
+
+    class_ids = [str(item.get("id")) for item in class_docs if item.get("id")]
+    rps_docs = await db.rps.find(
+        {"class_id": {"$in": class_ids}},
+        {"_id": 0},
+    ).to_list(10000) if class_ids else []
+    rps_by_class = {str(item.get("class_id")): item for item in rps_docs if item.get("class_id")}
+
+    # Mata kuliah aktif ditentukan dari kelas yang sudah lolos scope Prodi dan
+    # filter semester di atas. Jangan memulai grup dari master `courses`,
+    # karena master tersebut berisi seluruh riwayat mata kuliah lintas semester.
+    groups: Dict[str, Dict[str, Any]] = {}
+    for class_doc in class_docs:
+        groups.setdefault(_rps_course_group_key(class_doc), _rps_group_seed(class_doc))
+
+    class_results: List[Dict[str, Any]] = []
+    status_counts = {status: 0 for status in ("not_started", "draft", "pending", "approved", "rejected")}
+    complete_count = 0
+    rps_count = 0
+    total_meetings = 0
+    total_classes = len(class_docs)
+    for class_doc in class_docs:
+        class_id = str(class_doc.get("id"))
+        rps = rps_by_class.get(class_id)
+        complete, missing = rps_completeness_from_document(rps)
+        status = rps_review_status(rps, complete)
+        course_key = _rps_course_group_key(class_doc)
+        group = groups.setdefault(course_key, _rps_group_seed(class_doc))
+        meetings_count = len((rps or {}).get("meetings") or [])
+        group["class_count"] += 1
+        group["rps_count"] += int(bool(rps))
+        group["complete_count"] += int(complete)
+        group[f"{status}_count"] += 1
+        group["classes"].append(class_id)
+        status_counts[status] += 1
+        complete_count += int(complete)
+        rps_count += int(bool(rps))
+        total_meetings += meetings_count
+        class_results.append({
+            "id": class_id,
+            "course_id": class_doc.get("course_id", ""),
+            "course_code": class_doc.get("course_code", ""),
+            "course_name": class_doc.get("course_name", "Mata Kuliah"),
+            "class_name": class_doc.get("name") or class_doc.get("class_code", ""),
+            "program_name": class_doc.get("program_name", ""),
+            "lecturer_name": class_doc.get("lecturer_name", ""),
+            "academic_year": class_doc.get("academic_year", ""),
+            "semester": class_doc.get("semester", ""),
+            "student_count": len(class_doc.get("student_ids", []) or []),
+            "rps_id": (rps or {}).get("id", ""),
+            "has_rps": bool(rps),
+            "is_complete": complete,
+            "missing_fields": missing[:12],
+            "meetings_count": meetings_count,
+            "meetings_target": 16,
+            "meeting_coverage_percent": round(min(meetings_count, 16) / 16 * 100, 1),
+            "approval_status": status,
+            "approval_note": (rps or {}).get("approval_note", ""),
+            "approved_at": (rps or {}).get("approved_at", ""),
+            "approved_by": (rps or {}).get("approved_by", ""),
+            "updated_at": (rps or {}).get("updated_at", ""),
+            "document_file_name": ((rps or {}).get("document_file") or {}).get("file_name", ""),
+            "document_url": (rps or {}).get("document_url", ""),
+            "rps_preview": {
+                "cpmk": (rps or {}).get("cpmk", ""),
+                "description": (rps or {}).get("description", ""),
+                "references": (rps or {}).get("references", ""),
+                "meetings": [
+                    {
+                        "meeting_number": meeting.get("meeting_number"),
+                        "topic": meeting.get("topic", ""),
+                        "materials": meeting.get("materials", ""),
+                        "learning_outcome": meeting.get("learning_outcome", ""),
+                        "is_exam": bool(meeting.get("is_exam")),
+                    }
+                    for meeting in ((rps or {}).get("meetings") or [])
+                ],
+            },
+        })
+
+    course_results = []
+    for group in groups.values():
+        group["course_count_status"] = "not_offered" if group["class_count"] == 0 else "offered"
+        group["class_ids"] = group.pop("classes")
+        course_results.append(group)
+    course_results.sort(key=lambda item: (str(item.get("course_name") or "").lower(), str(item.get("course_code") or "")))
+    class_results.sort(key=lambda item: (str(item.get("course_name") or "").lower(), str(item.get("class_name") or "").lower()))
+
+    period_label = "Semua semester"
+    if period_doc:
+        period_label = period_doc.get("nama") or f"{period_doc.get('tahun', '')} {period_doc.get('semester', '')}".strip()
+    prodi_name = (
+        user.get("prodi_nama")
+        or user.get("prodi_name")
+        or next((item.get("program_name") for item in class_results if item.get("program_name")), "")
+        or "Semua Program Studi"
+    )
+    return {
+        "ok": True,
+        "scope": {
+            "is_admin": user.get("role") == "admin",
+            "prodi_id": requested_prodi or (own_scope_values[0] if own_scope_values else ""),
+            "prodi_name": prodi_name,
+            "scope_values": scope_values,
+            "structural_scope": structural_scope,
+        },
+        "period": {"id": raw_semester_id or "all", "label": period_label},
+        "summary": {
+            "total_courses": len(course_results),
+            "offered_courses": len([item for item in course_results if item["class_count"] > 0]),
+            "total_classes": total_classes,
+            "rps_count": rps_count,
+            "not_started": status_counts["not_started"],
+            "draft": status_counts["draft"],
+            "pending_approval": status_counts["pending"],
+            "approved": status_counts["approved"],
+            "rejected": status_counts["rejected"],
+            "complete_rps": complete_count,
+            "completeness_percent": round(complete_count / total_classes * 100, 1) if total_classes else 0,
+            "approval_percent": round(status_counts["approved"] / rps_count * 100, 1) if rps_count else 0,
+            "meeting_coverage_percent": round(total_meetings / (total_classes * 16) * 100, 1) if total_classes else 0,
+        },
+        "status_distribution": status_counts,
+        "courses": course_results,
+        "classes": class_results,
+    }
+
+
+@api_router.post("/prodi/rps/{class_id}/approval")
+async def approve_prodi_rps(
+    class_id: str,
+    payload: RPSApprovalInput,
+    user: Dict[str, Any] = Depends(require_admin),
+):
+    """Approve atau reject RPS kelas oleh Ketua Prodi/Admin."""
+    _, _, scope_values = await _analysis_resolve_program_scope(user)
+    class_doc = await db.classes.find_one(
+        {"id": class_id, "status": {"$ne": "deleted"}},
+        {"_id": 0},
+    )
+    if not class_doc:
+        raise HTTPException(status_code=404, detail="Kelas mata kuliah tidak ditemukan")
+    if user.get("role") != "admin":
+        scope_lookup = {str(value).upper() for value in scope_values}
+        class_in_scope = any(value.upper() in scope_lookup for value in _analysis_program_fields(class_doc))
+        if not class_in_scope and not scope_values:
+            class_in_scope = class_id in set(await lecturer_class_ids(user))
+        if not class_in_scope:
+            raise HTTPException(status_code=403, detail="Kelas berada di luar kewenangan Prodi Anda")
+
+    rps = await db.rps.find_one({"class_id": class_id}, {"_id": 0})
+    if not rps:
+        raise HTTPException(status_code=404, detail="RPS untuk kelas ini belum tersedia")
+    complete, missing = rps_completeness_from_document(rps)
+    action = str(payload.action or "").strip().lower()
+    if action in {"approve", "approved"}:
+        if not complete:
+            raise HTTPException(
+                status_code=400,
+                detail=f"RPS belum lengkap dan belum dapat disetujui. Kolom: {', '.join(missing[:8])}",
+            )
+        status = "approved"
+    elif action in {"reject", "rejected"}:
+        status = "rejected"
+    else:
+        raise HTTPException(status_code=400, detail="Aksi approval harus approve atau reject")
+
+    reviewed_at = now_iso()
+    note = str(payload.note or "").strip()
+    update_doc = {
+        "approval_status": status,
+        "approval_note": note,
+        "reviewed_at": reviewed_at,
+        "reviewed_by": user.get("id", ""),
+    }
+    if status == "approved":
+        update_doc.update({"approved_at": reviewed_at, "approved_by": user.get("id", "")})
+    else:
+        update_doc.update({"approved_at": "", "approved_by": ""})
+    await db.rps.update_one({"class_id": class_id}, {"$set": update_doc})
+    return {
+        "ok": True,
+        "class_id": class_id,
+        "approval_status": status,
+        "approval_note": note,
+        "reviewed_at": reviewed_at,
+        "reviewed_by": user.get("id", ""),
+    }
 
 
 async def require_rps_complete(class_id: str) -> None:
@@ -10369,6 +11618,101 @@ async def get_class_rps(class_id: str, user: Dict[str, Any] = Depends(get_curren
     return rps
 
 
+@api_router.post("/classes/{class_id}/rps/upload")
+async def upload_class_rps_pdf(
+    class_id: str,
+    file: UploadFile = File(...),
+    user: Dict[str, Any] = Depends(require_admin),
+):
+    """Store an official RPS document and return a reviewable extraction draft."""
+
+    class_doc = await require_class_access(class_id, user)
+    class_doc = await enrich_class_payload(class_doc)
+    filename = str(file.filename or "").strip()
+    extension = Path(filename).suffix.lower()
+    if not filename or extension not in {".pdf", ".docx", ".doc"}:
+        raise HTTPException(status_code=400, detail="Dokumen RPS harus berupa PDF, DOCX, atau Word .doc")
+
+    content = await file.read(RPS_UPLOAD_MAX_BYTES + 1)
+    if len(content) > RPS_UPLOAD_MAX_BYTES:
+        raise HTTPException(status_code=400, detail="Ukuran dokumen RPS maksimal 20 MB")
+    if not content:
+        raise HTTPException(status_code=400, detail="File dokumen RPS kosong")
+
+    try:
+        extraction = parse_rps_document(content, extension, class_doc)
+    except RPSPdfDependencyError as exc:
+        raise HTTPException(status_code=503, detail=str(exc)) from exc
+    except RPSPdfParseError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    finally:
+        await file.seek(0)
+
+    file_doc = await save_uploaded_file_record(
+        file,
+        [
+            "RPS",
+            class_doc.get("academic_year", "Tahun Akademik"),
+            class_doc.get("semester", "Semester"),
+            class_doc.get("course_name", "Mata Kuliah"),
+            class_doc.get("name", "Kelas"),
+        ],
+        class_doc.get("course_code") or class_id,
+        class_doc.get("name") or class_doc.get("course_name", "Kelas"),
+        user["id"],
+        record_type="rps_document",
+        sync_drive=False,
+        lecturer_id=class_doc.get("lecturer_id", ""),
+    )
+    await db.stored_files.update_one(
+        {"id": file_doc["id"]},
+        {"$set": {"class_id": class_id, "rps_class_id": class_id}},
+    )
+
+    document_file = {
+        key: file_doc.get(key, "")
+        for key in (
+            "id",
+            "file_id",
+            "file_name",
+            "mime_type",
+            "size",
+            "file_url",
+            "preview_url",
+            "inline_url",
+        )
+    }
+    uploaded_at = now_iso()
+    await db.rps.update_one(
+        {"class_id": class_id},
+        {
+            "$set": {
+                "class_id": class_id,
+                "document_url": file_doc.get("file_url", ""),
+                "document_file": document_file,
+                "document_uploaded_at": uploaded_at,
+                "document_extraction": {
+                    "uploaded_at": uploaded_at,
+                    "stats": extraction.get("stats", {}),
+                    "warnings": extraction.get("warnings", []),
+                },
+                "approval_status": "pending",
+                "approval_note": "",
+                "reviewed_at": "",
+                "reviewed_by": "",
+                "approved_at": "",
+                "approved_by": "",
+            }
+        },
+        upsert=True,
+    )
+    return {
+        "document_url": file_doc.get("file_url", ""),
+        "document_file": document_file,
+        **extraction,
+    }
+
+
 @api_router.post("/classes/{class_id}/rps")
 async def save_class_rps(class_id: str, payload: RPSInput, user: Dict[str, Any] = Depends(require_admin)):
     class_doc = await require_class_access(class_id, user)
@@ -10383,7 +11727,14 @@ async def save_class_rps(class_id: str, payload: RPSInput, user: Dict[str, Any] 
         "program_name": doc.get("program_name") or class_doc.get("program_name", ""),
         "lecturer_name": doc.get("lecturer_name") or class_doc.get("lecturer_name", ""),
         "updated_at": now_iso(),
-        "updated_by": user["id"]
+        "updated_by": user["id"],
+        # Setiap perubahan dosen harus masuk review ulang oleh Kaprodi.
+        "approval_status": "pending",
+        "approval_note": "",
+        "reviewed_at": "",
+        "reviewed_by": "",
+        "approved_at": "",
+        "approved_by": "",
     })
     await db.rps.update_one({"class_id": class_id}, {"$set": doc}, upsert=True)
     complete, missing = await class_rps_complete(class_id)
@@ -10406,6 +11757,14 @@ async def generate_class_rps_meetings(class_id: str, user: Dict[str, Any] = Depe
     rps["meetings"] = meetings
     rps["updated_at"] = now_iso()
     rps["updated_by"] = user["id"]
+    rps.update({
+        "approval_status": "pending",
+        "approval_note": "",
+        "reviewed_at": "",
+        "reviewed_by": "",
+        "approved_at": "",
+        "approved_by": "",
+    })
     await db.rps.update_one({"class_id": class_id}, {"$set": rps}, upsert=True)
     return rps
 
@@ -11376,6 +12735,50 @@ async def upload_campus_logo(
     return {"logo_url": logo_url}
 
 
+@api_router.post("/settings/upload-app-logo")
+async def upload_app_logo(
+    file: UploadFile = File(...),
+    user: Dict[str, Any] = Depends(require_campus_admin),
+):
+    if not file.filename:
+        raise HTTPException(status_code=400, detail="File logo aplikasi tidak valid")
+    allowed_exts = {".jpg", ".jpeg", ".png", ".webp", ".svg"}
+    ext = Path(file.filename).suffix.lower()
+    if ext not in allowed_exts:
+        raise HTTPException(status_code=400, detail="Format logo aplikasi harus berupa JPG, PNG, WEBP, atau SVG")
+
+    content = await file.read()
+    if len(content) > 5 * 1024 * 1024:
+        raise HTTPException(status_code=400, detail="Ukuran logo aplikasi maksimal 5 MB")
+
+    file_token = secrets.token_hex(8)
+    safe_name = safe_path_segment(file.filename) or f"app_logo{ext}"
+    filename = f"logo_aplikasi_{file_token[:8]}_{safe_name}"
+
+    branding_dir = STORAGE_ROOT / "Branding"
+    branding_dir.mkdir(parents=True, exist_ok=True)
+    file_path = branding_dir / filename
+    file_path.write_bytes(content)
+
+    file_id = f"app-logo-{file_token[:8]}"
+    file_doc = {
+        "id": file_id,
+        "record_type": "app_logo",
+        "owner_user_id": user["id"],
+        "file_name": safe_name,
+        "original_name": file.filename,
+        "mime_type": file.content_type or f"image/{ext.replace('.', '')}",
+        "size": len(content),
+        "local_path": str(file_path),
+        "created_at": now_iso(),
+    }
+    await db.stored_files.update_one({"id": file_id}, {"$set": file_doc}, upsert=True)
+    app_logo_url = f"/api/files/{file_id}/inline"
+    await db.app_settings.update_one({"id": "main"}, {"$set": {"app_logo_url": app_logo_url}}, upsert=True)
+    _invalidate_settings_cache("app_settings")
+    return {"app_logo_url": app_logo_url}
+
+
 @api_router.post("/settings/upload-kop-header")
 async def upload_kop_header(
     file: UploadFile = File(...),
@@ -11568,6 +12971,8 @@ async def on_startup():
     await db.academic_calendar_events.create_index("id", unique=True)
     await db.academic_calendar_events.create_index([("status", 1), ("start_at", 1)])
     await db.academic_calendar_events.create_index("academic_year_id")
+    await db.academic_deadline_settings.create_index("id", unique=True)
+    await db.academic_deadline_settings.create_index("academic_year_id", unique=True)
     await db.submissions.create_index([("assignment_id", 1), ("student_id", 1)])
     await db.submissions.create_index("student_id")
     await db.submissions.create_index("submitted_at")

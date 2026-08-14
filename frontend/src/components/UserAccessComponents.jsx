@@ -61,17 +61,22 @@ const DEFAULT_SYSTEM_MODULES = [
   { key: "materials", name: "Materi & Diskusi Pembelajaran", category: "Pembelajaran", description: "Materi kuliah, file modul, dan forum diskusi kelas." },
   { key: "assignments", name: "Tugas & Kuis", category: "Pembelajaran", description: "Tugas, kuis, pengumpulan, dan penilaian aktivitas kelas." },
   { key: "rps", name: "RPS & Pertemuan", category: "Pembelajaran", description: "RPS 16 pertemuan, capaian pembelajaran, dan rencana sesi." },
+  { key: "analisis_rps_prodi", name: "Analisis & Approval RPS Prodi", category: "Mutu Akademik Prodi", description: "Analisis kelengkapan RPS seluruh mata kuliah Prodi dan persetujuan Kaprodi." },
   { key: "attendance", name: "Presensi & Kehadiran", category: "Pembelajaran", description: "Presensi mahasiswa dan rekap kehadiran perkuliahan." },
   { key: "grading", name: "Penilaian, Bobot & Predikat", category: "Evaluasi", description: "Input nilai, komponen bobot, serta predikat nilai." },
   { key: "rekap_nilai", name: "Rekap Nilai, Laporan & BKD", category: "Evaluasi", description: "Rekap nilai, laporan akademik, BKD, dan portofolio dosen." },
+  { key: "progres_nilai_prodi", name: "Progres Nilai Prodi", category: "Mutu Akademik Prodi", description: "Monitoring progres input dan finalisasi nilai seluruh kelas dalam Prodi." },
+  { key: "analisis_mahasiswa_prodi", name: "Analisis Mahasiswa Prodi", category: "Mutu Akademik Prodi", description: "Analisis kehadiran, nilai, tugas, aktivitas, dan risiko akademik mahasiswa Prodi." },
   { key: "krs_khs", name: "KRS, Perwalian & KHS", category: "SIAKAD", description: "Pengisian dan persetujuan KRS, KHS, serta transkrip mahasiswa." },
   { key: "keuangan", name: "Keuangan, UKT & BIPOT", category: "SIAKAD", description: "Komponen BIPOT, skema UKT, tagihan, pembayaran, dan verifikasi." },
   { key: "pmb", name: "PMB (Penerimaan Mahasiswa Baru)", category: "SIAKAD", description: "Pendaftaran, seleksi, registrasi ulang, dan konversi calon mahasiswa." },
   { key: "academic_setup", name: "Konfigurasi & Periode Akademik", category: "Data Master Akademik", description: "Konfigurasi akademik, setup semester, dan tahun ajaran." },
+  { key: "academic_calendar", name: "Kalender Akademik", category: "Data Master Akademik", description: "Kalender kegiatan institusi, publikasi agenda, dan pengaturan tenggat akademik." },
   { key: "academic_structure", name: "Struktur Akademik", category: "Data Master Akademik", description: "Data fakultas dan program studi beserta status aktifnya." },
   { key: "curriculum_schedule", name: "Kurikulum, Mata Kuliah & Jadwal", category: "Data Master Akademik", description: "Kurikulum, dosen pengampu mata kuliah, dan jadwal mengajar." },
   { key: "facilities", name: "Gedung & Ruangan", category: "Data Master Akademik", description: "Master gedung, ruangan, dan kapasitas sarana perkuliahan." },
-  { key: "academic_documents", name: "Dokumen SK Akademik", category: "Data Master Akademik", description: "SK mengajar dan SK jabatan akademik dosen." },
+  { key: "sk_mengajar", name: "SK Mengajar Dosen", category: "Data Master Akademik", description: "Pembuatan, pengelolaan, finalisasi, dan cetak SK Mengajar Dosen." },
+  { key: "sk_jabatan", name: "SK Jabatan Akademik Dosen", category: "Data Master Akademik", description: "Penetapan dan persuratan jabatan akademik fungsional dosen." },
   { key: "student_records", name: "Data Mahasiswa", category: "Data Sivitas", description: "Biodata, status studi, detail akademik, dan dokumen mahasiswa." },
   { key: "lecturer_records", name: "Data Dosen & Jabatan Akademik", category: "Data Sivitas", description: "Biodata dosen, NIDN/NUPTK, dan jabatan akademik." },
   { key: "academic_advising", name: "Penempatan & Dosen Wali", category: "Data Sivitas", description: "Penempatan mahasiswa ke prodi/kelas dan penugasan dosen wali." },
@@ -95,6 +100,13 @@ const DEFAULT_ACTIONS = [
   { key: "delete", label: "Hapus" },
   { key: "export", label: "Export / Cetak" }
 ];
+
+const templateTargetLabel = (template) => {
+  if (template?.id === "tpl_kaprodi") return "Role struktural: Kaprodi / Sekprodi";
+  return template?.role_target === "all"
+    ? "Semua Role"
+    : `Target Role: ${template?.role_target || "all"}`;
+};
 
 const createRoleMatrixFallback = (rCode) => {
   const matrix = {};
@@ -570,7 +582,7 @@ export function UserAccessPage() {
           }`}
         >
           <ShieldCheck className="w-4 h-4" />
-          Akses Modul Per Role (Dosen / Mhs / Admin)
+          Akses Modul Per Role Utama (Admin / Dosen / Mahasiswa)
         </button>
 
         <button
@@ -689,6 +701,9 @@ export function UserAccessPage() {
               </div>
               <p>
                 Setiap perubahan pada tabel checklist di bawah ini akan secara otomatis berlaku untuk seluruh <strong>{selectedRoleObj.user_count || 0} pengguna</strong> dengan role ini.
+              </p>
+              <p className="text-emerald-700">
+                Kaprodi/Sekprodi menggunakan role utama <strong>Dosen</strong> dan memperoleh modul Prodi melalui templat jabatan pada tab <strong>Jabatan → Akses</strong>.
               </p>
             </div>
           </div>
@@ -962,7 +977,7 @@ export function UserAccessPage() {
                       <div>
                         <h3 className="font-bold text-slate-900 text-base leading-tight">{tpl.name}</h3>
                         <span className="text-xs text-slate-500 font-medium">
-                          {tpl.role_target === "all" ? "Semua Role" : `Target Role: ${tpl.role_target}`}
+                          {templateTargetLabel(tpl)}
                         </span>
                       </div>
                     </div>
@@ -1061,7 +1076,7 @@ export function UserAccessPage() {
                             <option value="">Tidak menambahkan akses</option>
                             {templates.map((template) => (
                               <option key={template.id} value={template.id}>
-                                {template.name} ({template.role_target === "all" ? "semua role" : template.role_target})
+                                {template.name} ({templateTargetLabel(template)})
                               </option>
                             ))}
                           </select>
@@ -1197,7 +1212,7 @@ export function UserAccessPage() {
                         >
                           {templates.filter((t) => t.role_target === "all" || t.role_target === userAccessDetail.user.role).map((t) => (
                             <option key={t.id} value={t.id}>
-                              {t.name} ({t.role_target === "all" ? "Semua Role" : t.role_target})
+                              {t.name} ({templateTargetLabel(t)})
                             </option>
                           ))}
                         </select>
@@ -1421,7 +1436,7 @@ export function UserAccessPage() {
                 <option value="">-- Pilih Templat Akses --</option>
                 {templates.map((t) => (
                   <option key={t.id} value={t.id}>
-                    {t.name} ({t.role_target === "all" ? "Semua Role" : t.role_target})
+                    {t.name} ({templateTargetLabel(t)})
                   </option>
                 ))}
               </select>

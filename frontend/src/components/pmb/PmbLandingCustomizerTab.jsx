@@ -6,7 +6,7 @@ import { Label } from "@/components/ui/label";
 import { Badge } from "@/components/ui/badge";
 import { Card, CardContent, CardHeader, CardTitle, CardDescription } from "@/components/ui/card";
 import { toast } from "@/components/ui/sonner";
-import { apiErrorMessage } from "@/lib/utils";
+import { apiErrorMessage, resolveMediaUrl } from "@/lib/utils";
 import {
   Sparkles,
   Save,
@@ -28,7 +28,8 @@ import {
   Monitor,
   Globe,
   CreditCard,
-  Zap
+  Zap,
+  UploadCloud
 } from "lucide-react";
 
 const WHY_US_ICON_OPTIONS = [
@@ -45,7 +46,9 @@ const api = axios.create({ baseURL: BACKEND_URL });
 export function PmbLandingCustomizerTab({ token: propToken, initialSettings, onUpdateSettings }) {
   const token = propToken || (typeof window !== "undefined" ? localStorage.getItem("token") || "" : "");
   const [loading, setLoading] = useState(false);
+  const [uploadingLogo, setUploadingLogo] = useState(false);
   const [customData, setCustomData] = useState({
+    landing_logo_url: initialSettings?.landing_logo_url || "",
     landing_announcement: initialSettings?.landing_announcement || "",
     landing_hero_badge: initialSettings?.landing_hero_badge || "",
     landing_hero_title: initialSettings?.landing_hero_title || "",
@@ -82,6 +85,7 @@ export function PmbLandingCustomizerTab({ token: propToken, initialSettings, onU
     if (initialSettings) {
       setCustomData((prev) => ({
         ...prev,
+        landing_logo_url: initialSettings.landing_logo_url ?? prev.landing_logo_url,
         landing_announcement: initialSettings.landing_announcement ?? prev.landing_announcement,
         landing_hero_badge: initialSettings.landing_hero_badge ?? prev.landing_hero_badge,
         landing_hero_title: initialSettings.landing_hero_title ?? prev.landing_hero_title,
@@ -116,6 +120,35 @@ export function PmbLandingCustomizerTab({ token: propToken, initialSettings, onU
       toast.error(apiErrorMessage(err, "Gagal menyimpan kustomisasi"));
     } finally {
       setLoading(false);
+    }
+  };
+
+  const handleLogoUpload = async (file) => {
+    if (!file) return;
+    try {
+      setUploadingLogo(true);
+      const formData = new FormData();
+      formData.append("file", file);
+      const res = await api.post("/api/v1/pmb/admin/upload-landing-logo", formData, {
+        headers: { Authorization: `Bearer ${token}` },
+      });
+      const landingLogoUrl = res.data?.landing_logo_url;
+      if (!landingLogoUrl) throw new Error("URL logo tidak diterima dari server");
+      setCustomData((prev) => ({ ...prev, landing_logo_url: landingLogoUrl }));
+      if (onUpdateSettings) {
+        onUpdateSettings(
+          res.data.settings || {
+            ...(initialSettings || {}),
+            ...customData,
+            landing_logo_url: landingLogoUrl,
+          },
+        );
+      }
+      toast.success(res.data.message || "Logo landing page PMB berhasil diunggah");
+    } catch (err) {
+      toast.error(apiErrorMessage(err, "Gagal mengunggah logo landing PMB"));
+    } finally {
+      setUploadingLogo(false);
     }
   };
 
@@ -185,7 +218,7 @@ export function PmbLandingCustomizerTab({ token: propToken, initialSettings, onU
             Kustomisasi Halaman Informasi Terdepan PMB
           </h2>
           <p className="text-xs text-slate-300 max-w-2xl">
-            Sesuaikan teks hero, pengumuman, highlight prestasi, kartu beasiswa, dan tanya-jawab (FAQ) secara fleksibel tanpa mengubah kode program.
+            Sesuaikan logo, teks hero, pengumuman, highlight prestasi, kartu beasiswa, dan tanya-jawab (FAQ) secara fleksibel tanpa mengubah kode program.
           </p>
         </div>
 
@@ -288,6 +321,48 @@ export function PmbLandingCustomizerTab({ token: propToken, initialSettings, onU
             </CardDescription>
           </CardHeader>
           <CardContent className="space-y-4 text-xs">
+            <div className="rounded-xl border border-indigo-200 bg-indigo-50/50 p-4" data-testid="pmb-landing-logo-upload">
+              <div className="flex flex-col gap-4 sm:flex-row sm:items-center">
+                {customData.landing_logo_url ? (
+                  <div className="flex h-20 w-20 shrink-0 items-center justify-center overflow-hidden rounded-xl border border-indigo-200 bg-white p-2 shadow-sm">
+                    <img
+                      src={resolveMediaUrl(customData.landing_logo_url)}
+                      alt="Logo Landing Page PMB"
+                      className="max-h-full max-w-full object-contain"
+                    />
+                  </div>
+                ) : (
+                  <div className="flex h-20 w-20 shrink-0 items-center justify-center rounded-xl border border-dashed border-indigo-300 bg-white text-center text-[10px] text-indigo-400">
+                    Logo kampus
+                  </div>
+                )}
+                <div className="min-w-0 flex-1 space-y-2">
+                  <div>
+                    <Label className="text-xs font-bold text-indigo-900">Logo Landing Page PMB</Label>
+                    <p className="mt-0.5 text-[11px] leading-4 text-slate-500">
+                      Logo khusus navbar dan footer landing PMB. Jika kosong, sistem tetap memakai logo resmi kampus.
+                    </p>
+                  </div>
+                  <label className="inline-flex w-full cursor-pointer items-center justify-center gap-2 rounded-lg border border-indigo-200 bg-white px-3 py-2 text-xs font-bold text-indigo-700 transition hover:bg-indigo-100 sm:w-auto">
+                    <UploadCloud className="h-4 w-4" />
+                    {uploadingLogo ? "Mengunggah..." : "Pilih & Unggah Logo PMB"}
+                    <input
+                      type="file"
+                      accept=".jpg,.jpeg,.png,.webp,.svg,image/*"
+                      className="hidden"
+                      disabled={uploadingLogo}
+                      onChange={(event) => {
+                        handleLogoUpload(event.target.files?.[0]);
+                        event.target.value = "";
+                      }}
+                      data-testid="pmb-landing-logo-input"
+                    />
+                  </label>
+                  <p className="text-[10px] text-slate-400">PNG, JPG, WEBP, atau SVG · maksimal 5 MB.</p>
+                </div>
+              </div>
+            </div>
+
             <div>
               <Label className="text-xs font-bold">Teks Pengumuman Bar Atas (Announcement Bar)</Label>
               <Input

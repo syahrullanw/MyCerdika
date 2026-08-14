@@ -83,6 +83,12 @@ SYSTEM_MODULES = [
         "description": "RPS 16 pertemuan, capaian pembelajaran, dan rencana sesi.",
     },
     {
+        "key": "analisis_rps_prodi",
+        "name": "Analisis & Approval RPS Prodi",
+        "category": "Mutu Akademik Prodi",
+        "description": "Analisis kelengkapan RPS seluruh mata kuliah Prodi dan persetujuan Kaprodi.",
+    },
+    {
         "key": "attendance",
         "name": "Presensi & Kehadiran",
         "category": "Pembelajaran",
@@ -99,6 +105,18 @@ SYSTEM_MODULES = [
         "name": "Rekap Nilai, Laporan & BKD",
         "category": "Evaluasi",
         "description": "Rekap nilai, laporan akademik, BKD, dan portofolio dosen.",
+    },
+    {
+        "key": "progres_nilai_prodi",
+        "name": "Progres Nilai Prodi",
+        "category": "Mutu Akademik Prodi",
+        "description": "Monitoring progres input dan finalisasi nilai seluruh kelas dalam Prodi.",
+    },
+    {
+        "key": "analisis_mahasiswa_prodi",
+        "name": "Analisis Mahasiswa Prodi",
+        "category": "Mutu Akademik Prodi",
+        "description": "Analisis kehadiran, nilai, tugas, aktivitas, dan risiko akademik mahasiswa Prodi.",
     },
     {
         "key": "krs_khs",
@@ -149,10 +167,16 @@ SYSTEM_MODULES = [
         "description": "Master gedung, ruangan, dan kapasitas sarana perkuliahan.",
     },
     {
-        "key": "academic_documents",
-        "name": "Dokumen SK Akademik",
+        "key": "sk_mengajar",
+        "name": "SK Mengajar Dosen",
         "category": "Data Master Akademik",
-        "description": "SK mengajar dan SK jabatan akademik dosen.",
+        "description": "Pembuatan, pengelolaan, finalisasi, dan cetak SK Mengajar Dosen.",
+    },
+    {
+        "key": "sk_jabatan",
+        "name": "SK Jabatan Akademik Dosen",
+        "category": "Data Master Akademik",
+        "description": "Penetapan dan persuratan jabatan akademik fungsional dosen.",
     },
     {
         "key": "student_records",
@@ -260,7 +284,8 @@ LEGACY_MODULE_EXPANSIONS = {
         "academic_structure",
         "curriculum_schedule",
         "facilities",
-        "academic_documents",
+        "sk_mengajar",
+        "sk_jabatan",
     },
     "user_management": {
         "student_records",
@@ -280,6 +305,8 @@ LEGACY_MODULE_EXPANSIONS = {
         "database_backup",
         "data_maintenance",
     },
+    # Persisted matrices from before the SK modules were split.
+    "academic_documents": {"sk_mengajar", "sk_jabatan"},
 }
 
 
@@ -375,7 +402,11 @@ KAPRODI_DEFAULT_MATRIX = _matrix_from_grants({
     "academic_calendar": {"view"},
     "academic_structure": {"view"},
     "curriculum_schedule": {"view", "create", "edit", "export"},
-    "academic_documents": {"view", "create", "edit", "export"},
+    "sk_mengajar": {"view", "create", "edit", "export"},
+    "sk_jabatan": set(),
+    "progres_nilai_prodi": {"view", "export"},
+    "analisis_mahasiswa_prodi": {"view", "export"},
+    "analisis_rps_prodi": {"view", "edit", "export"},
     "student_records": {"view", "export"},
     "lecturer_records": {"view", "export"},
     "academic_advising": {"view", "create", "edit", "export"},
@@ -400,7 +431,8 @@ ACADEMIC_OPERATOR_DEFAULT_MATRIX = _matrix_from_grants({
     "academic_structure": {"view", "create", "edit", "export"},
     "curriculum_schedule": {"view", "create", "edit", "export"},
     "facilities": {"view", "create", "edit", "export"},
-    "academic_documents": {"view", "create", "edit", "export"},
+    "sk_mengajar": {"view", "create", "edit", "export"},
+    "sk_jabatan": {"view", "create", "edit", "export"},
     "student_records": {"view", "create", "edit", "export"},
     "lecturer_records": {"view", "create", "edit", "export"},
     "academic_advising": {"view", "create", "edit", "export"},
@@ -419,12 +451,17 @@ PMB_STAFF_DEFAULT_MATRIX = _matrix_from_grants({
 LEADERSHIP_DEFAULT_MATRIX = _matrix_from_grants({
     "dashboard": {"view", "export"},
     "rekap_nilai": {"view", "export"},
+    "progres_nilai_prodi": {"view", "export"},
+    "analisis_mahasiswa_prodi": {"view", "export"},
+    "analisis_rps_prodi": {"view", "export"},
     "krs_khs": {"view", "export"},
     "keuangan": {"view", "export"},
     "academic_setup": {"view"},
     "academic_calendar": {"view"},
     "academic_structure": {"view"},
     "curriculum_schedule": {"view", "export"},
+    "sk_mengajar": {"view", "export"},
+    "sk_jabatan": {"view", "export"},
     "student_records": {"view", "export"},
     "lecturer_records": {"view", "export"},
     "feeder": {"view"},
@@ -458,7 +495,7 @@ DEFAULT_TEMPLATES = [
     {
         "id": "tpl_kaprodi",
         "name": "Kaprodi (Ketua Program Studi)",
-        "description": "Akses khusus pengawasan kurikulum, dosen wali, dan rekap akademis prodi",
+        "description": "Akses pengawasan kurikulum, analisis mahasiswa, progres nilai, serta approval RPS dalam scope Prodi",
         "role_target": "lecturer",
         "is_default": True,
         "permissions": KAPRODI_DEFAULT_MATRIX,
@@ -519,8 +556,14 @@ def default_template_permissions(template_id: Optional[str], role_target: str = 
 
 
 def normalize_template_permissions(template: Dict[str, Any]) -> Dict[str, Dict[str, bool]]:
+    source = dict(template.get("permissions") or {})
+    # Legacy Kaprodi templates used one combined ``academic_documents`` key.
+    # Keep its SK Mengajar access after the split, but never let it re-enable
+    # SK Jabatan for a structural role that is not allowed to open that page.
+    if template.get("id") == "tpl_kaprodi":
+        source["sk_jabatan"] = _permission_actions(False)
     return normalize_permission_matrix(
-        template.get("permissions"),
+        source,
         default_template_permissions(template.get("id"), template.get("role_target", "all")),
     )
 
