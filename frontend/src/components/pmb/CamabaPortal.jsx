@@ -81,9 +81,10 @@ const STEPS = [
   { id: 4, label: "Grup WA", desc: "Gabung Grup Resmi PMB", icon: MessageSquare },
   { id: 5, label: "Pilih Tes", desc: "Online CBT / Offline Kampus", icon: Layers },
   { id: 6, label: "Ujian Seleksi", desc: "Jadwal & Ruang CBT Ujian", icon: Building },
-  { id: 7, label: "SK Penerimaan", desc: "Approval & LoA Kelulusan", icon: Award },
-  { id: 8, label: "Daftar Ulang", desc: "Pra-Studi & Jas Almamater", icon: Shirt },
-  { id: 9, label: "Masuk SIAKAD", desc: "Sibermaru & Klaim NIM", icon: GraduationCap },
+  { id: 7, label: "Wawancara", desc: "Pilih Jadwal & Google Meet", icon: Video },
+  { id: 8, label: "SK Penerimaan", desc: "Approval & LoA Kelulusan", icon: Award },
+  { id: 9, label: "Daftar Ulang", desc: "Pra-Studi & Jas Almamater", icon: Shirt },
+  { id: 10, label: "Masuk SIAKAD", desc: "Sibermaru & Klaim NIM", icon: GraduationCap },
 ];
 
 function formatRupiah(num) {
@@ -107,6 +108,8 @@ export function CamabaPortal({ token, onLogout, onSwitchToStudent, branding }) {
   const [examSession, setExamSession] = useState(null);
   const [examSessionStatus, setExamSessionStatus] = useState(null);
   const [examAttempts, setExamAttempts] = useState([]);
+  const [interviewSchedules, setInterviewSchedules] = useState([]);
+  const [interviewLoading, setInterviewLoading] = useState(false);
   const [admissionLetter, setAdmissionLetter] = useState(null);
   const [examOpen, setExamOpen] = useState(false);
   const [examToken, setExamToken] = useState("");
@@ -213,6 +216,47 @@ export function CamabaPortal({ token, onLogout, onSwitchToStudent, branding }) {
   useEffect(() => {
     fetchExamSession();
   }, [token]);
+
+  const fetchInterviewSchedules = async () => {
+    if (applicant?.test_status !== "passed") {
+      setInterviewSchedules([]);
+      return;
+    }
+    try {
+      setInterviewLoading(true);
+      const res = await api.get("/api/v1/pmb/interview/schedules", {
+        headers: { Authorization: `Bearer ${token}` },
+      });
+      if (res.data?.ok) setInterviewSchedules(res.data.schedules || []);
+    } catch (err) {
+      toast.error(apiErrorMessage(err, "Gagal memuat jadwal wawancara"));
+    } finally {
+      setInterviewLoading(false);
+    }
+  };
+
+  useEffect(() => {
+    fetchInterviewSchedules();
+  }, [token, applicant?.test_status, applicant?.interview_schedule_id]);
+
+  const handleSelectInterviewSchedule = async (scheduleId) => {
+    try {
+      const res = await api.post(
+        "/api/v1/pmb/interview/select",
+        { schedule_id: scheduleId },
+        { headers: { Authorization: `Bearer ${token}` } },
+      );
+      if (res.data?.ok) {
+        toast.success(res.data.message || "Jadwal wawancara berhasil dipilih");
+        setApplicant((prev) => ({ ...prev, ...(res.data.applicant || {}), interview_schedule: res.data.interview || prev?.interview_schedule }));
+        setActiveStep(8);
+        await fetchApplication();
+        await fetchInterviewSchedules();
+      }
+    } catch (err) {
+      toast.error(apiErrorMessage(err, "Gagal memilih jadwal wawancara"));
+    }
+  };
 
   useEffect(() => {
     if (activeStep === 6) {
@@ -442,7 +486,7 @@ export function CamabaPortal({ token, onLogout, onSwitchToStudent, branding }) {
       if (res.data.ok) {
         toast.success(res.data.message);
         setApplicant(res.data.applicant);
-        setActiveStep(9);
+        setActiveStep(10);
       }
     } catch (err) {
       toast.error("Gagal menyimpan ukuran seragam");
@@ -468,7 +512,7 @@ export function CamabaPortal({ token, onLogout, onSwitchToStudent, branding }) {
       if (res.data.ok) {
         toast.success(res.data.message);
         setApplicant(res.data.applicant);
-        setActiveStep(9);
+        setActiveStep(10);
       }
     } catch (err) {
       toast.error("Gagal menyimpan konfirmasi Sibermaru");
@@ -1329,7 +1373,7 @@ export function CamabaPortal({ token, onLogout, onSwitchToStudent, branding }) {
                         onClick={() => setActiveStep(7)}
                         className="bg-emerald-500 hover:bg-emerald-600 text-white font-bold text-xs px-5 py-2 shadow-md w-full sm:w-auto"
                       >
-                        Lihat Status SK Penerimaan (Alur 7) <ArrowRight className="w-4 h-4 ml-1.5" />
+                        Pilih Jadwal Wawancara (Alur 7) <ArrowRight className="w-4 h-4 ml-1.5" />
                       </Button>
                     </div>
                   </div>
@@ -1399,7 +1443,7 @@ export function CamabaPortal({ token, onLogout, onSwitchToStudent, branding }) {
                                 </Badge>
                               </td>
                               <td className="p-2.5 font-medium text-slate-600 text-[11px]">
-                                Jawaban tersimpan • Menunggu SK Penerimaan Panitia
+                                Jawaban tersimpan • Menunggu pemilihan jadwal wawancara
                               </td>
                             </tr>
                           ))}
@@ -1412,16 +1456,115 @@ export function CamabaPortal({ token, onLogout, onSwitchToStudent, branding }) {
             </Card>
           )}
 
-          {/* STEP 7: SURAT KEPUTUSAN (SK) PENERIMAAN & KELULUSAN */}
+          {/* STEP 7: PEMILIHAN JADWAL & WAWANCARA */}
           {activeStep === 7 && (
             <Card className="border border-slate-200 bg-white shadow-md rounded-2xl overflow-hidden">
               <CardHeader className="bg-slate-900 text-white border-b border-slate-800 py-4 px-5 rounded-t-xl">
                 <div className="flex items-center justify-between">
                   <CardTitle className="text-base sm:text-lg font-black text-white flex items-center gap-2">
-                    <Award className="w-5 h-5 text-amber-400" />
-                    Alur 7: Surat Keputusan (SK) Penerimaan & Kelulusan
+                    <Video className="w-5 h-5 text-sky-400" />
+                    Alur 7: Pemilihan Jadwal & Wawancara
                   </CardTitle>
-                  <Badge className="bg-amber-400 text-slate-950 font-black text-xs px-3 py-1">Langkah 7 / 9</Badge>
+                  <Badge className="bg-sky-500 text-white font-black text-xs px-3 py-1">Langkah 7 / 10</Badge>
+                </div>
+                <CardDescription className="text-xs font-medium text-slate-300 mt-1">
+                  Setelah lulus CBT, pilih salah satu jadwal wawancara yang disiapkan Panitia PMB.
+                </CardDescription>
+              </CardHeader>
+              <CardContent className="p-6 space-y-5 text-xs bg-white text-slate-900">
+                {applicant?.test_status !== "passed" ? (
+                  <div className="p-6 rounded-2xl bg-amber-50 border border-amber-200 text-center space-y-2">
+                    <AlertCircle className="w-8 h-8 text-amber-600 mx-auto" />
+                    <h4 className="font-extrabold text-amber-950 text-base">Wawancara belum tersedia</h4>
+                    <p className="text-slate-700">Jadwal wawancara dapat dipilih setelah hasil CBT Anda dinyatakan lulus.</p>
+                  </div>
+                ) : (
+                  <>
+                    {applicant?.interview_schedule && (
+                      <div className="p-5 rounded-2xl bg-indigo-950 text-white border border-indigo-700 space-y-3 shadow-lg">
+                        <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-2">
+                          <div>
+                            <p className="text-[10px] text-indigo-300 font-extrabold uppercase tracking-wider">Jadwal Anda</p>
+                            <h4 className="font-black text-base mt-1">{applicant.interview_schedule.title}</h4>
+                          </div>
+                          <Badge className="bg-emerald-500 text-white font-black text-[10px] self-start">TERPILIH</Badge>
+                        </div>
+                        <div className="grid sm:grid-cols-2 gap-3">
+                          <div className="p-3 rounded-xl bg-white/10 border border-white/10">
+                            <p className="text-[10px] text-indigo-300 font-bold uppercase">Waktu</p>
+                            <p className="font-bold text-white mt-1">{new Date(applicant.interview_schedule.start_at).toLocaleString("id-ID", { dateStyle: "full", timeStyle: "short" })}</p>
+                            <p className="text-[10px] text-indigo-200 mt-0.5">s.d. {new Date(applicant.interview_schedule.end_at).toLocaleString("id-ID", { dateStyle: "short", timeStyle: "short" })}</p>
+                          </div>
+                          <div className="p-3 rounded-xl bg-white/10 border border-white/10">
+                            <p className="text-[10px] text-indigo-300 font-bold uppercase">Google Meet</p>
+                            {applicant.interview_schedule.meeting_url_visible && applicant.interview_schedule.meeting_url ? (
+                              <a href={applicant.interview_schedule.meeting_url} target="_blank" rel="noreferrer" className="mt-1 inline-flex items-center gap-1.5 text-emerald-300 font-black hover:underline">
+                                <Video className="w-4 h-4" /> Buka Ruang Wawancara <ExternalLink className="w-3.5 h-3.5" />
+                              </a>
+                            ) : (
+                              <p className="font-semibold text-amber-200 mt-1 leading-relaxed">Link Google Meet akan tampil pada hari wawancara.</p>
+                            )}
+                          </div>
+                        </div>
+                      </div>
+                    )}
+
+                    <div className="flex items-center justify-between gap-3">
+                      <div>
+                        <h4 className="font-extrabold text-indigo-950 text-sm">Pilih Slot Wawancara</h4>
+                        <p className="text-[11px] text-slate-500 mt-0.5">Anda masih dapat mengganti jadwal selama wawancara belum dimulai.</p>
+                      </div>
+                      <Button type="button" variant="outline" size="sm" onClick={fetchInterviewSchedules} disabled={interviewLoading} className="text-xs">
+                        <RefreshCw className={`w-3.5 h-3.5 mr-1.5 ${interviewLoading ? "animate-spin" : ""}`} /> Segarkan
+                      </Button>
+                    </div>
+
+                    {interviewLoading ? (
+                      <div className="py-10 text-center text-slate-500"><RefreshCw className="w-6 h-6 animate-spin mx-auto text-indigo-600" /><p className="text-xs mt-2">Memuat jadwal...</p></div>
+                    ) : interviewSchedules.length === 0 ? (
+                      <div className="p-6 rounded-2xl bg-slate-50 border border-slate-200 text-center space-y-2">
+                        <Calendar className="w-8 h-8 text-slate-400 mx-auto" />
+                        <h4 className="font-bold text-slate-800">Belum ada jadwal tersedia</h4>
+                        <p className="text-slate-500">Panitia PMB akan menambahkan jadwal wawancara. Silakan cek kembali secara berkala.</p>
+                      </div>
+                    ) : (
+                      <div className="grid md:grid-cols-2 gap-3">
+                        {interviewSchedules.map((schedule) => (
+                          <div key={schedule.id} className={`p-4 rounded-xl border-2 transition-all ${schedule.selected ? "border-indigo-600 bg-indigo-50" : "border-slate-200 bg-white hover:border-indigo-300"}`}>
+                            <div className="flex items-start justify-between gap-2">
+                              <div>
+                                <h5 className="font-extrabold text-slate-900 text-sm">{schedule.title}</h5>
+                                <p className="text-[11px] text-indigo-700 font-bold mt-1">{new Date(schedule.start_at).toLocaleString("id-ID", { dateStyle: "full", timeStyle: "short" })}</p>
+                              </div>
+                              {schedule.selected && <Badge className="bg-indigo-600 text-white text-[9px]">Pilihan Anda</Badge>}
+                            </div>
+                            {schedule.description && <p className="text-[10px] text-slate-500 mt-2 leading-relaxed">{schedule.description}</p>}
+                            <div className="flex items-center justify-between gap-2 mt-3 pt-2 border-t border-slate-100">
+                              <span className="text-[10px] text-slate-500">Sisa kuota: <strong className="text-slate-800">{schedule.available_count}</strong></span>
+                              <Button type="button" size="sm" onClick={() => handleSelectInterviewSchedule(schedule.id)} disabled={schedule.selected} className="bg-indigo-600 hover:bg-indigo-700 text-white text-[10px] font-bold h-7 px-3">
+                                {schedule.selected ? <><Check className="w-3 h-3 mr-1" /> Terpilih</> : "Pilih Jadwal"}
+                              </Button>
+                            </div>
+                          </div>
+                        ))}
+                      </div>
+                    )}
+                  </>
+                )}
+              </CardContent>
+            </Card>
+          )}
+
+          {/* STEP 8: SURAT KEPUTUSAN (SK) PENERIMAAN & KELULUSAN */}
+          {activeStep === 8 && (
+            <Card className="border border-slate-200 bg-white shadow-md rounded-2xl overflow-hidden">
+              <CardHeader className="bg-slate-900 text-white border-b border-slate-800 py-4 px-5 rounded-t-xl">
+                <div className="flex items-center justify-between">
+                  <CardTitle className="text-base sm:text-lg font-black text-white flex items-center gap-2">
+                    <Award className="w-5 h-5 text-amber-400" />
+                    Alur 8: Surat Keputusan (SK) Penerimaan & Kelulusan
+                  </CardTitle>
+                  <Badge className="bg-amber-400 text-slate-950 font-black text-xs px-3 py-1">Langkah 8 / 10</Badge>
                 </div>
                 <CardDescription className="text-xs font-medium text-slate-300 mt-1">
                   Surat Keputusan Resmi Penetapan Kelulusan Penerimaan Mahasiswa Baru dari Panitia PMB.
@@ -1561,7 +1704,7 @@ export function CamabaPortal({ token, onLogout, onSwitchToStudent, branding }) {
                       {/* Statement and Signatory */}
                       <div className="space-y-4 pt-2">
                         <p className="text-xs text-slate-700 leading-relaxed">
-                          Keputusan ini bersifat mutlak dan mengikat. Calon mahasiswa diwajibkan untuk menyelesaikan tahapan <strong>Daftar Ulang (Uang Pra-Studi & Ukuran Jaket Almamater)</strong> pada Alur 8 sebelum batas waktu yang ditentukan.
+                          Keputusan ini bersifat mutlak dan mengikat. Calon mahasiswa diwajibkan untuk menyelesaikan tahapan <strong>Daftar Ulang (Uang Pra-Studi & Ukuran Jaket Almamater)</strong> pada Alur 9 sebelum batas waktu yang ditentukan.
                         </p>
 
                         <div className="flex flex-col sm:flex-row items-center sm:items-end justify-between gap-4 pt-4 border-t border-slate-100">
@@ -1646,10 +1789,10 @@ export function CamabaPortal({ token, onLogout, onSwitchToStudent, branding }) {
 
                       <Button
                         type="button"
-                        onClick={() => setActiveStep(8)}
+                        onClick={() => setActiveStep(9)}
                         className="bg-gradient-to-r from-emerald-600 to-teal-600 hover:from-emerald-500 hover:to-teal-500 text-white font-black text-xs px-6 py-2.5 shadow-md flex items-center justify-center gap-1.5 w-full sm:w-auto"
                       >
-                        <Shirt className="w-4 h-4" /> Lanjut ke Daftar Ulang & Ukuran Jas (Alur 8) <ArrowRight className="w-4 h-4 ml-1" />
+                        <Shirt className="w-4 h-4" /> Lanjut ke Daftar Ulang & Ukuran Jas (Alur 9) <ArrowRight className="w-4 h-4 ml-1" />
                       </Button>
                     </div>
                   </div>
@@ -1658,16 +1801,16 @@ export function CamabaPortal({ token, onLogout, onSwitchToStudent, branding }) {
             </Card>
           )}
 
-          {/* STEP 8: DAFTAR ULANG (UANG PRA-STUDI & UKURAN BAJU) */}
-          {activeStep === 8 && (
+          {/* STEP 9: DAFTAR ULANG (UANG PRA-STUDI & UKURAN BAJU) */}
+          {activeStep === 9 && (
             <Card className="border border-slate-200 bg-white shadow-md rounded-2xl overflow-hidden">
               <CardHeader className="bg-slate-900 text-white border-b border-slate-800 py-4 px-5 rounded-t-xl">
                 <div className="flex items-center justify-between">
                   <CardTitle className="text-base sm:text-lg font-black text-white flex items-center gap-2">
                     <Shirt className="w-5 h-5 text-indigo-400" />
-                    Alur 8: Daftar Ulang (Pembayaran Uang Pra-Studi & Ukuran Jas Almamater)
+                    Alur 9: Daftar Ulang (Pembayaran Uang Pra-Studi & Ukuran Jas Almamater)
                   </CardTitle>
-                  <Badge className="bg-indigo-600 text-white text-xs font-bold px-3 py-1">Langkah 8 / 9</Badge>
+                  <Badge className="bg-indigo-600 text-white text-xs font-bold px-3 py-1">Langkah 9 / 10</Badge>
                 </div>
                 <CardDescription className="text-xs font-medium text-slate-300 mt-1">
                   Selesaikan her-registrasi dengan skema pembayaran fleksibel serta penentuan ukuran jaket almamater.
@@ -2083,10 +2226,10 @@ export function CamabaPortal({ token, onLogout, onSwitchToStudent, branding }) {
                       {isShirtSaved ? (
                         <Button
                           type="button"
-                          onClick={() => setActiveStep(9)}
+                          onClick={() => setActiveStep(10)}
                           className="w-full max-w-full bg-emerald-600 hover:bg-emerald-700 text-white font-extrabold text-xs sm:text-sm py-3 px-4 rounded-xl shadow-md whitespace-normal h-auto leading-relaxed text-center flex items-center justify-center gap-1.5"
                         >
-                          <Check className="w-4 h-4" /> Ukuran Jas ({applicant.shirt_size}) Telah Disimpan & Terkunci — Lanjut ke Sibermaru (Alur 9) <ArrowRight className="w-4 h-4 ml-1" />
+                          <Check className="w-4 h-4" /> Ukuran Jas ({applicant.shirt_size}) Telah Disimpan & Terkunci — Lanjut ke Sibermaru (Alur 10) <ArrowRight className="w-4 h-4 ml-1" />
                         </Button>
                       ) : (
                         <Button
@@ -2094,7 +2237,7 @@ export function CamabaPortal({ token, onLogout, onSwitchToStudent, branding }) {
                           onClick={handleSaveShirtSize}
                           className="w-full max-w-full bg-indigo-600 hover:bg-indigo-700 text-white font-extrabold text-xs sm:text-sm py-3 px-4 rounded-xl shadow-md whitespace-normal h-auto leading-relaxed text-center"
                         >
-                          Simpan Ukuran Jas & Lanjut ke Sibermaru (Alur 9)
+                          Simpan Ukuran Jas & Lanjut ke Sibermaru (Alur 10)
                         </Button>
                       )}
                     </div>
@@ -2104,8 +2247,8 @@ export function CamabaPortal({ token, onLogout, onSwitchToStudent, branding }) {
             </Card>
           )}
 
-          {/* STEP 9: INFORMASI SIBERMARU & MASUK SISTEM SIAKAD */}
-          {activeStep === 9 && (
+          {/* STEP 10: INFORMASI SIBERMARU & MASUK SISTEM SIAKAD */}
+          {activeStep === 10 && (
             <div className="space-y-6">
               {/* Orientasi Card */}
               <Card className="border border-slate-200 bg-white shadow-md rounded-2xl overflow-hidden">
@@ -2113,9 +2256,9 @@ export function CamabaPortal({ token, onLogout, onSwitchToStudent, branding }) {
                   <div className="flex items-center justify-between">
                     <CardTitle className="text-base sm:text-lg font-black text-white flex items-center gap-2">
                       <Calendar className="w-5 h-5 text-indigo-400" />
-                      Alur 9.1: Pengisian & Informasi SIBERMARU 2026
+                      Alur 10.1: Pengisian & Informasi SIBERMARU 2026
                     </CardTitle>
-                    <Badge className="bg-indigo-600 text-white text-xs font-bold px-3 py-1">Langkah 9 / 9</Badge>
+                    <Badge className="bg-indigo-600 text-white text-xs font-bold px-3 py-1">Langkah 10 / 10</Badge>
                   </div>
                   <CardDescription className="text-xs font-medium text-slate-300 mt-1">
                     Orientasi & Pengenalan Kehidupan Kampus bagi Mahasiswa Baru.
@@ -2194,20 +2337,26 @@ export function CamabaPortal({ token, onLogout, onSwitchToStudent, branding }) {
                     <Trophy className="w-9 h-9 text-slate-900" />
                   </div>
                   <h3 className="text-xl sm:text-2xl font-black text-amber-300 tracking-tight">
-                    Selamat! Akun Sistem Utama (SIAKAD) Telah Aktif
+                    {applicant?.is_converted_to_student
+                      ? "Selamat! Akun Sistem Utama (SIAKAD) Telah Aktif"
+                      : "Akun SIAKAD Menunggu Aktivasi Admin"}
                   </h3>
                   <p className="text-xs text-slate-300 max-w-lg mx-auto leading-relaxed">
-                    Anda telah resmi terdaftar sebagai Mahasiswa Baru Tahun Akademik {settings?.active_period_name || "2026/2027"}. Gunakan informasi kredensial di bawah ini untuk mengakses Sistem Informasi Akademik (SIAKAD) Utama.
+                    {applicant?.is_converted_to_student
+                      ? `Anda telah resmi terdaftar sebagai Mahasiswa Baru Tahun Akademik ${settings?.active_period_name || "2026/2027"}. Gunakan informasi kredensial di bawah ini untuk mengakses Sistem Informasi Akademik (SIAKAD) Utama.`
+                      : "Data Anda sudah masuk tahap akhir PMB. Kredensial SIAKAD akan tersedia setelah admin menyelesaikan aktivasi."}
                   </p>
                 </div>
 
                 <CardContent className="p-6 space-y-6 text-xs bg-white text-slate-900">
+                  {applicant?.is_converted_to_student ? (
+                    <>
                   {/* Rincian Identitas Mahasiswa & NIM */}
                   <div className="p-4 sm:p-5 bg-indigo-50/70 rounded-2xl border border-indigo-200 grid grid-cols-2 sm:grid-cols-4 gap-4">
                     <div>
                       <p className="text-[10px] text-indigo-900 font-extrabold uppercase tracking-wider">NIM RESMI (USERNAME SIAKAD)</p>
                       <p className="font-mono font-black text-base sm:text-lg text-indigo-700 mt-1 select-all">
-                        {applicant?.generated_nim || applicant?.nim || "2627010001"}
+                        {applicant?.generated_nim || "Belum diterbitkan"}
                       </p>
                     </div>
                     <div>
@@ -2248,14 +2397,14 @@ export function CamabaPortal({ token, onLogout, onSwitchToStudent, branding }) {
                         <span className="text-[10px] text-slate-400 font-bold uppercase tracking-wider block">Username Utama (NIM)</span>
                         <div className="flex items-center justify-between">
                           <span className="font-mono font-black text-amber-300 text-sm sm:text-base select-all">
-                            {applicant?.generated_nim || applicant?.nim || "2627010001"}
+                            {applicant?.generated_nim || "Belum diterbitkan"}
                           </span>
                           <Button
                             type="button"
                             size="sm"
                             variant="ghost"
                             onClick={() => {
-                              navigator.clipboard.writeText(applicant?.generated_nim || applicant?.nim || "2627010001");
+                              navigator.clipboard.writeText(applicant?.generated_nim || "");
                               toast.success("Username (NIM) berhasil disalin!");
                             }}
                             className="h-6 px-2 text-[10px] text-slate-300 hover:text-white hover:bg-slate-700 font-bold"
@@ -2271,22 +2420,34 @@ export function CamabaPortal({ token, onLogout, onSwitchToStudent, branding }) {
                         <span className="text-[10px] text-slate-400 font-bold uppercase tracking-wider block">Password Utama SIAKAD</span>
                         <div className="flex items-center justify-between">
                           <span className="font-mono font-black text-emerald-400 text-sm sm:text-base select-all">
-                            {applicant?.password_raw || "Mahasiswa1231!"}
+                            {applicant?.password_raw
+                              || (applicant?.siakad_password_source === "default" ? "Mahasiswa1231!" : "Password PMB saat pendaftaran")}
                           </span>
                           <Button
                             type="button"
                             size="sm"
                             variant="ghost"
                             onClick={() => {
-                              navigator.clipboard.writeText(applicant?.password_raw || "Mahasiswa1231!");
-                              toast.success("Password berhasil disalin!");
+                              if (applicant?.password_raw) {
+                                navigator.clipboard.writeText(applicant.password_raw);
+                                toast.success("Password berhasil disalin!");
+                              } else if (applicant?.siakad_password_source === "default") {
+                                navigator.clipboard.writeText("Mahasiswa1231!");
+                                toast.success("Password default berhasil disalin!");
+                              } else {
+                                toast.info("Gunakan password PMB yang dipakai saat pendaftaran.");
+                              }
                             }}
                             className="h-6 px-2 text-[10px] text-slate-300 hover:text-white hover:bg-slate-700 font-bold"
                           >
                             <Copy className="w-3 h-3 mr-1" /> Salin
                           </Button>
                         </div>
-                        <p className="text-[9px] text-slate-400 mt-0.5">Password default: <span className="text-emerald-300 font-mono font-bold">Mahasiswa1231!</span> (atau password akun PMB Anda)</p>
+                        <p className="text-[9px] text-slate-400 mt-0.5">
+                          {applicant?.siakad_password_source === "default"
+                            ? "Password default akun legacy: Mahasiswa1231!"
+                            : "Password SIAKAD sama dengan password PMB yang dipakai saat pendaftaran."}
+                        </p>
                       </div>
 
                       {/* Link URL Login */}
@@ -2324,6 +2485,15 @@ export function CamabaPortal({ token, onLogout, onSwitchToStudent, branding }) {
                       </Button>
                     </div>
                   </div>
+                    </>
+                  ) : (
+                    <div className="rounded-2xl border border-amber-200 bg-amber-50 p-5 text-center space-y-2">
+                      <p className="font-black text-amber-900 text-sm">Aktivasi SIAKAD belum selesai</p>
+                      <p className="text-xs text-amber-800 leading-relaxed">
+                        Admin PMB perlu memverifikasi kelulusan, SK penerimaan, dan daftar ulang Anda terlebih dahulu. Setelah aktivasi selesai, NIM dan akses login akan tampil di halaman ini.
+                      </p>
+                    </div>
+                  )}
                 </CardContent>
               </Card>
             </div>

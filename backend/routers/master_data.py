@@ -89,6 +89,36 @@ def _clean_code(value: str) -> str:
     return re.sub(r"[^A-Z0-9]", "", str(value or "").upper())[:10]
 
 
+def _rombel_prefix(prodi_kode: str = "", prodi_nama: str = "") -> str:
+    """Return a stable three-character prefix for the Feeder class name."""
+    raw_code = str(prodi_kode or "").strip().upper()
+    first_code_token = re.split(r"[-_/\\s]+", raw_code, maxsplit=1)[0]
+    compact_code = re.sub(r"[^A-Z0-9]", "", first_code_token)
+    if len(compact_code) < 3:
+        compact_code = re.sub(r"[^A-Z0-9]", "", raw_code)
+    if len(compact_code) < 3:
+        initials = "".join(
+            word[0]
+            for word in re.findall(r"[A-Z0-9]+", str(prodi_nama or "").upper())
+            if word
+        )
+        compact_code = f"{compact_code}{initials}"
+    return (compact_code or "PRD")[:3].ljust(3, "X")
+
+
+def _recommended_rombel_name(
+    prodi_kode: str = "",
+    prodi_nama: str = "",
+    sequence: int = 1,
+) -> str:
+    """Build the five-character ``nama_kelas_kuliah`` used by Neo Feeder."""
+    try:
+        number = max(1, min(int(sequence), 99))
+    except (TypeError, ValueError):
+        number = 1
+    return f"{_rombel_prefix(prodi_kode, prodi_nama)}{number:02d}"
+
+
 # ═══════════════════════════════════════════════════════════════
 #  KONFIGURASI AKADEMIK
 #  Menyimpan preferensi fleksibilitas sistem:
@@ -370,7 +400,7 @@ async def list_prodi(
     db: PostgresDatabase = Depends(get_db),
     _: Dict = Depends(get_current_user),
 ):
-    query = {}
+    query = {"status": {"$ne": "deleted"}}
     if fakultas_id:
         query["fakultas_id"] = fakultas_id
     prodi_list = await db.programs.find(query, {"_id": 0}).to_list(None)
@@ -413,6 +443,59 @@ async def patch_prodi(
     updates["updated_at"] = now_iso()
     await db.programs.update_one({"id": prodi_id}, {"$set": updates})
     return {**ex, **updates}
+
+
+@router.delete("/prodi/{prodi_id}")
+async def delete_prodi(
+    prodi_id: str,
+    request: Request,
+    db: PostgresDatabase = Depends(get_db),
+    _: Dict = Depends(require_admin),
+):
+    """Soft-delete a program study only when it is safe to remove from master data."""
+    existing = await db.programs.find_one(
+        {"id": prodi_id, "status": {"$ne": "deleted"}},
+        {"_id": 0},
+    )
+    if not existing:
+        raise HTTPException(status_code=404, detail="Program studi tidak ditemukan")
+
+    active_students = await db.users.count_documents({
+        "role": "student",
+        "prodi_id": prodi_id,
+        "status": {"$nin": ["deleted", "inactive"]},
+    })
+    if active_students:
+        raise HTTPException(
+            status_code=409,
+            detail=f"Prodi masih memiliki {active_students} mahasiswa aktif. Pindahkan mahasiswa terlebih dahulu.",
+        )
+
+    linked_course = await db.courses.find_one(
+        {"program_id": prodi_id, "status": {"$ne": "deleted"}},
+        {"_id": 0, "id": 1},
+    )
+    if linked_course:
+        raise HTTPException(
+            status_code=409,
+            detail="Prodi masih dipakai mata kuliah. Hapus atau pindahkan mata kuliah terlebih dahulu.",
+        )
+
+    linked_class = await db.classes.find_one(
+        {"program_id": prodi_id, "status": {"$ne": "deleted"}},
+        {"_id": 0, "id": 1},
+    )
+    if linked_class:
+        raise HTTPException(
+            status_code=409,
+            detail="Prodi masih dipakai kelas. Hapus atau pindahkan kelas terlebih dahulu.",
+        )
+
+    await db.programs.update_one(
+        {"id": prodi_id},
+        {"$set": {"status": "deleted", "deleted_at": now_iso()}},
+    )
+    return {"ok": True, "message": f"Program studi {existing.get('nama') or existing.get('name') or prodi_id} dihapus"}
 
 
 # ═══════════════════════════════════════════════════════════════
@@ -759,6 +842,28 @@ class GenerateRombelInput(BaseModel):
     course_ids: Optional[List[str]] = None
 
 
+async def _resolve_course_lecturer(
+    db: PostgresDatabase,
+    course: Dict[str, Any],
+) -> tuple[str, str]:
+    """Resolve the required course lecturer without falling back to the creator."""
+    lecturer_id = str(course.get("dosen_utama_id") or "").strip()
+    if not lecturer_id:
+        return "", ""
+    lecturer = await db.users.find_one(
+        {
+            "id": lecturer_id,
+            "role": {"$nin": ["student", "Mahasiswa", "mahasiswa"]},
+            "status": {"$ne": "deleted"},
+        },
+        {"_id": 0, "name": 1},
+    )
+    if not lecturer:
+        return "", ""
+    lecturer_name = str(course.get("dosen_utama_nama") or lecturer.get("name") or "").strip()
+    return lecturer_id, lecturer_name
+
+
 async def _resolve_rombel_context(db: PostgresDatabase, ta: Dict[str, Any]) -> Dict[str, Any]:
     """Tentukan semester target, academic_year, dan daftar kandidat MK dari semua kurikulum."""
     target_sem = str(ta.get("semester") or "Ganjil")
@@ -777,18 +882,34 @@ async def _resolve_rombel_context(db: PostgresDatabase, ta: Dict[str, Any]) -> D
         {"_id": 0},
     ).to_list(None)
 
-    prodi_map: Dict[str, str] = {}
+    prodi_map: Dict[str, Dict[str, str]] = {}
     for kur in kurikulums:
         pid = kur.get("prodi_id", "")
         if pid and pid not in prodi_map:
-            prodi = await db.programs.find_one({"id": pid}, {"_id": 0, "nama": 1})
-            prodi_map[pid] = (prodi.get("nama", "") if prodi else "") or kur.get("prodi_nama", "")
+            prodi = await db.programs.find_one(
+                {"id": pid},
+                {"_id": 0, "nama": 1, "name": 1, "kode": 1, "code": 1},
+            )
+            prodi_map[pid] = {
+                "nama": (
+                    (prodi.get("nama") or prodi.get("name", ""))
+                    if prodi
+                    else ""
+                ) or kur.get("prodi_nama", ""),
+                "kode": (
+                    (prodi.get("kode") or prodi.get("code", ""))
+                    if prodi
+                    else ""
+                ) or kur.get("prodi_kode", ""),
+            }
 
     candidates: List[Dict[str, Any]] = []
     processed_course_ids: set[str] = set()
     for kur in kurikulums:
         prodi_id = kur.get("prodi_id", "")
-        prodi_nama = prodi_map.get(prodi_id, kur.get("prodi_nama", ""))
+        prodi_info = prodi_map.get(prodi_id, {})
+        prodi_nama = prodi_info.get("nama") or kur.get("prodi_nama", "")
+        prodi_kode = prodi_info.get("kode") or kur.get("prodi_kode", "")
         courses = await db.courses.find(
             {"kurikulum_id": kur["id"], "status": {"$ne": "deleted"}},
             {"_id": 0},
@@ -818,6 +939,7 @@ async def _resolve_rombel_context(db: PostgresDatabase, ta: Dict[str, Any]) -> D
                 "course": course,
                 "prodi_id": prodi_id,
                 "prodi_nama": prodi_nama,
+                "prodi_kode": prodi_kode,
             })
 
     return {
@@ -872,7 +994,10 @@ async def list_mk_baru(
             "semester_paket": course.get("semester_paket") or course.get("semester") or "",
             "prodi_id": item["prodi_id"],
             "prodi_name": item["prodi_nama"],
+            "prodi_code": item.get("prodi_kode", ""),
+            "dosen_utama_id": course.get("dosen_utama_id") or "",
             "dosen_utama_nama": course.get("dosen_utama_nama") or "",
+            "has_dosen_pengampu": bool(str(course.get("dosen_utama_id") or "").strip()),
             "sudah_punya_kelas": has_class,
         })
     return result
@@ -909,6 +1034,7 @@ async def generate_rombel_from_kurikulum(
     results: List[Dict[str, Any]] = []
     created: List[Dict[str, Any]] = []
     skipped: List[Dict[str, Any]] = []
+    blocked: List[Dict[str, Any]] = []
 
     for item in ctx["candidates"]:
         course = item["course"]
@@ -925,13 +1051,23 @@ async def generate_rombel_from_kurikulum(
             })
             continue
 
-        rombel_name = "01"
+        dosen_id, dosen_nama = await _resolve_course_lecturer(db, course)
+        if not dosen_id:
+            blocked_item = {
+                "course_id": cid,
+                "course_name": course.get("name", ""),
+                "status": "blocked",
+                "message": "Dosen pengampu belum ditetapkan atau tidak lagi tersedia",
+            }
+            blocked.append(blocked_item)
+            results.append(blocked_item)
+            continue
+
+        rombel_name = _recommended_rombel_name(
+            item.get("prodi_kode", ""),
+            item.get("prodi_nama", ""),
+        )
         seed = f"{course.get('code') or course.get('kode') or 'KLS'}{rombel_name}{uuid4().hex[:4]}"
-        dosen_id = course.get("dosen_utama_id") or ""
-        dosen_nama = course.get("dosen_utama_nama") or ""
-        if not dosen_nama and dosen_id:
-            dosen = await db.users.find_one({"id": dosen_id}, {"_id": 0, "name": 1})
-            dosen_nama = dosen.get("name", "") if dosen else ""
 
         doc = {
             "id": new_id(),
@@ -963,6 +1099,7 @@ async def generate_rombel_from_kurikulum(
             "course_name": course.get("name", ""),
             "status": "created",
             "class_id": doc["id"],
+            "class_name": doc["name"],
             "message": "Rombel berhasil dibuat",
         })
 
@@ -970,8 +1107,9 @@ async def generate_rombel_from_kurikulum(
         "ok": True,
         "created": created,
         "skipped": skipped,
+        "blocked": blocked,
         "results": results,
-        "message": f"{len(created)} rombel baru dibuat, {len(skipped)} sudah ada",
+        "message": f"{len(created)} rombel baru dibuat, {len(skipped)} sudah ada, {len(blocked)} belum dapat dibuat karena dosen pengampu belum lengkap",
     }
 
 

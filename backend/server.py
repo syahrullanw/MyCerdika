@@ -106,9 +106,9 @@ api_router = APIRouter(prefix="/api")
 
 from routers.akademik import router as akademik_router
 from routers.krs_khs import router as krs_khs_router
-from routers.keuangan import router as keuangan_router
+from routers.keuangan import ensure_default_finance_components, router as keuangan_router
 from routers.master_data import router as master_data_router
-from routers.master_data import _active_pejabat
+from routers.master_data import _active_pejabat, _recommended_rombel_name
 from routers.kurikulum import router as kurikulum_router
 from routers.feeder import router as feeder_router
 from routers.user_access import rebuild_user_position_access, router as user_access_router
@@ -1745,7 +1745,22 @@ async def get_current_user(
                 session = await db.sessions.find_one({"token": token}, {"_id": 0})
                 if not session:
                     raise HTTPException(status_code=401, detail="Sesi tidak ditemukan")
-                user = await find_user(session["user_id"], include_password=False)
+                user = await db.users.find_one(
+                    {"id": session["user_id"]},
+                    {"_id": 0, "password_hash": 0},
+                )
+                if not user:
+                    applicant = await db.pmb_applicants.find_one(
+                        {"id": session["user_id"]},
+                        {"_id": 0, "password_hash": 0},
+                    )
+                    if applicant:
+                        applicant["role"] = "camaba"
+                        user = applicant
+                if not user:
+                    raise HTTPException(status_code=401, detail="Sesi tidak valid")
+                if user.get("role") != "camaba" and user.get("status", "active") != "active":
+                    raise HTTPException(status_code=403, detail="Akun tidak aktif")
                 cache_authenticated_user(token, session, user)
     request.state.current_user = user
     request.state.current_session = session
@@ -2781,6 +2796,7 @@ class FinalizationInput(BaseModel):
 
 class CleanDataInput(BaseModel):
     confirmation: str = ""
+    confirmation_label: str = ""
 
 
 class ReminderInput(BaseModel):
@@ -2948,6 +2964,8 @@ async def seed_data() -> None:
             "name": "Pemrograman Web Lanjut",
             "credits": 3,
             "description": "Mata kuliah praktis untuk membangun aplikasi web modern.",
+            "dosen_utama_id": admin_id,
+            "dosen_utama_nama": "Dosen Admin",
             "status": "active",
             "created_at": now_iso(),
         }
@@ -4439,10 +4457,72 @@ async def enrich_class_payload(class_doc: Dict[str, Any]) -> Dict[str, Any]:
 async def enrich_course_payload(course_doc: Dict[str, Any]) -> Dict[str, Any]:
     program = await db.programs.find_one({"id": course_doc.get("program_id")}, {"_id": 0})
     course_doc["program_name"] = program.get("name", course_doc.get("program_name", "")) if program else course_doc.get("program_name", "")
+    course_doc["has_dosen_pengampu"] = bool(str(course_doc.get("dosen_utama_id") or "").strip())
     customized = isinstance(course_doc.get("grade_weights"), dict)
     course_doc["grade_weights"] = grade_weights_from_document(course_doc.get("grade_weights"))
     course_doc["grade_weights_customized"] = customized
     return course_doc
+
+
+async def normalize_new_class_name(course: Dict[str, Any], value: str) -> str:
+    """Expand numeric rombel names to the Feeder-friendly prodi prefix format."""
+    raw_name = str(value or "").strip()
+    if not re.fullmatch(r"\d{1,2}", raw_name):
+        return raw_name
+
+    program_id = course.get("program_id") or course.get("prodi_id") or ""
+    program = None
+    programs_collection = getattr(db, "programs", None)
+    if program_id and programs_collection is not None:
+        program = await programs_collection.find_one(
+            {"id": program_id},
+            {"_id": 0, "nama": 1, "name": 1, "kode": 1, "code": 1},
+        )
+    prodi_kode = (
+        (program.get("kode") or program.get("code", ""))
+        if program
+        else course.get("prodi_kode") or course.get("program_code") or ""
+    )
+    prodi_nama = (
+        (program.get("nama") or program.get("name", ""))
+        if program
+        else course.get("program_name") or course.get("prodi_name") or ""
+    )
+    if not prodi_kode and not prodi_nama:
+        return raw_name
+    return _recommended_rombel_name(prodi_kode, prodi_nama, int(raw_name))
+
+
+async def require_course_lecturer(course: Dict[str, Any]) -> tuple[str, str]:
+    """Return the assigned lecturer or stop class creation with a clear error."""
+    lecturer_id = str(course.get("dosen_utama_id") or "").strip()
+    if not lecturer_id:
+        raise HTTPException(
+            status_code=409,
+            detail="Dosen pengampu mata kuliah belum ditetapkan. Tetapkan dosen pengampu terlebih dahulu.",
+        )
+
+    lecturer = await db.users.find_one(
+        {
+            "id": lecturer_id,
+            "role": {"$nin": ["student", "Mahasiswa", "mahasiswa"]},
+            "status": {"$ne": "deleted"},
+        },
+        {"_id": 0, "name": 1},
+    )
+    if not lecturer:
+        raise HTTPException(
+            status_code=409,
+            detail="Dosen pengampu mata kuliah tidak ditemukan atau sudah tidak aktif.",
+        )
+
+    lecturer_name = str(course.get("dosen_utama_nama") or lecturer.get("name") or "").strip()
+    if not lecturer_name:
+        raise HTTPException(
+            status_code=409,
+            detail="Nama dosen pengampu mata kuliah belum lengkap. Perbarui penugasan dosen terlebih dahulu.",
+        )
+    return lecturer_id, lecturer_name
 
 
 async def enrich_material_payload(material_doc: Dict[str, Any]) -> Dict[str, Any]:
@@ -6184,6 +6264,8 @@ def class_matches_tahun_ajaran(
     """Samakan cakupan kelas dengan selector Tahun Ajaran di frontend."""
     if str(class_doc.get("tahun_ajaran_id") or "") == semester_id:
         return True
+    if str(class_doc.get("academic_year_id") or "") == semester_id:
+        return True
     target_year = str(tahun_ajaran.get("tahun") or tahun_ajaran.get("academic_year") or "").strip()
     target_semester = str(tahun_ajaran.get("semester") or "").strip().lower()
     class_year = str(class_doc.get("academic_year") or class_doc.get("tahun_ajaran") or "").strip()
@@ -6628,6 +6710,270 @@ def modified_count(result: Any) -> int:
     return int(getattr(result, "modified_count", 0) or 0)
 
 
+def _clean_period_year(document: Dict[str, Any]) -> str:
+    raw_values = [
+        document.get("academic_year"),
+        document.get("tahun_ajaran"),
+        document.get("name"),
+        document.get("nama"),
+        document.get("tahun"),
+        document.get("year"),
+    ]
+    for value in raw_values:
+        match = re.search(r"\d{4}\s*/\s*\d{4}", str(value or "").strip())
+        if match:
+            return re.sub(r"\s+", "", match.group(0))
+    raw = next((str(value).strip() for value in raw_values if str(value or "").strip()), "")
+    match = re.search(r"\d{4}", raw)
+    if match:
+        start_year = int(match.group(0))
+        code = str(document.get("code") or document.get("kode") or "").strip()
+        if re.fullmatch(r"\d{5}", code):
+            return f"{start_year}/{start_year + 1}" if code[-1] == "1" else f"{start_year - 1}/{start_year}"
+        if re.fullmatch(r"\d{4}", raw):
+            semester = str(document.get("semester") or "").strip().lower()
+            return f"{start_year - 1}/{start_year}" if semester == "genap" else f"{start_year}/{start_year + 1}"
+    return raw
+
+
+def _clean_period_semester(document: Dict[str, Any]) -> str:
+    semester = str(document.get("semester") or "").strip()
+    if semester:
+        return semester
+    raw = str(document.get("name") or "").strip().lower()
+    if "genap" in raw:
+        return "Genap"
+    if "ganjil" in raw:
+        return "Ganjil"
+    code = str(document.get("code") or document.get("kode") or "").strip()
+    if re.fullmatch(r"\d{5}", code):
+        return "Ganjil" if code[-1] == "1" else "Genap"
+    return ""
+
+
+def _clean_period_identity(document: Dict[str, Any]) -> tuple[str, str]:
+    return (
+        _clean_period_year(document),
+        _clean_period_semester(document).lower(),
+    )
+
+
+def _clean_period_ids(values: List[Any]) -> List[str]:
+    return list(dict.fromkeys(str(value).strip() for value in values if str(value or "").strip()))
+
+
+def _clean_ids_query(field: str, values: List[str]) -> Dict[str, Any]:
+    return {field: {"$in": values or ["__clean_data_no_match__"]}}
+
+
+def _clean_scope_or(terms: List[tuple[str, List[str]]]) -> Dict[str, Any]:
+    clauses = [
+        {field: {"$in": values}}
+        for field, values in terms
+        if values
+    ]
+    return {"$or": clauses} if clauses else {"_clean_data_no_match__": "1"}
+
+
+async def resolve_clean_data_period(selector: str) -> Dict[str, Any]:
+    """Resolve selector Tahun Ajaran and all IDs used by legacy period data."""
+    clean_selector = str(selector or "").strip()
+    if not clean_selector or clean_selector == "all":
+        raise HTTPException(status_code=400, detail="Semester harus dipilih")
+
+    selected: Optional[Dict[str, Any]] = None
+    for collection, fields in (
+        (db.tahun_ajaran, ["id", "kode"]),
+        (db.academic_periods, ["id", "code"]),
+    ):
+        query = {"$or": [{field: clean_selector} for field in fields]}
+        selected = await collection.find_one(query, {"_id": 0})
+        if selected:
+            break
+    if not selected:
+        raise HTTPException(status_code=404, detail="Semester yang dipilih tidak ditemukan")
+
+    year, semester_key = _clean_period_identity(selected)
+    display_semester = str(selected.get("semester") or "").strip()
+    if not display_semester:
+        display_semester = "Genap" if semester_key == "genap" else "Ganjil"
+    if not year or not semester_key:
+        raise HTTPException(status_code=422, detail="Data semester belum memiliki tahun dan jenis semester yang valid")
+
+    period_ids = _clean_period_ids(
+        [selected.get("id"), selected.get("kode"), selected.get("code"), clean_selector]
+    )
+    for collection in (db.tahun_ajaran, db.academic_periods):
+        candidates = await collection.find({}, {"_id": 0}).to_list(5000)
+        for candidate in candidates:
+            if _clean_period_identity(candidate) != (year, semester_key):
+                continue
+            period_ids.extend(
+                [candidate.get("id"), candidate.get("kode"), candidate.get("code")]
+            )
+    period_ids = _clean_period_ids(period_ids)
+    normalized = {
+        **selected,
+        "tahun": year,
+        "academic_year": year,
+        "semester": display_semester,
+    }
+    return {
+        "selector": clean_selector,
+        "period": normalized,
+        "period_ids": period_ids,
+        "label": f"{year} {display_semester}".strip(),
+    }
+
+
+async def collect_clean_data_semester_scope(period_info: Dict[str, Any]) -> Dict[str, Any]:
+    """Collect every semester-scoped ID before a destructive operation starts."""
+    period = period_info["period"]
+    selector = period_info["selector"]
+    period_ids = period_info["period_ids"]
+    all_classes = await db.classes.find({}, {"_id": 0}).to_list(10000)
+    class_docs = [
+        item
+        for item in all_classes
+        if class_matches_tahun_ajaran(item, period, selector)
+    ]
+    class_ids = _clean_period_ids([item.get("id") for item in class_docs])
+
+    materials = await db.materials.find(
+        _clean_ids_query("class_id", class_ids), {"_id": 0, "id": 1}
+    ).to_list(10000)
+    assignments = await db.assignments.find(
+        _clean_ids_query("class_id", class_ids), {"_id": 0, "id": 1}
+    ).to_list(10000)
+    submissions = await db.submissions.find(
+        _clean_ids_query("class_id", class_ids), {"_id": 0, "id": 1}
+    ).to_list(20000)
+    material_ids = _clean_period_ids([item.get("id") for item in materials])
+    assignment_ids = _clean_period_ids([item.get("id") for item in assignments])
+    submission_ids = _clean_period_ids([item.get("id") for item in submissions])
+
+    comments = await db.comments.find(
+        _clean_ids_query("material_id", material_ids), {"_id": 0, "id": 1}
+    ).to_list(20000)
+    comment_ids = _clean_period_ids([item.get("id") for item in comments])
+
+    bills = await db.tuition_bills.find(
+        _clean_ids_query("academic_period_id", period_ids), {"_id": 0, "id": 1}
+    ).to_list(20000)
+    bill_ids = _clean_period_ids([item.get("id") for item in bills])
+
+    sk_documents = await db.sk_mengajar.find({}, {"_id": 0, "id": 1, "tahun_ajaran": 1, "semester": 1}).to_list(5000)
+    sk_ids = _clean_period_ids([
+        item.get("id")
+        for item in sk_documents
+        if _clean_period_identity(item) == (period["tahun"], period["semester"].lower())
+    ])
+    sk_validation_documents = await db.sk_validations.find(
+        {}, {"_id": 0, "id": 1, "tahun_ajaran": 1, "semester": 1}
+    ).to_list(10000)
+    sk_validation_ids = _clean_period_ids([
+        item.get("id")
+        for item in sk_validation_documents
+        if _clean_period_identity(item) == (period["tahun"], period["semester"].lower())
+    ])
+
+    stored_file_query = _clean_scope_or([
+        ("class_id", class_ids),
+        ("rps_class_id", class_ids),
+        ("material_id", material_ids),
+        ("discussion_material_id", material_ids),
+        ("assignment_id", assignment_ids),
+        ("submission_id", submission_ids),
+        ("comment_id", comment_ids),
+    ])
+    reminder_query = _clean_scope_or([
+        ("assignment_id", assignment_ids),
+        ("class_id", class_ids),
+    ])
+    return {
+        **period_info,
+        "class_docs": class_docs,
+        "class_ids": class_ids,
+        "material_ids": material_ids,
+        "assignment_ids": assignment_ids,
+        "submission_ids": submission_ids,
+        "comment_ids": comment_ids,
+        "bill_ids": bill_ids,
+        "sk_ids": sk_ids,
+        "sk_validation_ids": sk_validation_ids,
+        "stored_file_query": stored_file_query,
+        "reminder_query": reminder_query,
+    }
+
+
+async def clean_data_semester_counts(scope: Dict[str, Any]) -> Dict[str, int]:
+    period_query = _clean_ids_query("academic_period_id", scope["period_ids"])
+    bill_query = _clean_ids_query("id", scope["bill_ids"])
+    return {
+        "kelas": len(scope["class_ids"]),
+        "materi": await db.materials.count_documents(_clean_ids_query("class_id", scope["class_ids"])),
+        "tugas": await db.assignments.count_documents(_clean_ids_query("class_id", scope["class_ids"])),
+        "submission": await db.submissions.count_documents(_clean_ids_query("class_id", scope["class_ids"])),
+        "diskusi": await db.comments.count_documents(_clean_ids_query("material_id", scope["material_ids"])),
+        "presensi": await db.attendance_sessions.count_documents(_clean_ids_query("class_id", scope["class_ids"])),
+        "enrollment": await db.enrollment_requests.count_documents(_clean_ids_query("class_id", scope["class_ids"])),
+        "rps": await db.rps.count_documents(_clean_ids_query("class_id", scope["class_ids"])),
+        "predikat_nilai": await db.grade_predicates.count_documents(_clean_ids_query("class_id", scope["class_ids"])),
+        "krs": await db.krs.count_documents(period_query),
+        "khs": await db.khs.count_documents(period_query),
+        "tagihan": await db.tuition_bills.count_documents(period_query),
+        "pembayaran": await db.tuition_payments.count_documents(bill_query),
+        "kalender": await db.academic_calendar_events.count_documents(_clean_ids_query("academic_year_id", scope["period_ids"])),
+        "deadline": await db.academic_deadline_settings.count_documents(_clean_ids_query("academic_year_id", scope["period_ids"])),
+        "sk_mengajar": len(scope["sk_ids"]),
+        "file": await db.stored_files.count_documents(scope["stored_file_query"]),
+    }
+
+
+async def execute_clean_data_semester(scope: Dict[str, Any]) -> Dict[str, Any]:
+    """Delete semester transactions while preserving master data and accounts."""
+    affected: Dict[str, int] = {}
+    class_ids = scope["class_ids"]
+    period_ids = scope["period_ids"]
+    bill_ids = scope["bill_ids"]
+
+    affected["file"] = await delete_stored_files(scope["stored_file_query"])
+    affected["diskusi"] = deleted_count(await db.comments.delete_many(_clean_ids_query("material_id", scope["material_ids"])))
+    affected["submission"] = deleted_count(await db.submissions.delete_many(_clean_ids_query("class_id", class_ids)))
+    affected["tugas"] = deleted_count(await db.assignments.delete_many(_clean_ids_query("class_id", class_ids)))
+    affected["materi"] = deleted_count(await db.materials.delete_many(_clean_ids_query("class_id", class_ids)))
+    affected["presensi"] = deleted_count(await db.attendance_sessions.delete_many(_clean_ids_query("class_id", class_ids)))
+    affected["enrollment"] = deleted_count(await db.enrollment_requests.delete_many(_clean_ids_query("class_id", class_ids)))
+    affected["rps"] = deleted_count(await db.rps.delete_many(_clean_ids_query("class_id", class_ids)))
+    affected["predikat_nilai"] = deleted_count(await db.grade_predicates.delete_many(_clean_ids_query("class_id", class_ids)))
+    affected["reminder"] = deleted_count(await db.reminder_logs.delete_many(scope["reminder_query"]))
+    affected["kelas"] = deleted_count(await db.classes.delete_many(_clean_ids_query("id", class_ids)))
+    if class_ids:
+        affected["tautan_kelas_mahasiswa"] = modified_count(
+            await db.users.update_many(
+                {"class_ids": {"$in": class_ids}},
+                {"$pull": {"class_ids": {"$in": class_ids}}},
+            )
+        )
+    else:
+        affected["tautan_kelas_mahasiswa"] = 0
+
+    affected["krs"] = deleted_count(await db.krs.delete_many(_clean_ids_query("academic_period_id", period_ids)))
+    affected["khs"] = deleted_count(await db.khs.delete_many(_clean_ids_query("academic_period_id", period_ids)))
+    affected["pembayaran"] = deleted_count(await db.tuition_payments.delete_many(_clean_ids_query("bill_id", bill_ids)))
+    affected["tagihan"] = deleted_count(await db.tuition_bills.delete_many(_clean_ids_query("academic_period_id", period_ids)))
+    affected["kalender"] = deleted_count(await db.academic_calendar_events.delete_many(_clean_ids_query("academic_year_id", period_ids)))
+    affected["deadline"] = deleted_count(await db.academic_deadline_settings.delete_many(_clean_ids_query("academic_year_id", period_ids)))
+    affected["sk_mengajar"] = deleted_count(await db.sk_mengajar.delete_many(_clean_ids_query("id", scope["sk_ids"])))
+    affected["validasi_sk"] = deleted_count(await db.sk_validations.delete_many(_clean_ids_query("id", scope["sk_validation_ids"])))
+    return {
+        "module": "semester",
+        "label": scope["label"],
+        "period": scope["period"],
+        "affected": affected,
+    }
+
+
 async def execute_clean_data_module(module: str) -> Dict[str, Any]:
     if module not in CLEAN_DATA_MODULES:
         raise HTTPException(status_code=404, detail="Modul clean data tidak ditemukan")
@@ -6723,6 +7069,51 @@ async def clean_data_summary(_: Dict[str, Any] = Depends(require_campus_admin)):
         {"key": key, **meta, "count": counts.get(key, sum(counts.values()) if key == "all" else 0)}
         for key, meta in CLEAN_DATA_MODULES.items()
     ]
+
+
+@api_router.get("/clean-data/semester-summary")
+async def clean_data_semester_summary(
+    semester_id: str = "",
+    _: Dict[str, Any] = Depends(require_campus_admin),
+):
+    period_info = await resolve_clean_data_period(semester_id)
+    scope = await collect_clean_data_semester_scope(period_info)
+    return {
+        "semester": period_info["period"],
+        "label": period_info["label"],
+        "counts": await clean_data_semester_counts(scope),
+        "protected": [
+            "Akun dan profil mahasiswa",
+            "Program studi, mata kuliah, kurikulum, serta dosen",
+            "Master tahun ajaran/semester yang dipilih",
+            "Komponen dan skema biaya keuangan",
+        ],
+    }
+
+
+@api_router.post("/clean-data/semester/{semester_id}")
+async def clean_data_semester(
+    semester_id: str,
+    payload: CleanDataInput,
+    user: Dict[str, Any] = Depends(require_campus_admin),
+):
+    period_info = await resolve_clean_data_period(semester_id)
+    if payload.confirmation != "HAPUS SEMESTER":
+        raise HTTPException(status_code=400, detail="Konfirmasi penghapusan semester tidak valid")
+    if payload.confirmation_label.strip() != period_info["label"]:
+        raise HTTPException(
+            status_code=400,
+            detail=f"Ketik nama semester persis: {period_info['label']}",
+        )
+    scope = await collect_clean_data_semester_scope(period_info)
+    result = await execute_clean_data_semester(scope)
+    result.update(
+        {
+            "cleaned_at": now_iso(),
+            "cleaned_by": user.get("name") or user.get("username") or user.get("id", ""),
+        }
+    )
+    return result
 
 
 @api_router.post("/clean-data/{module}")
@@ -7727,10 +8118,11 @@ async def create_class(payload: ClassInput, user: Dict[str, Any] = Depends(requi
     course = await db.courses.find_one({"id": payload.course_id, "status": {"$ne": "deleted"}}, {"_id": 0})
     if not course:
         raise HTTPException(status_code=404, detail="Mata kuliah tidak ditemukan")
-    code_seed = f"{course.get('code', 'KLS')}{payload.name}{uuid.uuid4().hex[:4]}"
-    dosen_id = course.get("dosen_utama_id") or user["id"]
-    dosen_nama = course.get("dosen_utama_nama") or user.get("name", "Dosen")
+    dosen_id, dosen_nama = await require_course_lecturer(course)
+    class_name = await normalize_new_class_name(course, payload.name)
+    code_seed = f"{course.get('code', 'KLS')}{class_name}{uuid.uuid4().hex[:4]}"
     doc = payload.model_dump()
+    doc["name"] = class_name
     doc.update(
         {
             "id": new_id(),
@@ -7767,10 +8159,18 @@ async def duplicate_class_for_new_period(
     name = payload.name.strip()
     if academic_year == str(source.get("academic_year", "")).strip() and semester.lower() == str(source.get("semester", "")).strip().lower():
         raise HTTPException(status_code=409, detail="Periode kelas baru harus berbeda dari kelas sumber.")
+    course = await db.courses.find_one(
+        {"id": source.get("course_id", ""), "status": {"$ne": "deleted"}},
+        {"_id": 0},
+    )
+    if not course:
+        raise HTTPException(status_code=409, detail="Mata kuliah sumber sudah tidak tersedia.")
+    lecturer_id, lecturer_name = await require_course_lecturer(course)
+    name = await normalize_new_class_name(course, name)
     duplicate = await db.classes.find_one(
         {
             "course_id": source.get("course_id", ""),
-            "lecturer_id": source.get("lecturer_id", ""),
+            "lecturer_id": lecturer_id,
             "academic_year": academic_year,
             "semester": semester,
             "name": name,
@@ -7780,12 +8180,6 @@ async def duplicate_class_for_new_period(
     )
     if duplicate:
         raise HTTPException(status_code=409, detail="Kelas dengan mata kuliah, nama, dan periode tersebut sudah ada.")
-    course = await db.courses.find_one(
-        {"id": source.get("course_id", ""), "status": {"$ne": "deleted"}},
-        {"_id": 0},
-    )
-    if not course:
-        raise HTTPException(status_code=409, detail="Mata kuliah sumber sudah tidak tersedia.")
     code_seed = f"{course.get('code', 'KLS')}{name}{uuid.uuid4().hex[:4]}"
     doc = {
         "id": new_id(),
@@ -7800,8 +8194,8 @@ async def duplicate_class_for_new_period(
         "name": name,
         "schedule": payload.schedule.strip(),
         "class_code": clean_code(code_seed),
-        "lecturer_id": source.get("lecturer_id", user["id"]),
-        "lecturer_name": source.get("lecturer_name", user.get("name", "Dosen")),
+        "lecturer_id": lecturer_id,
+        "lecturer_name": lecturer_name,
         "status": CLASS_STATUS_ACTIVE,
         "student_ids": [],
         "grade_weights_snapshot": grade_weights_from_document(course.get("grade_weights")),
@@ -7820,6 +8214,7 @@ async def update_class(class_id: str, payload: ClassInput, user: Dict[str, Any] 
     course = await db.courses.find_one({"id": payload.course_id, "status": {"$ne": "deleted"}}, {"_id": 0})
     if not course:
         raise HTTPException(status_code=404, detail="Mata kuliah tidak ditemukan")
+    await require_course_lecturer(course)
     update = payload.model_dump()
     update.update(
         {
@@ -13018,12 +13413,18 @@ async def on_startup():
     await db.tuition_bills.create_index([("student_id", 1), ("academic_period_id", 1)])
     await db.tuition_bills.create_index("status")
     await db.tuition_bills.create_index("scheme_id")
+    await db.tuition_bills.create_index(
+        [("source", 1), ("pmb_applicant_id", 1)],
+        unique=True,
+        sparse=True,
+    )
     await db.finance_components.create_index("code", unique=True, sparse=True)
     await db.finance_schemes.create_index("code", unique=True, sparse=True)
     await db.finance_scheme_rules.create_index([("scheme_id", 1), ("component_id", 1)])
     await db.tuition_payments.create_index("bill_id")
     await db.tuition_payments.create_index("status")
     await db.payment_accounts.create_index("payment_method")
+    await ensure_default_finance_components(db)
 
     active_period = await db.academic_periods.find_one({"is_active": True}, {"_id": 0})
     if not active_period:

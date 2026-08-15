@@ -10,6 +10,7 @@ from routers.pmb import (
     _prepare_student_import,
     extract_academic_year_prefix,
     import_admin_students_from_excel,
+    sync_imported_students_to_pmb,
 )
 
 
@@ -48,6 +49,7 @@ class FakeDb:
         self.users = FakeCollection([
             {"nim": "2627010001", "email": "existing@example.com", "username": "2627010001"},
         ])
+        self.pmb_applicants = FakeCollection([])
         self.pmb_settings = FakeCollection([{
             "id": "pmb_global_settings",
             "nim_prefix": "2627",
@@ -168,3 +170,31 @@ def test_import_endpoint_creates_student_after_valid_preview():
     assert db.users.items[0]["created_by"] == "admin-test"
     assert db.users.items[0]["id"]
     assert db.users.items[0]["password_hash"] != "Mahasiswa123!"
+    assert len(db.pmb_applicants.items) == 1
+    assert db.pmb_applicants.items[0]["source"] == "pmb_excel_import"
+
+
+def test_imported_student_is_normalized_into_manual_pmb_review_record():
+    db = FakeDb()
+    db.users = FakeCollection([{
+        "id": "student-import-1",
+        "role": "student",
+        "source": "pmb_excel_import",
+        "nim": "2627010001",
+        "name": "Mahasiswa Import",
+        "email": "import@example.com",
+        "prodi_id": "BD-D4",
+        "prodi_name": "Bisnis Digital",
+        "prodi_kode": "BD-D4",
+    }])
+
+    created = __import__("asyncio").run(sync_imported_students_to_pmb(db))
+
+    assert created == 1
+    assert len(db.pmb_applicants.items) == 1
+    record = db.pmb_applicants.items[0]
+    assert record["source"] == "pmb_excel_import"
+    assert record["manual_completion_required"] is True
+    assert record["manual_payment_status"] == "pending"
+    assert record["is_converted_to_student"] is True
+    assert record["student_user_id"] == "student-import-1"

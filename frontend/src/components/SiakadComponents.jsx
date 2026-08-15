@@ -26,8 +26,22 @@ import {
   Building,
   UserCheck,
   Banknote,
-  ReceiptText
+  ReceiptText,
+  Search,
+  RefreshCw,
+  Users,
+  WalletCards,
+  AlertCircle,
+  Settings2,
+  Info
 } from "lucide-react";
+
+const FinanceNote = ({ title = "Catatan penggunaan", children }) => (
+  <div className="flex gap-3 rounded-xl border border-sky-100 bg-sky-50/80 p-3 text-sm text-sky-900">
+    <Info className="mt-0.5 h-5 w-5 shrink-0 text-sky-600" />
+    <div><p className="font-semibold">{title}</p><p className="mt-1 leading-5 text-sky-800">{children}</p></div>
+  </div>
+);
 
 export function KRSPage({ user, token }) {
   const [krs, setKrs] = useState(null);
@@ -601,13 +615,14 @@ export function KHSPage({ token, selectedSemester, tahunAjaran = [] }) {
 }
 
 export function KeuanganPage({ user, token }) {
-  const isAdmin = user?.role === "admin";
+  const isAdmin = user?.role === "admin" || (user?.access_roles || []).includes("finance_officer");
   const auth = useMemo(() => ({ headers: { Authorization: `Bearer ${token}` } }), [token]);
   const [loading, setLoading] = useState(true);
   const [bills, setBills] = useState([]);
   const [components, setComponents] = useState([]);
   const [schemes, setSchemes] = useState([]);
   const [periods, setPeriods] = useState([]);
+  const [prodis, setProdis] = useState([]);
   const [students, setStudents] = useState([]);
   const [dashboard, setDashboard] = useState({});
   const [clearance, setClearance] = useState(null);
@@ -619,8 +634,10 @@ export function KeuanganPage({ user, token }) {
   const [componentForm, setComponentForm] = useState({ code: "", name: "", category: "tuition", default_amount: "", scholarship_eligible: true, discount_eligible: true });
   const [schemeForm, setSchemeForm] = useState({ code: "", name: "", academic_year: "", prodi_id: "", krs_min_payment_percent: 0, uts_min_payment_percent: 45, uas_min_payment_percent: 100 });
   const [ruleForm, setRuleForm] = useState({ component_id: "", amount: "", quantity: 1, charge_stage: "registration" });
-  const [manualForm, setManualForm] = useState({ student_id: "", academic_period_id: "", title: "", amount: "", due_date: "", installment_count: 1 });
+  const [manualForm, setManualForm] = useState({ student_id: "", component_id: "", academic_period_id: "", title: "", amount: "", due_date: "", installment_count: 1 });
   const [generateForm, setGenerateForm] = useState({ scheme_id: "", academic_period_id: "", due_date: "", installment_count: 1 });
+  const [generateTypeForm, setGenerateTypeForm] = useState({ component_id: "", prodi_id: "", academic_period_id: "", amount: "", title: "", due_date: "", installment_count: 1 });
+  const [billFilters, setBillFilters] = useState({ query: "", status: "all", period: "all", type: "all" });
 
   const rupiah = (value) => `Rp ${Number(value || 0).toLocaleString("id-ID")}`;
   const statusTone = (status) => ({
@@ -628,21 +645,24 @@ export function KeuanganPage({ user, token }) {
     partial: "bg-sky-600 text-white",
     awaiting_verification: "bg-amber-500 text-white",
     rejected: "bg-rose-600 text-white",
+    void: "bg-slate-400 text-white",
   }[status] || "bg-slate-500 text-white");
   const statusLabel = (status) => ({
     paid: "Lunas", partial: "Sebagian", awaiting_verification: "Menunggu Verifikasi",
     unpaid: "Belum Lunas", overdue: "Jatuh Tempo", pending: "Menunggu Verifikasi", rejected: "Ditolak",
+    void: "Dibatalkan setelah rekonsiliasi",
   }[status] || status || "—");
 
   const load = async () => {
     try {
       setLoading(true);
       if (isAdmin) {
-        const [billRes, componentRes, schemeRes, periodRes, studentRes, dashboardRes] = await Promise.all([
+        const [billRes, componentRes, schemeRes, periodRes, prodiRes, studentRes, dashboardRes] = await Promise.all([
           api.get("/api/v1/keuangan/bills", auth),
           api.get("/api/v1/keuangan/components", auth),
           api.get("/api/v1/keuangan/schemes", auth),
           api.get("/api/v1/keuangan/periods", auth),
+          api.get("/api/v1/master/prodi", auth),
           api.get("/api/v1/keuangan/students", auth),
           api.get("/api/v1/keuangan/dashboard", auth),
         ]);
@@ -650,6 +670,7 @@ export function KeuanganPage({ user, token }) {
         setComponents(componentRes.data.items || []);
         setSchemes(schemeRes.data.items || []);
         setPeriods(periodRes.data.items || []);
+        setProdis(Array.isArray(prodiRes.data) ? prodiRes.data : (prodiRes.data?.items || []));
         setStudents(studentRes.data.items || []);
         setDashboard(dashboardRes.data || {});
       } else {
@@ -691,7 +712,7 @@ export function KeuanganPage({ user, token }) {
     try {
       await api.post("/api/v1/keuangan/components", { ...componentForm, default_amount: Number(componentForm.default_amount || 0) }, auth);
       setComponentForm({ code: "", name: "", category: "tuition", default_amount: "", scholarship_eligible: true, discount_eligible: true });
-      toast.success("Komponen biaya ditambahkan");
+      toast.success("Jenis tagihan ditambahkan");
       await load();
     } catch (err) { toast.error(apiErrorMessage(err, "Komponen biaya gagal disimpan")); }
   };
@@ -723,10 +744,23 @@ export function KeuanganPage({ user, token }) {
     event.preventDefault();
     try {
       await api.post("/api/v1/keuangan/bills", { ...manualForm, amount: Number(manualForm.amount || 0), installment_count: Number(manualForm.installment_count || 1) }, auth);
-      setManualForm({ student_id: "", academic_period_id: "", title: "", amount: "", due_date: "", installment_count: 1 });
-      toast.success("Tagihan manual dibuat");
+      setManualForm({ student_id: "", component_id: "", academic_period_id: "", title: "", amount: "", due_date: "", installment_count: 1 });
+      toast.success("Tagihan mahasiswa berhasil dibuat");
       await load();
     } catch (err) { toast.error(apiErrorMessage(err, "Tagihan manual gagal dibuat")); }
+  };
+
+  const generateTypeBills = async (event) => {
+    event.preventDefault();
+    try {
+      const res = await api.post("/api/v1/keuangan/generate-type", {
+        ...generateTypeForm,
+        amount: generateTypeForm.amount === "" ? null : Number(generateTypeForm.amount),
+        installment_count: Number(generateTypeForm.installment_count || 1),
+      }, auth);
+      toast.success(res.data.message || "Tagihan semester berhasil digenerate");
+      await load();
+    } catch (err) { toast.error(apiErrorMessage(err, "Generator tagihan semester gagal dijalankan")); }
   };
 
   const generateBills = async (event) => {
@@ -771,23 +805,48 @@ export function KeuanganPage({ user, token }) {
 
   const selectedScheme = schemes.find((scheme) => scheme.id === selectedSchemeId);
   const summary = dashboard.summary || {};
+  const filteredBills = useMemo(() => {
+    const query = billFilters.query.trim().toLowerCase();
+    return bills.filter((bill) => {
+      const haystack = [bill.student_name, bill.nim, bill.title, bill.bill_type_name, bill.bill_type_code, bill.category, bill.source].filter(Boolean).join(" ").toLowerCase();
+      return (!query || haystack.includes(query))
+        && (billFilters.status === "all" || bill.status === billFilters.status)
+        && (billFilters.period === "all" || bill.academic_period_id === billFilters.period)
+        && (billFilters.type === "all" || bill.bill_type_id === billFilters.type || bill.category === billFilters.type);
+    });
+  }, [bills, billFilters]);
+  const studentBillSummary = useMemo(() => ({
+    total: bills.reduce((sum, bill) => sum + Number(bill.amount || 0), 0),
+    paid: bills.reduce((sum, bill) => sum + Number(bill.paid_amount || 0), 0),
+    outstanding: bills.reduce((sum, bill) => sum + Number(bill.remaining_amount || 0), 0),
+  }), [bills]);
 
-  if (loading) return <div className="py-16 text-center text-slate-500">Memuat data pembiayaan…</div>;
+  if (loading) return <div className="flex min-h-[260px] items-center justify-center"><div className="rounded-2xl border border-indigo-100 bg-white px-6 py-5 text-center shadow-sm"><RefreshCw className="mx-auto mb-2 h-6 w-6 animate-spin text-indigo-600" /><p className="text-sm font-medium text-slate-700">Memuat data keuangan…</p><p className="mt-1 text-xs text-slate-500">Menyiapkan tagihan dan ringkasan pembayaran.</p></div></div>;
 
   const BillsTable = () => (
-    <Card className="overflow-hidden">
-      <CardHeader className="border-b bg-slate-50">
-        <CardTitle className="text-base">Tagihan Mahasiswa</CardTitle>
+    <Card className="overflow-hidden border-slate-200 shadow-sm">
+      <CardHeader className="border-b bg-white pb-4">
+        <div className="flex flex-col gap-3 lg:flex-row lg:items-center lg:justify-between">
+          <div><CardTitle className="text-base">Daftar Tagihan</CardTitle><CardDescription>{filteredBills.length} dari {bills.length} tagihan ditampilkan</CardDescription></div>
+          <div className="flex flex-wrap gap-2">
+            <div className="relative min-w-[220px] flex-1"><Search className="absolute left-3 top-2.5 h-4 w-4 text-slate-400" /><Input value={billFilters.query} onChange={(e) => setBillFilters({ ...billFilters, query: e.target.value })} className="pl-9" placeholder={isAdmin ? "Cari mahasiswa atau tagihan…" : "Cari tagihan…"} /></div>
+            <select className="border rounded-md px-3 h-10 text-sm" value={billFilters.status} onChange={(e) => setBillFilters({ ...billFilters, status: e.target.value })}><option value="all">Semua status</option><option value="unpaid">Belum lunas</option><option value="partial">Sebagian</option><option value="awaiting_verification">Menunggu verifikasi</option><option value="paid">Lunas</option><option value="overdue">Jatuh tempo</option></select>
+            <select className="border rounded-md px-3 h-10 text-sm" value={billFilters.period} onChange={(e) => setBillFilters({ ...billFilters, period: e.target.value })}><option value="all">Semua periode</option>{periods.map((period) => <option key={period.id} value={period.id}>{period.name || period.code}</option>)}</select>
+            <select className="border rounded-md px-3 h-10 text-sm" value={billFilters.type} onChange={(e) => setBillFilters({ ...billFilters, type: e.target.value })}><option value="all">Semua jenis</option>{components.map((component) => <option key={component.id} value={component.id}>{component.code}</option>)}</select>
+            {(billFilters.query || billFilters.status !== "all" || billFilters.period !== "all" || billFilters.type !== "all") && <Button type="button" variant="ghost" className="h-10" onClick={() => setBillFilters({ query: "", status: "all", period: "all", type: "all" })}>Reset</Button>}
+          </div>
+        </div>
       </CardHeader>
       <CardContent className="p-0 overflow-x-auto">
         <Table>
-          <TableHeader><TableRow><TableHead>Mahasiswa / Tagihan</TableHead><TableHead>Periode</TableHead><TableHead>Tagihan</TableHead><TableHead>Terbayar</TableHead><TableHead>Status</TableHead><TableHead /></TableRow></TableHeader>
+          <TableHeader><TableRow><TableHead>Mahasiswa / Tagihan</TableHead><TableHead>Jenis</TableHead><TableHead>Periode</TableHead><TableHead>Nominal</TableHead><TableHead>Terbayar</TableHead><TableHead>Status</TableHead><TableHead /></TableRow></TableHeader>
           <TableBody>
-            {bills.length === 0 ? <TableRow><TableCell colSpan={6} className="h-28 text-center text-slate-400">Belum ada tagihan.</TableCell></TableRow> : bills.map((bill) => (
+            {filteredBills.length === 0 ? <TableRow><TableCell colSpan={7} className="h-32 text-center"><ReceiptText className="mx-auto mb-2 h-7 w-7 text-slate-300" /><p className="text-sm text-slate-500">{bills.length ? "Tidak ada tagihan yang sesuai filter." : "Belum ada tagihan."}</p></TableCell></TableRow> : filteredBills.map((bill) => (
               <TableRow key={bill.id}>
-                <TableCell><p className="font-semibold">{isAdmin ? bill.student_name : bill.title}</p><p className="text-xs text-slate-500">{isAdmin ? bill.nim : bill.academic_period_name}</p></TableCell>
-                <TableCell className="text-xs">{bill.academic_period_name || bill.academic_period_id}</TableCell>
-                <TableCell className="font-semibold">{rupiah(bill.amount)}</TableCell>
+                <TableCell><p className="font-semibold text-slate-800">{isAdmin ? bill.student_name : bill.title}</p><p className="text-xs text-slate-500">{isAdmin ? bill.nim : (bill.bill_type_name || bill.academic_period_name || bill.academic_period_id || "Detail tagihan")}</p>{bill.source === "pmb_carryover" && <Badge className="mt-1 bg-violet-100 text-violet-800 border border-violet-200 text-[10px]">Migrasi PMB</Badge>}</TableCell>
+                <TableCell><Badge variant="outline" className="whitespace-nowrap">{bill.bill_type_code || bill.bill_type_name || bill.category || "Umum"}</Badge></TableCell>
+                <TableCell className="text-xs whitespace-nowrap">{bill.academic_period_name || bill.academic_period_id}</TableCell>
+                <TableCell className="font-semibold whitespace-nowrap">{rupiah(bill.amount)}</TableCell>
                 <TableCell>{rupiah(bill.paid_amount)}<p className="text-[11px] text-slate-500">Sisa {rupiah(bill.remaining_amount)}</p></TableCell>
                 <TableCell><Badge className={statusTone(bill.status)}>{statusLabel(bill.status)}</Badge></TableCell>
                 <TableCell><Button size="sm" variant="outline" onClick={() => openBill(bill)}>{isAdmin ? "Rincian" : "Lihat / Bayar"}</Button></TableCell>
@@ -801,27 +860,67 @@ export function KeuanganPage({ user, token }) {
 
   return (
     <div className="space-y-6">
-      <div className="flex flex-col gap-2 sm:flex-row sm:items-center sm:justify-between">
-        <div>
-          <h2 className="font-display text-2xl font-bold text-slate-900 flex items-center gap-2"><Banknote className="h-7 w-7 text-indigo-600" /> Pembiayaan Mahasiswa</h2>
-          <p className="text-sm text-slate-500 mt-1">Tagihan berkomponen, beasiswa/potongan, cicilan, serta verifikasi pembayaran.</p>
+      <div className="rounded-2xl border border-indigo-100 bg-gradient-to-br from-indigo-50 via-white to-sky-50 p-5 shadow-sm sm:p-6">
+        <div className="flex flex-col gap-4 sm:flex-row sm:items-start sm:justify-between">
+          <div>
+            <div className="mb-2 flex items-center gap-2 text-xs font-semibold uppercase tracking-[0.18em] text-indigo-600"><WalletCards className="h-4 w-4" /> Keuangan Kampus</div>
+            <h2 className="font-display text-2xl font-bold text-slate-900 sm:text-3xl">Pembiayaan Mahasiswa</h2>
+            <p className="mt-2 max-w-2xl text-sm leading-6 text-slate-600">Kelola tagihan semester, pembayaran, potongan, cicilan, dan verifikasi dalam satu ruang kerja yang lebih terarah.</p>
+          </div>
+          <div className="flex flex-wrap items-center gap-2">
+            {!isAdmin && clearance && <Badge className={clearance.is_clear ? "bg-emerald-600 text-white" : "bg-amber-500 text-white"}><CheckCircle2 className="mr-1 h-3.5 w-3.5" />Clearance KRS: {clearance.paid_percent}% / min. {clearance.required_percent}%</Badge>}
+            <Button type="button" variant="outline" className="bg-white/80" onClick={load}><RefreshCw className="mr-2 h-4 w-4" />Refresh</Button>
+          </div>
         </div>
-        {!isAdmin && clearance && <Badge className={clearance.is_clear ? "bg-emerald-600 text-white" : "bg-amber-500 text-white"}>Clearance KRS: {clearance.paid_percent}% / min. {clearance.required_percent}%</Badge>}
       </div>
 
       {isAdmin ? (
         <>
-          <div className="grid grid-cols-2 lg:grid-cols-4 gap-3">
-            {[["Total Tagihan", summary.total_billed], ["Terverifikasi", summary.total_paid], ["Sisa", summary.total_outstanding], ["Menunggu Verifikasi", summary.pending_payment_amount]].map(([label, value]) => (
-              <Card key={label}><CardContent className="p-4"><p className="text-xs text-slate-500">{label}</p><p className="text-lg font-bold mt-1">{rupiah(value)}</p></CardContent></Card>
+          <div className="grid gap-3 sm:grid-cols-2 xl:grid-cols-6">
+            {[
+              ["Total ditagihkan", summary.total_billed, "bg-indigo-50 text-indigo-700", WalletCards],
+              ["Sudah terbayar", summary.total_paid, "bg-emerald-50 text-emerald-700", CheckCircle2],
+              ["Sisa tagihan", summary.total_outstanding, "bg-amber-50 text-amber-700", AlertCircle],
+              ["Menunggu verifikasi", summary.pending_payment_amount, "bg-sky-50 text-sky-700", Clock],
+              ["Sisa PMB migrasi", summary.pmb_carryover_outstanding, "bg-violet-50 text-violet-700", FileText],
+              ["Jumlah tagihan", summary.bill_count || 0, "bg-slate-100 text-slate-700", ReceiptText, true],
+            ].map(([label, value, tone, Icon, isCount]) => (
+              <Card key={label} className="border-slate-200 shadow-sm"><CardContent className="flex items-start justify-between gap-3 p-4"><div><p className="text-xs font-medium text-slate-500">{label}</p><p className="mt-1 text-lg font-bold text-slate-900">{isCount ? Number(value || 0).toLocaleString("id-ID") : rupiah(value)}</p></div><span className={`rounded-xl p-2 ${tone}`}><Icon className="h-5 w-5" /></span></CardContent></Card>
             ))}
           </div>
-          <div className="flex flex-wrap gap-2 border-b pb-3">
-            {[['bills', 'Tagihan'], ['schemes', 'Skema & Tarif'], ['verification', `Verifikasi (${summary.pending_payment_count || 0})`]].map(([id, label]) => <Button key={id} size="sm" variant={tab === id ? "default" : "outline"} onClick={() => setTab(id)}>{label}</Button>)}
+          <div className="flex flex-wrap items-center justify-between gap-3 rounded-xl border border-slate-200 bg-white p-2 shadow-sm">
+            <div className="flex flex-wrap gap-1">
+              {[["bills", "Tagihan", ReceiptText], ["schemes", "Jenis & Skema", Settings2], ["verification", `Verifikasi (${summary.pending_payment_count || 0})`, CheckCircle2]].map(([id, label, Icon]) => <Button key={id} size="sm" variant={tab === id ? "default" : "ghost"} className={tab === id ? "shadow-sm" : "text-slate-600"} onClick={() => setTab(id)}><Icon className="mr-2 h-4 w-4" />{label}</Button>)}
+            </div>
+            <div className="hidden items-center gap-2 px-3 text-xs text-slate-500 md:flex"><Users className="h-4 w-4 text-indigo-500" />{students.length.toLocaleString("id-ID")} mahasiswa aktif terdata</div>
           </div>
 
           {tab === "bills" && <div className="space-y-5">
+            <FinanceNote title="Panduan menu Tagihan">Gunakan generator semester untuk membuat UKT, GEDUNG, atau tagihan lain secara massal. Pilih Prodi tertentu jika nominal berbeda; mahasiswa yang sudah memiliki tagihan sejenis pada periode tersebut akan dilewati. Tagihan bertanda <strong>Migrasi PMB</strong> adalah saldo PMB yang dibawa saat aktivasi mahasiswa, bukan UKT semester. UKT tetap dibuat melalui generator sesuai periode.</FinanceNote>
             <div className="grid lg:grid-cols-2 gap-5">
+              <Card><CardHeader><CardTitle className="text-base">Generate Tagihan Semester</CardTitle><CardDescription>Pilih jenis tagihan dan prodi. Jalankan kembali per prodi jika nominal UKT berbeda.</CardDescription></CardHeader><CardContent>
+                <form onSubmit={generateTypeBills} className="grid gap-3 sm:grid-cols-2">
+                  <select className="border rounded-md px-3 h-10 sm:col-span-2" required value={generateTypeForm.component_id} onChange={(e) => setGenerateTypeForm({ ...generateTypeForm, component_id: e.target.value })}><option value="">Pilih jenis tagihan</option>{components.filter((c) => c.is_active).map((component) => <option key={component.id} value={component.id}>{component.code} — {component.name}</option>)}</select>
+                  <select className="border rounded-md px-3 h-10 sm:col-span-2" value={generateTypeForm.prodi_id} onChange={(e) => setGenerateTypeForm({ ...generateTypeForm, prodi_id: e.target.value })}><option value="">Semua Prodi</option>{prodis.filter((prodi) => prodi.status !== "inactive").map((prodi) => <option key={prodi.id} value={prodi.id}>{prodi.kode || "Tanpa kode"} — {prodi.nama || prodi.name}</option>)}</select>
+                  <Input type="number" min="0" value={generateTypeForm.amount} onChange={(e) => setGenerateTypeForm({ ...generateTypeForm, amount: e.target.value })} placeholder="Nominal (kosong = default jenis)" />
+                  <Input value={generateTypeForm.title} onChange={(e) => setGenerateTypeForm({ ...generateTypeForm, title: e.target.value })} placeholder="Judul tagihan (opsional)" />
+                  <select className="border rounded-md px-3 h-10" value={generateTypeForm.academic_period_id} onChange={(e) => setGenerateTypeForm({ ...generateTypeForm, academic_period_id: e.target.value })}><option value="">Periode aktif</option>{periods.map((p) => <option key={p.id} value={p.id}>{p.name || p.code}</option>)}</select>
+                  <Input type="date" value={generateTypeForm.due_date} onChange={(e) => setGenerateTypeForm({ ...generateTypeForm, due_date: e.target.value })} />
+                  <Input type="number" min="1" max="24" value={generateTypeForm.installment_count} onChange={(e) => setGenerateTypeForm({ ...generateTypeForm, installment_count: e.target.value })} placeholder="Jumlah cicilan" />
+                  <Button className="sm:col-span-2"><Banknote className="h-4 w-4 mr-2" />{generateTypeForm.prodi_id ? "Generate untuk Prodi Terpilih" : "Generate untuk Semua Mahasiswa"}</Button>
+                </form>
+              </CardContent></Card>
+              <Card><CardHeader><CardTitle className="text-base">Tagihan per Mahasiswa</CardTitle><CardDescription>Pilih jenis tagihan dan nominal khusus untuk satu mahasiswa.</CardDescription></CardHeader><CardContent>
+                <form onSubmit={createManualBill} className="grid gap-3 sm:grid-cols-2">
+                  <select className="border rounded-md px-3 h-10 sm:col-span-2" required value={manualForm.student_id} onChange={(e) => setManualForm({ ...manualForm, student_id: e.target.value })}><option value="">Pilih mahasiswa</option>{students.map((s) => <option key={s.id} value={s.id}>{s.nim} — {s.name}</option>)}</select>
+                  <select className="border rounded-md px-3 h-10 sm:col-span-2" required value={manualForm.component_id} onChange={(e) => { const type = components.find((item) => item.id === e.target.value); setManualForm({ ...manualForm, component_id: e.target.value, title: manualForm.title || type?.name || "", amount: manualForm.amount || (type?.default_amount ? String(type.default_amount) : "") }); }}><option value="">Pilih jenis tagihan</option>{components.filter((c) => c.is_active).map((component) => <option key={component.id} value={component.id}>{component.code} — {component.name}</option>)}</select>
+                  <Input value={manualForm.title} onChange={(e) => setManualForm({ ...manualForm, title: e.target.value })} placeholder="Judul / keterangan tambahan" />
+                  <Input required type="number" min="0" value={manualForm.amount} onChange={(e) => setManualForm({ ...manualForm, amount: e.target.value })} placeholder="Nominal khusus mahasiswa" />
+                  <select className="border rounded-md px-3 h-10" value={manualForm.academic_period_id} onChange={(e) => setManualForm({ ...manualForm, academic_period_id: e.target.value })}><option value="">Periode aktif</option>{periods.map((p) => <option key={p.id} value={p.id}>{p.name || p.code}</option>)}</select>
+                  <Input type="date" value={manualForm.due_date} onChange={(e) => setManualForm({ ...manualForm, due_date: e.target.value })} />
+                  <Button className="sm:col-span-2"><Plus className="h-4 w-4 mr-2" />Buat Tagihan Mahasiswa</Button>
+                </form>
+              </CardContent></Card>
               <Card><CardHeader><CardTitle className="text-base">Generate Tagihan dari Skema</CardTitle><CardDescription>Membuat item tagihan sesuai prodi dan periode, satu kali untuk tiap mahasiswa.</CardDescription></CardHeader><CardContent>
                 <form onSubmit={generateBills} className="grid gap-3 sm:grid-cols-2">
                   <select className="border rounded-md px-3 h-10" required value={generateForm.scheme_id} onChange={(e) => setGenerateForm({ ...generateForm, scheme_id: e.target.value })}><option value="">Pilih skema</option>{schemes.filter((s) => s.is_active).map((s) => <option key={s.id} value={s.id}>{s.code} — {s.name}</option>)}</select>
@@ -831,38 +930,29 @@ export function KeuanganPage({ user, token }) {
                   <Button className="sm:col-span-2"><Banknote className="h-4 w-4 mr-2" />Generate Tagihan</Button>
                 </form>
               </CardContent></Card>
-              <Card><CardHeader><CardTitle className="text-base">Tagihan Manual / Dispensasi</CardTitle><CardDescription>Untuk biaya insidental atau tagihan custom mahasiswa tertentu.</CardDescription></CardHeader><CardContent>
-                <form onSubmit={createManualBill} className="grid gap-3 sm:grid-cols-2">
-                  <select className="border rounded-md px-3 h-10 sm:col-span-2" required value={manualForm.student_id} onChange={(e) => setManualForm({ ...manualForm, student_id: e.target.value })}><option value="">Pilih mahasiswa</option>{students.map((s) => <option key={s.id} value={s.id}>{s.nim} — {s.name}</option>)}</select>
-                  <Input required value={manualForm.title} onChange={(e) => setManualForm({ ...manualForm, title: e.target.value })} placeholder="Nama tagihan" />
-                  <Input required type="number" min="0" value={manualForm.amount} onChange={(e) => setManualForm({ ...manualForm, amount: e.target.value })} placeholder="Nominal" />
-                  <select className="border rounded-md px-3 h-10" value={manualForm.academic_period_id} onChange={(e) => setManualForm({ ...manualForm, academic_period_id: e.target.value })}><option value="">Periode aktif</option>{periods.map((p) => <option key={p.id} value={p.id}>{p.name || p.code}</option>)}</select>
-                  <Input type="date" value={manualForm.due_date} onChange={(e) => setManualForm({ ...manualForm, due_date: e.target.value })} />
-                  <Button className="sm:col-span-2">Buat Tagihan Manual</Button>
-                </form>
-              </CardContent></Card>
             </div>
             <BillsTable />
           </div>}
 
           {tab === "schemes" && <div className="space-y-5">
+            <FinanceNote title="Panduan menu Jenis & Skema">Jenis Tagihan adalah master seperti UKT dan GEDUNG. Skema BIPOT adalah paket aturan biaya: simpan skema, pilih skema pada Aturan Tarif, tambahkan komponen dan nominal, lalu gunakan skema saat generate tagihan.</FinanceNote>
             <div className="grid lg:grid-cols-2 gap-5">
-              <Card><CardHeader><CardTitle className="text-base">Master Komponen Biaya</CardTitle></CardHeader><CardContent className="space-y-4">
+              <Card><CardHeader><CardTitle className="text-base">Jenis Tagihan</CardTitle><CardDescription>UKT dan GEDUNG tersedia sebagai jenis bawaan. Tambahkan jenis lain sesuai kebutuhan kampus.</CardDescription></CardHeader><CardContent className="space-y-4">
                 <form onSubmit={saveComponent} className="grid gap-3 sm:grid-cols-2">
-                  <Input required value={componentForm.code} onChange={(e) => setComponentForm({ ...componentForm, code: e.target.value })} placeholder="Kode, mis. UKT" />
-                  <Input required value={componentForm.name} onChange={(e) => setComponentForm({ ...componentForm, name: e.target.value })} placeholder="Nama komponen" />
+                  <Input required value={componentForm.code} onChange={(e) => setComponentForm({ ...componentForm, code: e.target.value })} placeholder="Kode, mis. ASRAMA" />
+                  <Input required value={componentForm.name} onChange={(e) => setComponentForm({ ...componentForm, name: e.target.value })} placeholder="Nama jenis tagihan" />
                   <Input type="number" min="0" value={componentForm.default_amount} onChange={(e) => setComponentForm({ ...componentForm, default_amount: e.target.value })} placeholder="Nominal default" />
                   <select className="border rounded-md px-3 h-10" value={componentForm.category} onChange={(e) => setComponentForm({ ...componentForm, category: e.target.value })}><option value="tuition">Kuliah / UKT</option><option value="admission">Pendaftaran</option><option value="facility">Sarana</option><option value="academic">Akademik</option></select>
-                  <Button className="sm:col-span-2"><Plus className="h-4 w-4 mr-2" />Tambah Komponen</Button>
+                  <Button className="sm:col-span-2"><Plus className="h-4 w-4 mr-2" />Tambah Jenis Tagihan</Button>
                 </form>
-                <div className="max-h-64 overflow-auto border rounded-md divide-y">{components.length ? components.map((component) => <div key={component.id} className="p-2 flex justify-between text-sm"><span><strong>{component.code}</strong> · {component.name}</span><span>{rupiah(component.default_amount)}</span></div>) : <p className="p-4 text-sm text-slate-400">Belum ada komponen.</p>}</div>
+                <div className="max-h-64 overflow-auto border rounded-md divide-y">{components.length ? components.map((component) => <div key={component.id} className="p-2 flex items-center justify-between gap-3 text-sm"><span><strong>{component.code}</strong> · {component.name}<small className="block text-slate-500">Default: {rupiah(component.default_amount)}</small></span><Badge variant={component.is_system ? "secondary" : "outline"}>{component.is_system ? "Bawaan" : "Custom"}</Badge></div>) : <p className="p-4 text-sm text-slate-400">Belum ada jenis tagihan.</p>}</div>
               </CardContent></Card>
-              <Card><CardHeader><CardTitle className="text-base">Skema Pembiayaan / BIPOT</CardTitle></CardHeader><CardContent>
+              <Card><CardHeader><CardTitle className="text-base">Skema Pembiayaan / BIPOT</CardTitle><CardDescription>Tentukan skema berdasarkan tahun akademik dan, bila perlu, khusus untuk satu prodi.</CardDescription></CardHeader><CardContent>
                 <form onSubmit={saveScheme} className="grid gap-3 sm:grid-cols-2">
                   <Input required value={schemeForm.code} onChange={(e) => setSchemeForm({ ...schemeForm, code: e.target.value })} placeholder="Kode skema" />
                   <Input required value={schemeForm.name} onChange={(e) => setSchemeForm({ ...schemeForm, name: e.target.value })} placeholder="Nama skema" />
-                  <Input value={schemeForm.academic_year} onChange={(e) => setSchemeForm({ ...schemeForm, academic_year: e.target.value })} placeholder="Tahun, mis. 2026/2027" />
-                  <Input value={schemeForm.prodi_id} onChange={(e) => setSchemeForm({ ...schemeForm, prodi_id: e.target.value })} placeholder="ID Program Studi (opsional)" />
+                  <select required className="border rounded-md px-3 h-10" value={schemeForm.academic_year} onChange={(e) => setSchemeForm({ ...schemeForm, academic_year: e.target.value })}><option value="">Pilih tahun akademik</option>{periods.map((period) => <option key={period.id} value={period.name || period.code}>{period.name || period.code}</option>)}</select>
+                  <select className="border rounded-md px-3 h-10" value={schemeForm.prodi_id} onChange={(e) => setSchemeForm({ ...schemeForm, prodi_id: e.target.value })}><option value="">Semua Prodi</option>{prodis.filter((prodi) => prodi.status !== "inactive" && prodi.status !== "deleted").map((prodi) => <option key={prodi.id} value={prodi.id}>{prodi.kode || prodi.code || "Tanpa kode"} — {prodi.nama || prodi.name}</option>)}</select>
                   {[['krs_min_payment_percent', 'Min. KRS %'], ['uts_min_payment_percent', 'Min. UTS %'], ['uas_min_payment_percent', 'Min. UAS %']].map(([field, label]) => <Input key={field} type="number" min="0" max="100" value={schemeForm[field]} onChange={(e) => setSchemeForm({ ...schemeForm, [field]: Number(e.target.value) })} placeholder={label} />)}
                   <Button className="sm:col-span-2">Simpan Skema</Button>
                 </form>
@@ -874,9 +964,14 @@ export function KeuanganPage({ user, token }) {
             </CardContent></Card>
           </div>}
 
-          {tab === "verification" && <Card><CardHeader><CardTitle className="text-base">Verifikasi Pembayaran</CardTitle><CardDescription>Pembayaran baru memengaruhi kelunasan setelah disetujui bendahara.</CardDescription></CardHeader><CardContent className="p-0 overflow-x-auto"><Table><TableHeader><TableRow><TableHead>Mahasiswa</TableHead><TableHead>Nominal</TableHead><TableHead>Metode / Referensi</TableHead><TableHead>Bukti</TableHead><TableHead>Aksi</TableHead></TableRow></TableHeader><TableBody>{(dashboard.pending_payments || []).length ? dashboard.pending_payments.map((payment) => <TableRow key={payment.id}><TableCell><strong>{payment.student_name}</strong><p className="text-xs text-slate-500">{payment.nim}</p></TableCell><TableCell>{rupiah(payment.amount)}</TableCell><TableCell>{payment.payment_method}<p className="text-xs text-slate-500">{payment.reference_number || "—"}</p></TableCell><TableCell>{payment.proof_url ? <a href={payment.proof_url} target="_blank" rel="noreferrer" className="text-indigo-600 underline">Buka bukti</a> : "—"}</TableCell><TableCell className="space-x-2"><Button size="sm" className="bg-emerald-600 hover:bg-emerald-700" onClick={() => verifyPayment(payment.id, "approve")}>Setujui</Button><Button size="sm" variant="outline" className="text-rose-600" onClick={() => verifyPayment(payment.id, "reject")}>Tolak</Button></TableCell></TableRow>) : <TableRow><TableCell colSpan={5} className="h-28 text-center text-slate-400">Tidak ada pembayaran yang menunggu verifikasi.</TableCell></TableRow>}</TableBody></Table></CardContent></Card>}
+          {tab === "verification" && <div className="space-y-5"><FinanceNote title="Panduan menu Verifikasi Pembayaran">Periksa nominal, metode, nomor referensi, dan bukti pembayaran. Pilih Setujui jika valid agar saldo tagihan dan clearance mahasiswa diperbarui; pilih Tolak jika bukti atau transaksi tidak sesuai.</FinanceNote><Card><CardHeader><CardTitle className="text-base">Verifikasi Pembayaran</CardTitle><CardDescription>Pembayaran baru memengaruhi kelunasan setelah disetujui bendahara.</CardDescription></CardHeader><CardContent className="p-0 overflow-x-auto"><Table><TableHeader><TableRow><TableHead>Mahasiswa</TableHead><TableHead>Nominal</TableHead><TableHead>Metode / Referensi</TableHead><TableHead>Bukti</TableHead><TableHead>Aksi</TableHead></TableRow></TableHeader><TableBody>{(dashboard.pending_payments || []).length ? dashboard.pending_payments.map((payment) => <TableRow key={payment.id}><TableCell><strong>{payment.student_name}</strong><p className="text-xs text-slate-500">{payment.nim}</p></TableCell><TableCell>{rupiah(payment.amount)}</TableCell><TableCell>{payment.payment_method}<p className="text-xs text-slate-500">{payment.reference_number || "—"}</p></TableCell><TableCell>{payment.proof_url ? <a href={payment.proof_url} target="_blank" rel="noreferrer" className="text-indigo-600 underline">Buka bukti</a> : "—"}</TableCell><TableCell className="space-x-2"><Button size="sm" className="bg-emerald-600 hover:bg-emerald-700" onClick={() => verifyPayment(payment.id, "approve")}>Setujui</Button><Button size="sm" variant="outline" className="text-rose-600" onClick={() => verifyPayment(payment.id, "reject")}>Tolak</Button></TableCell></TableRow>) : <TableRow><TableCell colSpan={5} className="h-28 text-center text-slate-400">Tidak ada pembayaran yang menunggu verifikasi.</TableCell></TableRow>}</TableBody></Table></CardContent></Card></div>}
         </>
-      ) : <BillsTable />}
+      ) : <>
+        <div className="grid gap-3 sm:grid-cols-3">
+          {[["Total tagihan", studentBillSummary.total, "text-indigo-700"], ["Sudah terbayar", studentBillSummary.paid, "text-emerald-700"], ["Sisa tagihan", studentBillSummary.outstanding, "text-amber-700"]].map(([label, value, tone]) => <Card key={label} className="border-slate-200 shadow-sm"><CardContent className="p-4"><p className="text-xs font-medium text-slate-500">{label}</p><p className={`mt-1 text-xl font-bold ${tone}`}>{rupiah(value)}</p></CardContent></Card>)}
+        </div>
+        <BillsTable />
+      </>}
 
       {selectedBill && <div className="fixed inset-0 bg-slate-950/50 backdrop-blur-sm flex items-center justify-center p-4 z-50"><Card className="w-full max-w-2xl max-h-[90vh] overflow-y-auto"><CardHeader><div className="flex items-start justify-between gap-3"><div><CardTitle className="text-lg flex items-center gap-2"><ReceiptText className="h-5 w-5 text-indigo-600" />{selectedBill.title}</CardTitle><CardDescription>{selectedBill.academic_period_name || selectedBill.academic_period_id}</CardDescription></div><Badge className={statusTone(selectedBill.status)}>{statusLabel(selectedBill.status)}</Badge></div></CardHeader><CardContent className="space-y-5"><div className="grid grid-cols-3 gap-3 text-sm"><div className="rounded-md bg-slate-50 p-3"><p className="text-xs text-slate-500">Tagihan</p><strong>{rupiah(selectedBill.amount)}</strong></div><div className="rounded-md bg-slate-50 p-3"><p className="text-xs text-slate-500">Terbayar</p><strong>{rupiah(selectedBill.paid_amount)}</strong></div><div className="rounded-md bg-slate-50 p-3"><p className="text-xs text-slate-500">Sisa</p><strong>{rupiah(selectedBill.remaining_amount)}</strong></div></div><div className="border rounded-md divide-y">{(selectedBill.items || []).map((item) => <div key={item.id} className="flex justify-between p-3 text-sm"><span>{item.component_name}<small className="block text-slate-500">{item.status === "paid" ? "Lunas" : `Terbayar ${rupiah(item.paid_amount)}`}</small></span><strong>{rupiah(item.net_amount)}</strong></div>)}</div>{(selectedBill.installments || []).length > 1 && <p className="text-xs text-slate-500">Cicilan: {(selectedBill.installments || []).map((item) => `${item.sequence}. ${rupiah(item.amount)}`).join(" · ")}</p>}{!isAdmin && selectedBill.status !== "paid" && <form onSubmit={submitPayment} className="border-t pt-4 space-y-3"><h3 className="font-semibold text-sm">Ajukan Pembayaran</h3><div className="grid sm:grid-cols-2 gap-3"><div><Label>Nominal</Label><Input required type="number" min="1" max={selectedBill.remaining_amount} value={paymentForm.amount} onChange={(e) => setPaymentForm({ ...paymentForm, amount: e.target.value })} /></div><div><Label>Metode</Label><select className="border rounded-md px-3 h-10 w-full" value={paymentForm.payment_method} onChange={(e) => setPaymentForm({ ...paymentForm, payment_method: e.target.value })}>{["TRANSFER", "QRIS", "VA_BCA", "VA_MANDIRI", "CASH", "MANUAL"].map((method) => <option key={method} value={method}>{method}</option>)}</select></div><div><Label>No. Referensi</Label><Input value={paymentForm.reference_number} onChange={(e) => setPaymentForm({ ...paymentForm, reference_number: e.target.value })} placeholder="No. transfer / VA" /></div><div><Label>URL Bukti Bayar</Label><Input value={paymentForm.proof_url} onChange={(e) => setPaymentForm({ ...paymentForm, proof_url: e.target.value })} placeholder="https://…" /></div></div><Textarea value={paymentForm.notes} onChange={(e) => setPaymentForm({ ...paymentForm, notes: e.target.value })} placeholder="Catatan untuk bendahara (opsional)" /><div className="flex justify-end gap-2"><Button type="button" variant="outline" onClick={() => setSelectedBill(null)}>Tutup</Button><Button className="bg-indigo-600"><CreditCard className="h-4 w-4 mr-2" />Ajukan Pembayaran</Button></div></form>}{isAdmin && <div className="border-t pt-4 space-y-3"><h3 className="font-semibold text-sm">Potongan, Beasiswa, atau Pembebasan</h3>{selectedBill.paid_amount > 0 ? <p className="text-xs text-slate-500">Penyesuaian dikunci setelah ada pembayaran yang terverifikasi.</p> : <form onSubmit={submitAdjustment} className="grid sm:grid-cols-2 gap-3"><select className="border rounded-md px-3 h-10" value={adjustmentForm.adjustment_type} onChange={(e) => setAdjustmentForm({ ...adjustmentForm, adjustment_type: e.target.value })}><option value="discount">Potongan</option><option value="scholarship">Beasiswa</option><option value="waiver">Pembebasan</option></select><select className="border rounded-md px-3 h-10" value={adjustmentForm.component_id} onChange={(e) => setAdjustmentForm({ ...adjustmentForm, component_id: e.target.value })}><option value="">Semua komponen yang memenuhi syarat</option>{(selectedBill.items || []).map((item) => <option key={item.id} value={item.component_id}>{item.component_name}</option>)}</select><Input required type="number" min="1" value={adjustmentForm.amount} onChange={(e) => setAdjustmentForm({ ...adjustmentForm, amount: e.target.value })} placeholder="Nominal penyesuaian" /><Input required value={adjustmentForm.reason} onChange={(e) => setAdjustmentForm({ ...adjustmentForm, reason: e.target.value })} placeholder="Dasar / keterangan" /><Button className="sm:col-span-2">Simpan Penyesuaian</Button></form>}<div className="flex justify-end"><Button variant="outline" onClick={() => setSelectedBill(null)}>Tutup</Button></div></div>}</CardContent></Card></div>}
     </div>

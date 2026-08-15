@@ -322,14 +322,13 @@ function resolveMediaUrl(url) {
 
 function VersionMeta({ version, className = "" }) {
   const label = version?.version ? `v${version.version}` : "Versi memuat...";
-  const schema = version?.schema_version ? ` · DB ${version.schema_version}` : "";
   return (
     <p
       className={`text-[10px] font-medium tracking-wide text-slate-400 ${className}`}
       data-testid="app-version-meta"
       title={version?.git_commit && version.git_commit !== "unknown" ? `Commit ${version.git_commit}` : undefined}
     >
-      {label}{schema}
+      {label}
     </p>
   );
 }
@@ -1664,8 +1663,7 @@ function LoginScreen({ onAuth, branding, ssoError = "", version }) {
             className="mt-5 max-w-xl text-lg text-slate-200"
             data-testid="login-hero-subtitle"
           >
-            Satu pintu untuk mengelola pembelajaran, tugas, presensi, penilaian,
-            dan layanan akademik di {campusName}.
+            Satu pintu untuk layanan akademik dan pembelajaran di {campusName}
           </p>
         </div>
       </section>
@@ -1693,7 +1691,7 @@ function LoginScreen({ onAuth, branding, ssoError = "", version }) {
                 data-testid="login-title"
               >
                 {mode === "login"
-                  ? "Satu pintu login"
+                  ? `Akses Masuk ${brandingName(branding)}`
                   : "Lupa password"}
               </h2>
             </div>
@@ -1760,7 +1758,7 @@ function LoginScreen({ onAuth, branding, ssoError = "", version }) {
                   >
                     <Field
                       id="login-identifier"
-                      label="Username / NIM / Nomor HP / Email"
+                      label="Username"
                     >
                       <Input
                         id="login-identifier"
@@ -1769,7 +1767,7 @@ function LoginScreen({ onAuth, branding, ssoError = "", version }) {
                         onChange={(e) =>
                           setLogin({ ...login, identifier: e.target.value })
                         }
-                        placeholder="Masukkan username, NIM, nomor HP, atau email"
+                        placeholder="Masukkan username"
                       />
                     </Field>
                     <Field id="login-password" label="Password">
@@ -1813,7 +1811,7 @@ function LoginScreen({ onAuth, branding, ssoError = "", version }) {
             >
               <Field
                 id="forgot-identifier"
-                label="Username / NIM / Nomor HP / Email"
+                label="Username"
               >
                 <Input
                   id="forgot-identifier"
@@ -4773,7 +4771,7 @@ function AdminApp({
         },
         class: {
           ...prev.class,
-          course_id: prev.class.course_id || coursesData[0]?.id || "",
+          course_id: prev.class.course_id || coursesData.find((course) => course.has_dosen_pengampu || course.dosen_utama_id)?.id || "",
         },
         settings: settingsData || prev.settings,
         whatsapp: {
@@ -5553,6 +5551,59 @@ function AdminApp({
       toast.error(detail);
     }
   }
+  async function loadCleanDataSemesterSummary(semesterId) {
+    const response = await axios.get(`${API}/clean-data/semester-summary`, {
+      ...auth,
+      params: { semester_id: semesterId },
+    });
+    return response.data;
+  }
+  async function cleanDataSemester(semester) {
+    const semesterId = semester?.id || semester?.kode || semester?.code || "";
+    const label = String(
+      semester?.nama ||
+        `${semester?.tahun || semester?.academic_year || ""} ${semester?.semester || ""}`,
+    ).trim();
+    if (!semesterId || !label) {
+      toast.error("Semester belum dipilih dengan benar");
+      return;
+    }
+    const ok = window.confirm(
+      `Hapus semua data operasional semester ${label}? Akun mahasiswa, master prodi, mata kuliah, kurikulum, dosen, dan master semester tetap dipertahankan. Aksi ini tidak bisa dibatalkan.`,
+    );
+    if (!ok) return;
+    const typed = window.prompt(
+      `Untuk melanjutkan, ketik nama semester persis:\n${label}`,
+      "",
+    );
+    if (typed?.trim() !== label) {
+      toast.error("Penghapusan dibatalkan karena nama semester tidak cocok");
+      return;
+    }
+    const operation = progress.begin(`Membersihkan data ${label}`);
+    try {
+      const response = await axios.post(
+        `${API}/clean-data/semester/${encodeURIComponent(semesterId)}`,
+        {
+          confirmation: "HAPUS SEMESTER",
+          confirmation_label: typed.trim(),
+        },
+        auth,
+      );
+      await loadAll();
+      const affected = response.data?.affected || {};
+      const total = Object.values(affected).reduce(
+        (sum, value) => sum + (Number(value) || 0),
+        0,
+      );
+      progress.finish(operation, `Data ${label} dibersihkan`);
+      toast.success(`${label} dibersihkan: ${total} perubahan data`);
+    } catch (error) {
+      const detail = error.response?.data?.detail || "Pembersihan data semester gagal";
+      progress.fail(operation, detail);
+      toast.error(detail);
+    }
+  }
   async function markReviewed(id) {
     await postJson(
       `/submissions/${id}/review`,
@@ -5674,6 +5725,10 @@ function AdminApp({
   async function saveClass(event) {
     event.preventDefault();
     const { id, ...payload } = forms.class;
+    const selectedCourse = (data.courses || []).find((course) => course.id === payload.course_id);
+    if (!selectedCourse?.has_dosen_pengampu && !selectedCourse?.dosen_utama_id) {
+      return toast.error("Kelas tidak dapat dibuat karena mata kuliah belum memiliki dosen pengampu");
+    }
     if (!window.confirm(
       id
         ? `Simpan perubahan konfigurasi kelas ${forms.class.name || "ini"}?`
@@ -6460,6 +6515,9 @@ function AdminApp({
             <CleanDataPage
               modules={data.cleanData}
               cleanDataModule={cleanDataModule}
+              tahunAjaran={data.tahunAjaran}
+              loadSemesterSummary={loadCleanDataSemesterSummary}
+              cleanDataSemester={cleanDataSemester}
             />
           )}
           {page === "backups" && isCampusAdmin && (
@@ -7736,31 +7794,169 @@ function DatabaseBackupPage({ token }) {
 const CleanDataPage = memo(function CleanDataPage({
   modules,
   cleanDataModule,
+  tahunAjaran = [],
+  loadSemesterSummary,
+  cleanDataSemester,
 }) {
+  const [selectedSemester, setSelectedSemester] = useState("");
+  const [semesterSummary, setSemesterSummary] = useState(null);
+  const [summaryLoading, setSummaryLoading] = useState(false);
+
+  const semesterOptions = useMemo(
+    () =>
+      (tahunAjaran || [])
+        .filter((item) => item?.id || item?.kode || item?.code)
+        .sort((left, right) => {
+          const leftKey = `${left?.tahun || left?.academic_year || ""}-${left?.semester || ""}`;
+          const rightKey = `${right?.tahun || right?.academic_year || ""}-${right?.semester || ""}`;
+          return rightKey.localeCompare(leftKey);
+        }),
+    [tahunAjaran],
+  );
+
+  useEffect(() => {
+    let mounted = true;
+    if (!selectedSemester || !loadSemesterSummary) {
+      setSemesterSummary(null);
+      return () => {
+        mounted = false;
+      };
+    }
+    setSummaryLoading(true);
+    loadSemesterSummary(selectedSemester)
+      .then((result) => {
+        if (mounted) setSemesterSummary(result);
+      })
+      .catch(() => {
+        if (mounted) setSemesterSummary(null);
+      })
+      .finally(() => {
+        if (mounted) setSummaryLoading(false);
+      });
+    return () => {
+      mounted = false;
+    };
+  }, [selectedSemester]);
+
+  const count = (value) => new Intl.NumberFormat("id-ID").format(Number(value) || 0);
+  const summaryCounts = semesterSummary?.counts || {};
+
   return (
     <div className="space-y-6" data-testid="clean-data-page">
       <Card
-        className="rounded-md border-red-200 bg-red-50 shadow-none"
-        data-testid="clean-data-warning-card"
+        className="rounded-md border-indigo-200 bg-indigo-50 shadow-none"
+        data-testid="clean-data-semester-card"
       >
+        <CardContent className="p-5">
+          <div className="flex items-start gap-3">
+            <CalendarDays className="mt-1 h-5 w-5 text-indigo-700" />
+            <div>
+              <h2
+                className="font-display text-2xl font-semibold text-indigo-900"
+                data-testid="clean-data-semester-title"
+              >
+                Bersihkan Data per Semester
+              </h2>
+              <p
+                className="mt-2 text-sm text-indigo-800"
+                data-testid="clean-data-semester-description"
+              >
+                Pilih semester untuk menghapus kelas, materi, tugas, nilai,
+                KRS/KHS, presensi, tagihan, pembayaran, dan data operasional
+                terkait semester tersebut. Data master dan akun tetap aman.
+              </p>
+            </div>
+          </div>
+          <div className="mt-5 grid gap-4 lg:grid-cols-[minmax(0,1fr)_auto] lg:items-end">
+            <div>
+              <Label htmlFor="clean-data-semester-select">Semester yang akan dibersihkan</Label>
+              <select
+                id="clean-data-semester-select"
+                className="mt-2 flex h-11 w-full rounded-md border border-indigo-200 bg-white px-3 text-sm text-slate-800 outline-none focus:ring-2 focus:ring-indigo-400"
+                value={selectedSemester}
+                onChange={(event) => setSelectedSemester(event.target.value)}
+                data-testid="clean-data-semester-select"
+              >
+                <option value="">Pilih semester</option>
+                {semesterOptions.map((item) => {
+                  const value = item.id || item.kode || item.code;
+                  const label = String(
+                    item.nama ||
+                      `${item.tahun || item.academic_year || ""} ${item.semester || ""}`,
+                  ).trim();
+                  return (
+                    <option key={value} value={value}>
+                      {label || value}{item.is_active ? " — Aktif" : ""}
+                    </option>
+                  );
+                })}
+              </select>
+            </div>
+            <Button
+              type="button"
+              variant="destructive"
+              disabled={!semesterSummary || summaryLoading || !selectedSemester}
+              onClick={() => {
+                const selected = semesterOptions.find(
+                  (item) => (item.id || item.kode || item.code) === selectedSemester,
+                );
+                if (selected) cleanDataSemester?.(selected);
+              }}
+              data-testid="clean-data-semester-run-button"
+            >
+              <Trash2 /> Hapus Semua Data Semester
+            </Button>
+          </div>
+          {summaryLoading && (
+            <div className="mt-4 flex items-center gap-2 text-sm text-indigo-700" data-testid="clean-data-semester-loading">
+              <Loader2 className="animate-spin" /> Menghitung data semester...
+            </div>
+          )}
+          {semesterSummary && !summaryLoading && (
+            <div className="mt-5 space-y-4" data-testid="clean-data-semester-summary">
+              <div className="grid gap-3 sm:grid-cols-2 lg:grid-cols-4">
+                {[
+                  ["kelas", "Kelas"],
+                  ["materi", "Materi"],
+                  ["tugas", "Tugas"],
+                  ["submission", "Submission"],
+                  ["presensi", "Presensi"],
+                  ["krs", "KRS"],
+                  ["khs", "KHS"],
+                  ["tagihan", "Tagihan"],
+                  ["pembayaran", "Pembayaran"],
+                  ["file", "File"],
+                ].map(([key, label]) => (
+                  <div key={key} className="rounded-md border border-indigo-100 bg-white px-3 py-2">
+                    <div className="text-xs font-semibold uppercase tracking-wide text-slate-500">{label}</div>
+                    <div className="mt-1 text-xl font-bold text-indigo-900">{count(summaryCounts[key])}</div>
+                  </div>
+                ))}
+              </div>
+              <div className="flex items-start gap-2 rounded-md border border-amber-200 bg-amber-50 p-3 text-sm text-amber-800">
+                <ShieldCheck className="mt-0.5 h-4 w-4 shrink-0" />
+                <span>
+                  Penghapusan tidak menghapus akun/profil mahasiswa, prodi,
+                  mata kuliah, kurikulum, dosen, skema biaya, atau master
+                  semester. Nama semester harus diketik ulang sebelum proses.
+                </span>
+              </div>
+            </div>
+          )}
+        </CardContent>
+      </Card>
+      <Card className="rounded-md border-red-200 bg-red-50 shadow-none" data-testid="clean-data-warning-card">
         <CardContent className="p-5">
           <div className="flex items-start gap-3">
             <AlertTriangle className="mt-1 h-5 w-5 text-red-700" />
             <div>
-              <h2
-                className="font-display text-2xl font-semibold text-red-800"
-                data-testid="clean-data-title"
-              >
-                Clean data percobaan
+              <h2 className="font-display text-2xl font-semibold text-red-800" data-testid="clean-data-title">
+                Pembersihan Global (Data Percobaan)
               </h2>
-              <p
-                className="mt-2 text-sm text-red-700"
-                data-testid="clean-data-warning"
-              >
-                Gunakan halaman ini hanya untuk menghapus data testing. Akun
-                dosen/admin, settings aplikasi, konfigurasi WhatsApp,
-                konfigurasi Google Drive, file .env, dan credential Drive tidak
-                ikut dihapus.
+              <p className="mt-2 text-sm text-red-700" data-testid="clean-data-warning">
+                Modul di bawah ini tetap bersifat global dan hanya digunakan
+                untuk data testing. Untuk operasional kampus, gunakan bagian
+                Bersihkan Data per Semester di atas.
               </p>
             </div>
           </div>
@@ -8502,6 +8698,7 @@ function ClassesPage({
 }) {
   const programOptions = data.programs || [];
   const courseOptions = data.courses || [];
+  const classCourseOptions = courseOptions.filter((course) => course.has_dosen_pengampu || course.dosen_utama_id);
   const classOptions = data.classes || [];
   const activeClassCount = classOptions.filter((item) => item.status === "active").length;
   const [activeStep, setActiveStep] = useState("program");
@@ -8650,9 +8847,9 @@ function ClassesPage({
             </CardHeader>
             <CardContent>
               <Table>
-                <TableHeader><TableRow><TableHead>Kode</TableHead><TableHead>Nama</TableHead><TableHead>Prodi</TableHead><TableHead>Aksi</TableHead></TableRow></TableHeader>
+                <TableHeader><TableRow><TableHead>Kode</TableHead><TableHead>Nama</TableHead><TableHead>Prodi</TableHead><TableHead>Dosen Pengampu</TableHead><TableHead>Aksi</TableHead></TableRow></TableHeader>
                 <TableBody>
-                  {courseOptions.length === 0 && <TableRow><TableCell colSpan={4}><div className="academic-empty-row"><BookOpen /><strong>Belum ada mata kuliah</strong><span>Tambahkan mata kuliah setelah membuat prodi.</span></div></TableCell></TableRow>}
+                  {courseOptions.length === 0 && <TableRow><TableCell colSpan={5}><div className="academic-empty-row"><BookOpen /><strong>Belum ada mata kuliah</strong><span>Tambahkan mata kuliah setelah membuat prodi.</span></div></TableCell></TableRow>}
                   {courseOptions.map((item) => (
                   <TableRow key={item.id} data-testid={`course-row-${item.id}`}>
                     <TableCell data-testid={`course-code-${item.id}`}>
@@ -8663,6 +8860,9 @@ function ClassesPage({
                     </TableCell>
                     <TableCell data-testid={`course-program-${item.id}`}>
                       {item.program_name || "-"}
+                    </TableCell>
+                    <TableCell data-testid={`course-lecturer-${item.id}`}>
+                      {item.dosen_utama_nama || (item.has_dosen_pengampu || item.dosen_utama_id ? "Sudah ditetapkan" : "Belum ditetapkan")}
                     </TableCell>
                     <TableCell>
                       <div className="flex flex-wrap gap-2">
@@ -8732,9 +8932,11 @@ function ClassesPage({
               </div>
             </div>
             {courseOptions.length === 0 && <div className="academic-prerequisite"><AlertTriangle /><span>Buat minimal satu mata kuliah terlebih dahulu.</span></div>}
+            {courseOptions.length > 0 && classCourseOptions.length === 0 && <div className="academic-prerequisite"><AlertTriangle /><span>Belum ada mata kuliah dengan dosen pengampu. Tetapkan dosen pengampu melalui menu Kurikulum &amp; Dosen MK terlebih dahulu.</span></div>}
             <Field id="class-course" label="Mata kuliah">
-              <select id="class-course" className="form-select" data-testid="class-course-select" value={forms.class.course_id} onChange={(e) => setForms({ ...forms, class: { ...forms.class, course_id: e.target.value } })}>
-                {courseOptions.map((c) => <option key={c.id} value={c.id}>{`${c.program_name ? `${c.program_name} - ` : ""}${c.name}`}</option>)}
+              <select id="class-course" className="form-select" data-testid="class-course-select" value={classCourseOptions.some((course) => course.id === forms.class.course_id) ? forms.class.course_id : ""} disabled={!classCourseOptions.length} onChange={(e) => setForms({ ...forms, class: { ...forms.class, course_id: e.target.value } })}>
+                {!classCourseOptions.length && <option value="">Belum ada mata kuliah siap dibuat kelas</option>}
+                {classCourseOptions.map((c) => <option key={c.id} value={c.id}>{`${c.program_name ? `${c.program_name} - ` : ""}${c.name}`}</option>)}
               </select>
             </Field>
             <div className="academic-inline-fields">
@@ -8745,15 +8947,15 @@ function ClassesPage({
                 <Input id="class-semester" data-testid="class-semester-input" value={forms.class.semester} onChange={(e) => setForms({ ...forms, class: { ...forms.class, semester: e.target.value } })} />
               </Field>
             </div>
-            <Field id="class-name" label="Nama kelas">
-              <Input id="class-name" placeholder="Contoh: IF-4A" data-testid="class-name-input" value={forms.class.name} onChange={(e) => setForms({ ...forms, class: { ...forms.class, name: e.target.value } })} />
+            <Field id="class-name" label="Nama rombel / kelas">
+              <Input id="class-name" placeholder="Contoh: RKJ01" data-testid="class-name-input" value={forms.class.name} onChange={(e) => setForms({ ...forms, class: { ...forms.class, name: e.target.value } })} />
             </Field>
             <Field id="class-schedule" label="Jadwal">
               <Input id="class-schedule" placeholder="Contoh: Senin, 08.00–09.40" data-testid="class-schedule-input" value={forms.class.schedule} onChange={(e) => setForms({ ...forms, class: { ...forms.class, schedule: e.target.value } })} />
             </Field>
-            <div className="academic-form-hint"><ShieldCheck /><span>Kode kelas akan dibuat otomatis dan dapat dibagikan kepada mahasiswa.</span></div>
+            <div className="academic-form-hint"><ShieldCheck /><span>Untuk sinkronisasi Neo Feeder, gunakan nama rombel maksimal 5 karakter, misalnya RKJ01. Kode akses kelas tetap dibuat otomatis.</span></div>
             <div className="flex flex-wrap gap-2">
-              <Button data-testid="class-create-submit-button" disabled={!courseOptions.length}><Plus /> {forms.class.id ? "Simpan kelas" : "Tambah kelas"}</Button>
+              <Button data-testid="class-create-submit-button" disabled={!classCourseOptions.length}><Plus /> {forms.class.id ? "Simpan kelas" : "Tambah kelas"}</Button>
               {forms.class.id && <Button type="button" variant="outline" data-testid="class-cancel-edit-button" onClick={() => setForms({ ...forms, class: { academic_year: forms.class.academic_year, semester: forms.class.semester, course_id: forms.class.course_id, name: "", schedule: "" } })}>Batal</Button>}
             </div>
           </form>
@@ -22077,16 +22279,18 @@ function App() {
         <CamabaPortal
           token={token}
           onLogout={logout}
-          onSwitchToStudent={(appData) => {
-            const updated = {
-              ...user,
-              ...appData,
-              role: "student",
-              id: appData.student_user_id || user.id,
-              name: appData.name || user.name,
-              nim: appData.generated_nim || user.nim,
-            };
-            handleAuth({ token, user: updated });
+          onSwitchToStudent={async () => {
+            try {
+              const { data } = await axios.post(
+                `${API}/v1/pmb/student-session`,
+                {},
+                { headers: { Authorization: `Bearer ${token}` } },
+              );
+              handleAuth(data);
+              toast.success("Sesi mahasiswa SIAKAD berhasil dibuat.");
+            } catch (error) {
+              toast.error(error.response?.data?.detail || "Akses mahasiswa SIAKAD belum tersedia.");
+            }
           }}
           branding={branding}
         />

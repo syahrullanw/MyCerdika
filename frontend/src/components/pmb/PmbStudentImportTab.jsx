@@ -120,7 +120,7 @@ export function PmbStudentImportTab({ token, programs = [] }) {
                 <FileSpreadsheet className="w-5 h-5 text-indigo-600" /> Import Mahasiswa Baru dari Excel
               </CardTitle>
               <CardDescription className="mt-1 max-w-3xl text-xs leading-relaxed">
-                Gunakan menu ini untuk memasukkan mahasiswa baru setelah seluruh proses PMB selesai. Data akan dibuat sebagai akun mahasiswa SIAKAD agar langsung dapat dipakai untuk analisis akademik.
+                Data akan dibuat sebagai akun mahasiswa SIAKAD sekaligus ditampilkan di Calon Mahasiswa dengan tanda <strong>Import Excel · Perlu dilengkapi</strong>. Admin dapat melengkapi status pembayaran, nilai/grade tes, dan SK secara manual.
               </CardDescription>
             </div>
             <Button

@@ -46,13 +46,15 @@ import {
   UserCheck,
   Search,
   Phone,
-  ExternalLink
+  ExternalLink,
+  Video
 } from "lucide-react";
 import { PmbAnalyticsTab } from "./PmbAnalyticsTab";
 import { PmbReferralsTab } from "./PmbReferralsTab";
 import { PmbExecutiveReportTab } from "./PmbExecutiveReportTab";
 import { PmbLandingCustomizerTab } from "./PmbLandingCustomizerTab";
 import { PmbTestSessionsTab } from "./PmbTestSessionsTab";
+import { PmbInterviewSchedulesTab } from "./PmbInterviewSchedulesTab";
 import { PmbStudentImportTab } from "./PmbStudentImportTab";
 
 const BACKEND_URL = (process.env.REACT_APP_BACKEND_URL || "").replace(/\/+$/, "") || window.location.origin;
@@ -64,6 +66,18 @@ function formatRupiah(num) {
     currency: "IDR",
     maximumFractionDigits: 0,
   }).format(num || 0);
+}
+
+function conversionBlockReason(applicant) {
+  if (applicant?.test_status !== "passed") return "Belum lulus seleksi";
+  if (applicant?.sk_approved !== true) return "SK belum disetujui";
+  if (!["partial", "completed"].includes(applicant?.reregistration_status)) return "Daftar ulang belum diverifikasi";
+  if (!applicant?.prodi_id) return "Prodi belum dipilih";
+  return "";
+}
+
+function isExcelImportedApplicant(applicant) {
+  return applicant?.source === "pmb_excel_import" || applicant?.imported_from_excel === true;
 }
 
 export function AdminPmbHub({ token: propToken, user, programs: initialPrograms = [] }) {
@@ -97,6 +111,15 @@ export function AdminPmbHub({ token: propToken, user, programs: initialPrograms 
 
   // Payment History & Remaining Balance Modal State
   const [paymentHistoryModal, setPaymentHistoryModal] = useState(null);
+  const [importedPaymentModal, setImportedPaymentModal] = useState(null);
+  const [importedPaymentStatus, setImportedPaymentStatus] = useState("paid");
+  const [importedPaymentOutstanding, setImportedPaymentOutstanding] = useState("");
+  const [importedPaymentNotes, setImportedPaymentNotes] = useState("");
+
+  // Prodi & jalur kelas PMB
+  const [placementModal, setPlacementModal] = useState(null);
+  const [placementProdiId, setPlacementProdiId] = useState("");
+  const [placementClassKey, setPlacementClassKey] = useState("reguler_offline");
 
   // Proof Preview Modal State
   const [previewProofModal, setPreviewProofModal] = useState(null);
@@ -203,6 +226,78 @@ export function AdminPmbHub({ token: propToken, user, programs: initialPrograms 
     }
   };
 
+  const openImportedPaymentModal = (applicant) => {
+    setImportedPaymentModal(applicant);
+    setImportedPaymentStatus(applicant.manual_payment_status === "outstanding" ? "outstanding" : "paid");
+    setImportedPaymentOutstanding(applicant.manual_payment_outstanding || "");
+    setImportedPaymentNotes(applicant.manual_payment_notes || "");
+  };
+
+  const handleSaveImportedPayment = async () => {
+    if (!importedPaymentModal) return;
+    const outstanding = Number(importedPaymentOutstanding || 0);
+    if (importedPaymentStatus === "outstanding" && (!Number.isFinite(outstanding) || outstanding <= 0)) {
+      toast.error("Nominal tunggakan wajib diisi dan harus lebih dari 0");
+      return;
+    }
+    try {
+      const res = await api.post(
+        `/api/v1/pmb/admin/applicants/${importedPaymentModal.id}/imported-payment-status`,
+        {
+          status: importedPaymentStatus,
+          outstanding_amount: importedPaymentStatus === "outstanding" ? outstanding : 0,
+          notes: importedPaymentNotes,
+        },
+        { headers: { Authorization: `Bearer ${token}` } },
+      );
+      if (res.data.ok) {
+        toast.success(res.data.message || "Status pembayaran manual berhasil disimpan");
+        setImportedPaymentModal(null);
+        fetchData();
+      }
+    } catch (err) {
+      toast.error(apiErrorMessage(err, "Gagal menyimpan status pembayaran manual"));
+    }
+  };
+
+  const openPlacementModal = (applicant) => {
+    const classKey = applicant.class_type === "khusus"
+      ? "khusus_offline"
+      : applicant.class_type === "weekend"
+      ? "weekend_online"
+      : applicant.learning_mode === "online"
+      ? "reguler_online"
+      : "reguler_offline";
+    setPlacementModal(applicant);
+    setPlacementProdiId(applicant.prodi_id || "");
+    setPlacementClassKey(classKey);
+  };
+
+  const handleSavePlacement = async () => {
+    if (!placementModal) return;
+    const selectedProgram = programsList.find((program) => String(program.id) === String(placementProdiId));
+    if (!selectedProgram) {
+      toast.error("Program studi wajib dipilih");
+      return;
+    }
+
+    const [classType, learningMode] = placementClassKey.split("_");
+    try {
+      const res = await api.put(
+        `/api/v1/pmb/admin/applicants/${placementModal.id}/placement`,
+        { prodi_id: placementProdiId, class_type: classType, learning_mode: learningMode },
+        { headers: { Authorization: `Bearer ${token}` } },
+      );
+      if (res.data.ok) {
+        toast.success(res.data.message || "Program studi dan jalur kelas berhasil diperbarui");
+        setPlacementModal(null);
+        fetchData();
+      }
+    } catch (err) {
+      toast.error(apiErrorMessage(err, "Gagal memperbarui Prodi dan Kelas"));
+    }
+  };
+
   const handleVerifyPraStudiPayment = async (applicantId, action = "approve", term = null) => {
     try {
       const res = await api.post(
@@ -257,10 +352,15 @@ export function AdminPmbHub({ token: propToken, user, programs: initialPrograms 
 
   const handleSaveOfflineScore = async () => {
     if (!offlineScoreModal) return;
+    const score = Number(offlineScore);
+    if (!Number.isFinite(score) || score < 0 || score > 100) {
+      toast.error("Nilai tes harus berupa angka 0 sampai 100");
+      return;
+    }
     try {
       const res = await api.post(
         `/api/v1/pmb/admin/applicants/${offlineScoreModal.id}/offline-score`,
-        { score: Number(offlineScore), status: Number(offlineScore) >= (settings?.passing_grade || 70) ? "passed" : "failed", notes: offlineNotes },
+        { score, status: score >= (settings?.passing_grade || 70) ? "passed" : "failed", notes: offlineNotes },
         { headers: { Authorization: `Bearer ${token}` } }
       );
       if (res.data.ok) {
@@ -280,6 +380,9 @@ export function AdminPmbHub({ token: propToken, user, programs: initialPrograms 
       });
       if (res.data.ok) {
         toast.success(res.data.message || "Calon mahasiswa berhasil dikonversi ke SIAKAD!");
+        if (res.data.class_assignment_status === "pending") {
+          toast.warning("Akun aktif, tetapi kelas belum ditentukan. Silakan tugaskan kelas aktif dari menu Mahasiswa.");
+        }
         fetchData();
       }
     } catch (err) {
@@ -350,7 +453,7 @@ export function AdminPmbHub({ token: propToken, user, programs: initialPrograms 
   };
 
   const handleBulkConvert = async () => {
-    if (!window.confirm("Konversi seluruh calon mahasiswa yang telah lulus dan daftar ulang ke SIAKAD?")) return;
+    if (!window.confirm("Konversi seluruh calon mahasiswa yang telah lulus, SK disetujui, dan daftar ulang ke SIAKAD?")) return;
     try {
       const res = await api.post("/api/v1/pmb/admin/applicants/bulk-convert", {}, {
         headers: { Authorization: `Bearer ${token}` },
@@ -578,6 +681,15 @@ export function AdminPmbHub({ token: propToken, user, programs: initialPrograms 
         </button>
         <button
           type="button"
+          onClick={() => setActiveTab("interviews")}
+          className={`px-3 py-2 rounded-lg transition-all ${
+            activeTab === "interviews" ? "bg-white text-indigo-900 shadow-xs" : "text-slate-600 hover:text-slate-900"
+          }`}
+        >
+          <Video className="w-3.5 h-3.5 inline mr-1.5" /> Jadwal Wawancara
+        </button>
+        <button
+          type="button"
           onClick={() => setActiveTab("reregistration")}
           className={`px-3 py-2 rounded-lg transition-all ${
             activeTab === "reregistration" ? "bg-white text-indigo-900 shadow-xs" : "text-slate-600 hover:text-slate-900"
@@ -738,6 +850,7 @@ export function AdminPmbHub({ token: propToken, user, programs: initialPrograms 
                     <TableHead className="text-[11px] font-extrabold text-slate-700 uppercase tracking-wider py-3.5 px-4 min-w-[180px]">Prodi & Kelas</TableHead>
                     <TableHead className="text-[11px] font-extrabold text-slate-700 uppercase tracking-wider py-3.5 px-4 text-center min-w-[150px]">Bayar Form</TableHead>
                     <TableHead className="text-[11px] font-extrabold text-slate-700 uppercase tracking-wider py-3.5 px-4 text-center min-w-[140px]">Hasil Tes</TableHead>
+                    <TableHead className="text-[11px] font-extrabold text-slate-700 uppercase tracking-wider py-3.5 px-4 text-center min-w-[160px]">Wawancara</TableHead>
                     <TableHead className="text-[11px] font-extrabold text-slate-700 uppercase tracking-wider py-3.5 px-4 text-center min-w-[150px]">SK Penerimaan</TableHead>
                     <TableHead className="text-[11px] font-extrabold text-slate-700 uppercase tracking-wider py-3.5 px-4 text-center min-w-[120px]">Daftar Ulang</TableHead>
                     <TableHead className="text-[11px] font-extrabold text-slate-700 uppercase tracking-wider py-3.5 px-4 text-center min-w-[140px]">Aksi</TableHead>
@@ -756,6 +869,11 @@ export function AdminPmbHub({ token: propToken, user, programs: initialPrograms 
                             <Phone className="w-3 h-3 text-slate-400 shrink-0" />
                             {a.whatsapp || a.email}
                           </p>
+                          {isExcelImportedApplicant(a) && (
+                            <Badge className="mt-1 bg-violet-100 text-violet-800 border border-violet-300 text-[9px] font-extrabold px-2 py-0.5 rounded-md inline-flex items-center gap-1">
+                              <FileSpreadsheet className="w-3 h-3" /> Import Excel · Perlu dilengkapi
+                            </Badge>
+                          )}
                           {a.referrer_name && (
                             <span className="text-[9px] text-emerald-800 font-extrabold bg-emerald-50 px-2 py-0.5 rounded-md border border-emerald-200 inline-block mt-1">
                               Promotor: {a.referrer_name}
@@ -773,9 +891,43 @@ export function AdminPmbHub({ token: propToken, user, programs: initialPrograms 
                               ? "Reguler Online"
                               : "Reguler Offline"}
                           </Badge>
+                          <Button
+                            type="button"
+                            size="sm"
+                            variant="ghost"
+                            onClick={() => openPlacementModal(a)}
+                            className="mt-1 h-6 px-1.5 text-[10px] text-indigo-700 font-extrabold hover:bg-indigo-50 rounded-md"
+                          >
+                            <Pencil className="w-3 h-3 mr-1" /> Ubah
+                          </Button>
                         </TableCell>
                         <TableCell className="align-middle py-3.5 px-4 text-center">
-                          {a.reg_payment_status === "verified" ? (
+                          {isExcelImportedApplicant(a) ? (
+                            <div className="space-y-1.5 flex flex-col items-center">
+                              <Badge className={
+                                a.manual_payment_status === "paid"
+                                  ? "bg-emerald-100 text-emerald-800 border border-emerald-300 text-[10px] font-black px-2.5 py-1 rounded-lg"
+                                  : a.manual_payment_status === "outstanding"
+                                  ? "bg-rose-100 text-rose-800 border border-rose-300 text-[10px] font-black px-2.5 py-1 rounded-lg"
+                                  : "bg-amber-100 text-amber-800 border border-amber-300 text-[10px] font-black px-2.5 py-1 rounded-lg"
+                              }>
+                                {a.manual_payment_status === "paid"
+                                  ? "Lunas (Manual)"
+                                  : a.manual_payment_status === "outstanding"
+                                  ? `Tunggakan ${formatRupiah(a.manual_payment_outstanding)}`
+                                  : "Perlu Input Manual"}
+                              </Badge>
+                              <Button
+                                type="button"
+                                size="sm"
+                                variant="outline"
+                                onClick={() => openImportedPaymentModal(a)}
+                                className="text-[10px] text-indigo-800 font-extrabold h-6 px-2 border-indigo-300 hover:bg-indigo-100 bg-indigo-50 rounded-md"
+                              >
+                                <Pencil className="w-3 h-3 mr-1" /> Input Status
+                              </Button>
+                            </div>
+                          ) : a.reg_payment_status === "verified" ? (
                             <div className="space-y-1 flex flex-col items-center">
                               <Badge className="bg-emerald-100 text-emerald-800 border border-emerald-300 text-[10px] font-black px-2.5 py-1 rounded-lg inline-flex items-center justify-center gap-1">
                                 <Check className="w-3 h-3 text-emerald-600" /> Lunas (Verified)
@@ -832,6 +984,11 @@ export function AdminPmbHub({ token: propToken, user, programs: initialPrograms 
                               <Badge className="bg-indigo-600 text-white font-mono text-[11px] font-black px-2.5 py-0.5 rounded-lg shadow-2xs">
                                 Skor: {a.test_score}
                               </Badge>
+                              {a.test_grade && (
+                                <Badge className="bg-violet-100 text-violet-800 border border-violet-300 text-[10px] font-black px-2 py-0.5 rounded-md">
+                                  {a.test_grade_label || a.test_grade}
+                                </Badge>
+                              )}
                               <span className="text-[10px] text-slate-600 font-extrabold uppercase tracking-tight">
                                 {a.test_type === "offline" ? "Offline Kampus" : "Online CBT"}
                               </span>
@@ -850,13 +1007,36 @@ export function AdminPmbHub({ token: propToken, user, programs: initialPrograms 
                               variant="ghost"
                               onClick={() => {
                                 setOfflineScoreModal(a);
-                                setOfflineScore(a.test_score || 80);
-                                setOfflineNotes(a.test_notes || "");
+                                setOfflineScore(a.test_score ?? "");
+                                setOfflineNotes(a.test_notes || a.offline_examiner_notes || "");
                               }}
                               className="text-[10px] text-indigo-600 font-bold hover:bg-indigo-50 mt-1 h-6 px-2 rounded-md"
                             >
                               <Pencil className="w-3 h-3 inline mr-1" /> {a.test_score !== null && a.test_score !== undefined ? "Ubah Nilai" : "Input Nilai"}
                             </Button>
+                          )}
+                        </TableCell>
+                        <TableCell className="align-middle py-3.5 px-4 text-center">
+                          {a.interview_schedule_id ? (
+                            <div className="space-y-1 flex flex-col items-center">
+                              <Badge className="bg-emerald-100 text-emerald-800 border border-emerald-300 text-[10px] font-black px-2.5 py-1 rounded-lg">
+                                Terjadwal
+                              </Badge>
+                              <span className="text-[10px] text-slate-600 font-semibold max-w-[150px] truncate" title={a.interview_schedule_title || "Jadwal wawancara"}>
+                                {a.interview_schedule_title || "Jadwal dipilih"}
+                              </span>
+                              {a.interview_start_at && (
+                                <span className="text-[9px] text-indigo-700 font-mono">
+                                  {new Date(a.interview_start_at).toLocaleString("id-ID", { dateStyle: "short", timeStyle: "short" })}
+                                </span>
+                              )}
+                            </div>
+                          ) : a.test_status === "passed" ? (
+                            <Badge className="bg-amber-100 text-amber-800 border border-amber-300 text-[10px] font-bold px-2 py-1 rounded-lg">
+                              Belum pilih jadwal
+                            </Badge>
+                          ) : (
+                            <span className="text-slate-400 text-xs font-medium">-</span>
                           )}
                         </TableCell>
                         <TableCell className="align-middle py-3.5 px-4 text-center">
@@ -869,7 +1049,7 @@ export function AdminPmbHub({ token: propToken, user, programs: initialPrograms 
                                 {a.sk_number || "SK-PMB"}
                               </p>
                             </div>
-                          ) : (a.test_status === "passed" || a.test_completed_at || a.test_score !== null || a.cbt_attempt_id) ? (
+                          ) : (a.test_status === "passed" && a.interview_schedule_id) ? (
                             <Button
                               type="button"
                               size="sm"
@@ -883,6 +1063,10 @@ export function AdminPmbHub({ token: propToken, user, programs: initialPrograms 
                             >
                               <Award className="w-3.5 h-3.5" /> Approve SK
                             </Button>
+                          ) : a.test_status === "passed" ? (
+                            <Badge className="bg-amber-100 text-amber-800 border border-amber-300 text-[10px] font-bold px-2 py-1 rounded-lg">
+                              Wawancara belum dipilih
+                            </Badge>
                           ) : (
                             <span className="text-slate-400 text-xs font-medium">-</span>
                           )}
@@ -956,7 +1140,11 @@ export function AdminPmbHub({ token: propToken, user, programs: initialPrograms 
                             </Button>
                             {a.is_converted_to_student ? (
                               <Badge className="w-full bg-teal-600 text-white text-[9px] font-mono justify-center py-1 rounded-lg">NIM: {a.generated_nim}</Badge>
-                            ) : a.test_status === "passed" ? (
+                            ) : a.test_status === "passed" ? conversionBlockReason(a) ? (
+                              <Badge className="w-full bg-amber-100 text-amber-800 border border-amber-300 text-[9px] justify-center py-1 rounded-lg">
+                                {conversionBlockReason(a)}
+                              </Badge>
+                            ) : (
                               <Button
                                 type="button"
                                 size="sm"
@@ -972,7 +1160,7 @@ export function AdminPmbHub({ token: propToken, user, programs: initialPrograms 
                     ))
                   ) : (
                     <TableRow>
-                      <TableCell colSpan={8} className="text-center py-8 text-slate-500 font-medium">
+                      <TableCell colSpan={9} className="text-center py-8 text-slate-500 font-medium">
                         Tidak ada pendaftar yang sesuai filter.
                       </TableCell>
                     </TableRow>
@@ -1111,6 +1299,11 @@ export function AdminPmbHub({ token: propToken, user, programs: initialPrograms 
         <PmbTestSessionsTab token={token} />
       )}
 
+      {/* Sub-tab: Jadwal Wawancara */}
+      {activeTab === "interviews" && (
+        <PmbInterviewSchedulesTab token={token} />
+      )}
+
       {/* Sub-tab 8: Reregistration & Shirt Size */}
       {activeTab === "reregistration" && (
         <div className="space-y-6">
@@ -1229,7 +1422,7 @@ export function AdminPmbHub({ token: propToken, user, programs: initialPrograms 
                         )}
                       </TableCell>
                       <TableCell className="text-center">
-                        {!a.is_converted_to_student ? (
+                        {!a.is_converted_to_student && !conversionBlockReason(a) ? (
                           <Button
                             type="button"
                             size="sm"
@@ -1238,6 +1431,8 @@ export function AdminPmbHub({ token: propToken, user, programs: initialPrograms 
                           >
                             Aktifkan Akun
                           </Button>
+                        ) : !a.is_converted_to_student ? (
+                          <span className="text-amber-700 font-bold text-[10px]">{conversionBlockReason(a)}</span>
                         ) : (
                           <span className="text-emerald-700 font-bold text-[10px] inline-flex items-center gap-1"><Check className="w-3 h-3" /> Mahasiswa Aktif</span>
                         )}
@@ -2312,6 +2507,143 @@ export function AdminPmbHub({ token: propToken, user, programs: initialPrograms 
               </form>
             </CardContent>
           </Card>
+        </div>
+      )}
+
+      {/* Edit Prodi & Class Track Modal */}
+      {placementModal && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-slate-900/60 p-4 backdrop-blur-sm">
+          <div className="w-full max-w-md bg-white rounded-2xl shadow-2xl border border-slate-200 overflow-hidden animate-fade-in">
+            <div className="bg-gradient-to-r from-indigo-700 to-sky-700 p-4 text-white flex justify-between items-center">
+              <div>
+                <h4 className="font-bold text-sm">Ubah Prodi & Kelas</h4>
+                <p className="text-[10px] text-indigo-100 mt-0.5">Perubahan oleh admin PMB</p>
+              </div>
+              <button
+                type="button"
+                onClick={() => setPlacementModal(null)}
+                className="w-7 h-7 rounded-full bg-white/10 hover:bg-white/20 flex items-center justify-center text-white"
+              >
+                <X className="w-4 h-4" />
+              </button>
+            </div>
+            <div className="p-5 space-y-3 text-xs">
+              <div className="p-3 bg-indigo-50 border border-indigo-200 rounded-xl">
+                <p className="font-bold text-slate-900">{placementModal.name}</p>
+                <p className="text-slate-600 font-mono mt-0.5">
+                  {placementModal.registration_number || placementModal.generated_nim || "-"}
+                </p>
+              </div>
+              <div>
+                <Label className="text-xs font-bold">Program Studi *</Label>
+                <select
+                  value={placementProdiId}
+                  onChange={(event) => setPlacementProdiId(event.target.value)}
+                  className="mt-1 h-10 w-full rounded-md border border-slate-300 bg-white px-3 text-xs font-semibold text-slate-700"
+                >
+                  <option value="">Pilih Program Studi</option>
+                  {programsList.map((program) => (
+                    <option key={program.id} value={program.id}>
+                      {program.nama || program.name} {program.kode || program.code ? `(${program.kode || program.code})` : ""}
+                    </option>
+                  ))}
+                </select>
+              </div>
+              <div>
+                <Label className="text-xs font-bold">Jalur / Kelas PMB *</Label>
+                <select
+                  value={placementClassKey}
+                  onChange={(event) => setPlacementClassKey(event.target.value)}
+                  className="mt-1 h-10 w-full rounded-md border border-slate-300 bg-white px-3 text-xs font-semibold text-slate-700"
+                >
+                  <option value="reguler_offline">Reguler Offline</option>
+                  <option value="reguler_online">Reguler Online</option>
+                  <option value="weekend_online">Weekend Online</option>
+                  <option value="khusus_offline">Khusus Offline</option>
+                </select>
+              </div>
+              <div className="rounded-lg border border-amber-200 bg-amber-50 p-3 text-[10px] leading-relaxed text-amber-900">
+                Perubahan ini memperbarui pilihan PMB dan profil SIAKAD yang sudah terhubung. Penugasan Rombel/kelas akademik tetap dikelola dari menu Mahasiswa.
+              </div>
+              <div className="flex justify-end gap-2 pt-2 border-t">
+                <Button type="button" variant="outline" size="sm" onClick={() => setPlacementModal(null)}>
+                  Batal
+                </Button>
+                <Button type="button" size="sm" onClick={handleSavePlacement} className="bg-indigo-600 hover:bg-indigo-700 text-white font-bold">
+                  Simpan Perubahan <Check className="w-3.5 h-3.5 ml-1 inline" />
+                </Button>
+              </div>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* Manual Payment Status Modal for Excel-imported students */}
+      {importedPaymentModal && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-slate-900/60 p-4 backdrop-blur-sm">
+          <div className="w-full max-w-md bg-white rounded-2xl shadow-2xl border border-slate-200 overflow-hidden animate-fade-in">
+            <div className="bg-gradient-to-r from-violet-700 to-indigo-700 p-4 text-white flex justify-between items-center">
+              <div>
+                <h4 className="font-bold text-sm">Input Status Pembayaran Manual</h4>
+                <p className="text-[10px] text-violet-100 mt-0.5">Khusus mahasiswa hasil Import Excel</p>
+              </div>
+              <button
+                type="button"
+                onClick={() => setImportedPaymentModal(null)}
+                className="w-7 h-7 rounded-full bg-white/10 hover:bg-white/20 flex items-center justify-center text-white"
+              >
+                <X className="w-4 h-4" />
+              </button>
+            </div>
+            <div className="p-5 space-y-3 text-xs">
+              <div className="p-3 bg-violet-50 border border-violet-200 rounded-xl">
+                <p className="font-bold text-slate-900">{importedPaymentModal.name}</p>
+                <p className="text-slate-600 font-mono mt-0.5">NIM: {importedPaymentModal.generated_nim || "-"}</p>
+              </div>
+              <div>
+                <Label className="text-xs font-bold">Status Pembayaran PMB *</Label>
+                <select
+                  value={importedPaymentStatus}
+                  onChange={(event) => setImportedPaymentStatus(event.target.value)}
+                  className="mt-1 h-10 w-full rounded-md border border-slate-300 bg-white px-3 text-xs font-semibold text-slate-700"
+                >
+                  <option value="paid">Lunas</option>
+                  <option value="outstanding">Ada Tunggakan</option>
+                </select>
+              </div>
+              {importedPaymentStatus === "outstanding" && (
+                <div>
+                  <Label className="text-xs font-bold">Jumlah Tunggakan PMB (Rp) *</Label>
+                  <Input
+                    type="number"
+                    min="1"
+                    value={importedPaymentOutstanding}
+                    onChange={(event) => setImportedPaymentOutstanding(event.target.value)}
+                    placeholder="Contoh: 250000"
+                    className="mt-1 text-xs font-mono font-bold text-rose-700"
+                  />
+                  <p className="text-[10px] text-slate-500 mt-1">Masukkan total tunggakan berdasarkan arsip pembayaran yang diverifikasi admin.</p>
+                </div>
+              )}
+              <div>
+                <Label className="text-xs font-bold">Catatan Admin</Label>
+                <Input
+                  value={importedPaymentNotes}
+                  onChange={(event) => setImportedPaymentNotes(event.target.value)}
+                  placeholder="Contoh: Bukti pembayaran diverifikasi dari arsip PMB 2025"
+                  className="mt-1 text-xs"
+                />
+              </div>
+              <div className="flex justify-end gap-2 pt-2 border-t">
+                <Button type="button" variant="outline" size="sm" onClick={() => setImportedPaymentModal(null)}>
+                  Batal
+                </Button>
+                <Button type="button" size="sm" onClick={handleSaveImportedPayment} className="bg-indigo-600 hover:bg-indigo-700 text-white font-bold">
+                  Simpan Status <Check className="w-3.5 h-3.5 ml-1 inline" />
+                </Button>
+              </div>
+            </div>
+          </div>
         </div>
       )}
 

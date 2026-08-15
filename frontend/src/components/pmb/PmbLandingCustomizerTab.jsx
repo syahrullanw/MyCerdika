@@ -43,12 +43,46 @@ const WHY_US_ICON_OPTIONS = [
 const BACKEND_URL = (process.env.REACT_APP_BACKEND_URL || "").replace(/\/+$/, "") || window.location.origin;
 const api = axios.create({ baseURL: BACKEND_URL });
 
+const LANDING_IMAGE_SLOTS = [
+  {
+    key: "hero",
+    label: "Foto Hero Utama",
+    description: "Foto besar utama di bagian pembuka landing page.",
+    fallback: "/campus/poltek-campus-main.jpg",
+  },
+  {
+    key: "entrance",
+    label: "Foto Area Masuk Kampus",
+    description: "Foto kecil area masuk kampus di sisi bawah hero.",
+    fallback: "/campus/poltek-campus-entrance.png",
+  },
+  {
+    key: "learning_center",
+    label: "Foto Learning Center",
+    description: "Foto fasilitas belajar dan ruang kolaborasi.",
+    fallback: "/campus/poltek-learning-center.jpg",
+  },
+  {
+    key: "aerial",
+    label: "Foto Udara / Arsitektur",
+    description: "Foto sudut arsitektur atau tampak udara kampus.",
+    fallback: "/campus/poltek-campus-aerial.webp",
+  },
+];
+
+const DEFAULT_LANDING_IMAGES = LANDING_IMAGE_SLOTS.reduce((result, slot) => {
+  result[slot.key] = "";
+  return result;
+}, {});
+
 export function PmbLandingCustomizerTab({ token: propToken, initialSettings, onUpdateSettings }) {
   const token = propToken || (typeof window !== "undefined" ? localStorage.getItem("token") || "" : "");
   const [loading, setLoading] = useState(false);
   const [uploadingLogo, setUploadingLogo] = useState(false);
+  const [uploadingImageSlot, setUploadingImageSlot] = useState("");
   const [customData, setCustomData] = useState({
     landing_logo_url: initialSettings?.landing_logo_url || "",
+    landing_images: { ...DEFAULT_LANDING_IMAGES, ...(initialSettings?.landing_images || {}) },
     landing_announcement: initialSettings?.landing_announcement || "",
     landing_hero_badge: initialSettings?.landing_hero_badge || "",
     landing_hero_title: initialSettings?.landing_hero_title || "",
@@ -79,13 +113,14 @@ export function PmbLandingCustomizerTab({ token: propToken, initialSettings, onU
     },
   });
 
-  const [activeTab, setActiveTab] = useState("hero"); // 'hero' | 'stats' | 'why_us' | 'scholarships' | 'faqs' | 'contact' | 'visibility'
+  const [activeTab, setActiveTab] = useState("hero"); // 'hero' | 'photos' | 'stats' | 'why_us' | 'scholarships' | 'faqs' | 'contact' | 'visibility'
 
   useEffect(() => {
     if (initialSettings) {
       setCustomData((prev) => ({
         ...prev,
         landing_logo_url: initialSettings.landing_logo_url ?? prev.landing_logo_url,
+        landing_images: { ...prev.landing_images, ...(initialSettings.landing_images || {}) },
         landing_announcement: initialSettings.landing_announcement ?? prev.landing_announcement,
         landing_hero_badge: initialSettings.landing_hero_badge ?? prev.landing_hero_badge,
         landing_hero_title: initialSettings.landing_hero_title ?? prev.landing_hero_title,
@@ -118,6 +153,51 @@ export function PmbLandingCustomizerTab({ token: propToken, initialSettings, onU
       }
     } catch (err) {
       toast.error(apiErrorMessage(err, "Gagal menyimpan kustomisasi"));
+    } finally {
+      setLoading(false);
+    }
+  };
+
+  const handleLandingImageUpload = async (slot, file) => {
+    if (!file) return;
+    try {
+      setUploadingImageSlot(slot);
+      const formData = new FormData();
+      formData.append("file", file);
+      const res = await api.post(`/api/v1/pmb/admin/upload-landing-image/${slot}`, formData, {
+        headers: { Authorization: `Bearer ${token}` },
+      });
+      const landingImages = res.data?.landing_images || {
+        ...customData.landing_images,
+        [slot]: res.data?.landing_image_url || "",
+      };
+      setCustomData((prev) => ({ ...prev, landing_images: landingImages }));
+      if (onUpdateSettings && res.data?.settings) onUpdateSettings(res.data.settings);
+      toast.success(res.data?.message || "Foto landing page PMB berhasil diunggah");
+    } catch (err) {
+      toast.error(apiErrorMessage(err, "Gagal mengunggah foto landing PMB"));
+    } finally {
+      setUploadingImageSlot("");
+    }
+  };
+
+  const handleResetLandingImage = async (slot) => {
+    const nextData = {
+      ...customData,
+      landing_images: { ...customData.landing_images, [slot]: "" },
+    };
+    setCustomData(nextData);
+    try {
+      setLoading(true);
+      const res = await api.post("/api/v1/pmb/admin/landing-config", nextData, {
+        headers: { Authorization: `Bearer ${token}` },
+      });
+      if (res.data?.ok) {
+        if (onUpdateSettings) onUpdateSettings(res.data.settings);
+        toast.success("Foto dikembalikan ke foto bawaan landing PMB");
+      }
+    } catch (err) {
+      toast.error(apiErrorMessage(err, "Gagal mengembalikan foto bawaan"));
     } finally {
       setLoading(false);
     }
@@ -218,7 +298,7 @@ export function PmbLandingCustomizerTab({ token: propToken, initialSettings, onU
             Kustomisasi Halaman Informasi Terdepan PMB
           </h2>
           <p className="text-xs text-slate-300 max-w-2xl">
-            Sesuaikan logo, teks hero, pengumuman, highlight prestasi, kartu beasiswa, dan tanya-jawab (FAQ) secara fleksibel tanpa mengubah kode program.
+            Sesuaikan logo, foto, teks hero, pengumuman, highlight prestasi, kartu beasiswa, dan tanya-jawab (FAQ) tanpa mengubah kode program.
           </p>
         </div>
 
@@ -254,6 +334,15 @@ export function PmbLandingCustomizerTab({ token: propToken, initialSettings, onU
           }`}
         >
           <Rocket className="w-3.5 h-3.5 inline mr-1.5" /> Hero & Headline
+        </button>
+        <button
+          type="button"
+          onClick={() => setActiveTab("photos")}
+          className={`px-3 py-1.5 rounded-lg transition-all ${
+            activeTab === "photos" ? "bg-white text-indigo-900 shadow-xs" : "text-slate-600 hover:text-slate-900"
+          }`}
+        >
+          <UploadCloud className="w-3.5 h-3.5 inline mr-1.5" /> Foto Landing
         </button>
         <button
           type="button"
@@ -414,6 +503,72 @@ export function PmbLandingCustomizerTab({ token: propToken, initialSettings, onU
                 className="w-full border border-slate-300 rounded-md p-2.5 text-xs mt-1"
               />
             </div>
+          </CardContent>
+        </Card>
+      )}
+
+      {/* Tab 2: Foto Landing */}
+      {activeTab === "photos" && (
+        <Card className="border-slate-200">
+          <CardHeader className="pb-3">
+            <CardTitle className="text-base font-bold text-slate-900">Foto Landing Page PMB</CardTitle>
+            <CardDescription className="text-xs text-slate-500">
+              Ganti foto yang tampil di landing page utama dan portal PMB mandiri. Foto bawaan akan dipakai kembali jika override dikosongkan.
+            </CardDescription>
+          </CardHeader>
+          <CardContent className="grid gap-4 sm:grid-cols-2 text-xs">
+            {LANDING_IMAGE_SLOTS.map((slot) => {
+              const customUrl = customData.landing_images?.[slot.key] || "";
+              const previewUrl = resolveMediaUrl(customUrl || slot.fallback);
+              const isUploading = uploadingImageSlot === slot.key;
+              return (
+                <div key={slot.key} className="overflow-hidden rounded-xl border border-slate-200 bg-slate-50">
+                  <div className="aspect-[16/9] bg-slate-200">
+                    <img src={previewUrl} alt={slot.label} className="h-full w-full object-cover" />
+                  </div>
+                  <div className="space-y-3 p-3.5">
+                    <div>
+                      <div className="flex items-center justify-between gap-2">
+                        <Label className="text-xs font-bold text-slate-900">{slot.label}</Label>
+                        <Badge className={customUrl ? "bg-emerald-100 text-emerald-700" : "bg-slate-200 text-slate-600"}>
+                          {customUrl ? "Kustom" : "Bawaan"}
+                        </Badge>
+                      </div>
+                      <p className="mt-1 text-[11px] leading-4 text-slate-500">{slot.description}</p>
+                    </div>
+                    <div className="flex flex-wrap gap-2">
+                      <label className="inline-flex cursor-pointer items-center gap-1.5 rounded-lg bg-indigo-600 px-3 py-2 text-[11px] font-bold text-white transition hover:bg-indigo-500">
+                        <UploadCloud className="h-3.5 w-3.5" />
+                        {isUploading ? "Mengunggah..." : "Ganti Foto"}
+                        <input
+                          type="file"
+                          accept=".jpg,.jpeg,.png,.webp,image/jpeg,image/png,image/webp"
+                          className="hidden"
+                          disabled={isUploading || loading}
+                          onChange={(event) => {
+                            handleLandingImageUpload(slot.key, event.target.files?.[0]);
+                            event.target.value = "";
+                          }}
+                        />
+                      </label>
+                      {customUrl && (
+                        <Button
+                          type="button"
+                          variant="outline"
+                          size="sm"
+                          disabled={loading || Boolean(uploadingImageSlot)}
+                          onClick={() => handleResetLandingImage(slot.key)}
+                          className="h-8 text-[11px] font-bold"
+                        >
+                          <RefreshCw className="mr-1.5 h-3.5 w-3.5" /> Pakai Bawaan
+                        </Button>
+                      )}
+                    </div>
+                    <p className="text-[10px] text-slate-400">JPG, PNG, atau WEBP · maksimal 10 MB.</p>
+                  </div>
+                </div>
+              );
+            })}
           </CardContent>
         </Card>
       )}

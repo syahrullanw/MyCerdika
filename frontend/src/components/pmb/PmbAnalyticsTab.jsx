@@ -22,6 +22,108 @@ import {
 const BACKEND_URL = (process.env.REACT_APP_BACKEND_URL || "").replace(/\/+$/, "") || window.location.origin;
 const api = axios.create({ baseURL: BACKEND_URL });
 
+function percentage(value, total) {
+  return total > 0 ? Number(((Number(value || 0) / total) * 100).toFixed(1)) : 0;
+}
+
+function normalizeAnalyticsResponse(payload) {
+  if (!payload || payload.ok === false) return null;
+
+  // The API historically returned the analytics object at the root, while the
+  // UI consumes `data.analytics`. Normalize both response shapes here so an
+  // otherwise valid result is not shown as "belum tersedia".
+  const raw = payload.analytics || payload;
+  if (typeof raw !== "object") return null;
+
+  const totalApplicants = Number(raw.total_applicants || 0);
+  const rawGrades = raw.grade_clusters || {};
+  const totalTested = Number(rawGrades.total_tested || 0);
+  const rawFinancial = raw.financial_clusters || raw.financial_cohorts || {};
+
+  const grade_clusters = {
+    ...rawGrades,
+    average_score: rawGrades.average_score ?? 0,
+    max_score: rawGrades.max_score ?? rawGrades.highest_score ?? 0,
+    passing_rate: rawGrades.passing_rate ?? rawGrades.passing_rate_percent ?? 0,
+    grade_a_high: rawGrades.grade_a_high || {
+      count: rawGrades.grade_a || 0,
+      percentage: percentage(rawGrades.grade_a, totalTested),
+    },
+    grade_b_standard: rawGrades.grade_b_standard || {
+      count: rawGrades.grade_b || 0,
+      percentage: percentage(rawGrades.grade_b, totalTested),
+    },
+    grade_c_below: rawGrades.grade_c_below || {
+      count: rawGrades.grade_c || 0,
+      percentage: percentage(rawGrades.grade_c, totalTested),
+    },
+  };
+
+  const paidFull = rawFinancial.paid_full?.count ?? rawFinancial.full_paid ?? 0;
+  const paidInstallment = rawFinancial.paid_installment?.count ?? rawFinancial.installment_active ?? 0;
+  const unpaid = rawFinancial.unpaid?.count ?? rawFinancial.unpaid_pra_studi ?? 0;
+  const financial_clusters = {
+    ...rawFinancial,
+    total_revenue_collected:
+      rawFinancial.total_revenue_collected
+      ?? rawFinancial.total_pra_studi_collected
+      ?? rawFinancial.total_registration_revenue
+      ?? 0,
+    paid_full: rawFinancial.paid_full || { count: paidFull, percentage: percentage(paidFull, totalApplicants) },
+    paid_installment: rawFinancial.paid_installment || { count: paidInstallment, percentage: percentage(paidInstallment, totalApplicants) },
+    unpaid: rawFinancial.unpaid || { count: unpaid, percentage: percentage(unpaid, totalApplicants) },
+  };
+
+  const city_clusters = (raw.city_clusters || raw.top_cities || []).map((item) => ({
+    ...item,
+    city: item.city || item.name || "Belum Diisi",
+    percentage: item.percentage ?? item.percent ?? percentage(item.count, totalApplicants),
+  }));
+  const feeder_schools = (raw.feeder_schools || raw.top_schools || []).map((item) => ({
+    ...item,
+    school: item.school || item.school_name || "Tidak Terdata",
+    percentage: item.percentage ?? item.percent ?? percentage(item.count, totalApplicants),
+  }));
+  const prodi_tightness = (raw.prodi_tightness || raw.prodi_selectivity || []).map((item) => ({
+    ...item,
+    total_applicants: item.total_applicants ?? item.choice_1_count ?? 0,
+    reregistered_students: item.reregistered_students ?? item.enrolled_count ?? 0,
+    competitiveness_ratio: item.competitiveness_ratio ?? item.selectivity_ratio ?? 0,
+  }));
+
+  const rawFunnel = raw.conversion_funnel || {};
+  const rawFunnelAnalysis = raw.funnel_analysis || {};
+  const funnelSteps = raw.funnel_steps || [];
+  const largestDrop = funnelSteps.slice(1).reduce((largest, step, index) => {
+    const previous = Number(funnelSteps[index]?.count || 0);
+    const current = Number(step?.count || 0);
+    const drop = Math.max(0, previous - current);
+    return drop > largest.drop ? { stage: step.name, drop_count: drop } : largest;
+  }, { stage: "", drop_count: 0 });
+  const conversion_funnel = rawFunnel.biggest_dropoff ? rawFunnel : {
+    ...rawFunnel,
+    biggest_dropoff: {
+      stage: rawFunnelAnalysis.biggest_drop_off_stage || largestDrop.stage,
+      drop_count: largestDrop.drop_count,
+      description: rawFunnelAnalysis.strategic_recommendation || "Belum ada rekomendasi analisis.",
+    },
+    recommendations: rawFunnelAnalysis.strategic_recommendation
+      ? [rawFunnelAnalysis.strategic_recommendation]
+      : [],
+  };
+
+  return {
+    ...raw,
+    total_applicants: totalApplicants,
+    grade_clusters,
+    financial_clusters,
+    city_clusters,
+    feeder_schools,
+    prodi_tightness,
+    conversion_funnel,
+  };
+}
+
 function formatRupiah(num) {
   return new Intl.NumberFormat("id-ID", {
     style: "currency",
@@ -42,7 +144,7 @@ export function PmbAnalyticsTab({ token: propToken }) {
         headers: { Authorization: `Bearer ${token}` },
       });
       if (res.data.ok) {
-        setAnalytics(res.data.analytics);
+        setAnalytics(normalizeAnalyticsResponse(res.data));
       }
     } catch (err) {
       console.warn("Analytics error:", err);

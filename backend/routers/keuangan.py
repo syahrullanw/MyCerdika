@@ -22,6 +22,30 @@ router = APIRouter(prefix="/api/v1/keuangan", tags=["SIAKAD Keuangan"])
 ACTIVE_BILL_STATUSES = {"unpaid", "partial", "awaiting_verification", "overdue"}
 PAYMENT_METHODS = ("QRIS", "VA_BCA", "VA_MANDIRI", "TRANSFER", "CASH", "MANUAL")
 FINANCIAL_STAGES = ("krs", "uts", "uas")
+DEFAULT_FINANCE_COMPONENTS = (
+    {
+        "code": "UKT",
+        "name": "UKT",
+        "category": "tuition",
+        "default_amount": 0.0,
+        "scholarship_eligible": True,
+        "discount_eligible": True,
+        "late_fee_eligible": False,
+        "is_active": True,
+        "is_system": True,
+    },
+    {
+        "code": "GEDUNG",
+        "name": "GEDUNG",
+        "category": "facility",
+        "default_amount": 0.0,
+        "scholarship_eligible": False,
+        "discount_eligible": True,
+        "late_fee_eligible": False,
+        "is_active": True,
+        "is_system": True,
+    },
+)
 
 
 class ComponentInput(BaseModel):
@@ -74,6 +98,7 @@ class BillItemInput(BaseModel):
 class CreateBillInput(BaseModel):
     student_id: str = Field(min_length=1)
     academic_period_id: Optional[str] = None
+    component_id: Optional[str] = None
     title: str = ""
     amount: Optional[float] = Field(None, ge=0)
     due_date: Optional[str] = None
@@ -87,6 +112,17 @@ class CreateBillInput(BaseModel):
 class GenerateBillsInput(BaseModel):
     scheme_id: str = Field(min_length=1)
     academic_period_id: Optional[str] = None
+    due_date: Optional[str] = None
+    student_ids: List[str] = Field(default_factory=list)
+    installment_count: int = Field(1, ge=1, le=24)
+
+
+class GenerateComponentBillsInput(BaseModel):
+    component_id: str = Field(min_length=1)
+    academic_period_id: Optional[str] = None
+    prodi_id: Optional[str] = None
+    amount: Optional[float] = Field(None, ge=0)
+    title: str = ""
     due_date: Optional[str] = None
     student_ids: List[str] = Field(default_factory=list)
     installment_count: int = Field(1, ge=1, le=24)
@@ -177,6 +213,26 @@ async def get_active_period(db: PostgresDatabase) -> Dict[str, Any]:
             "name": "Tahun Akademik 2025/2026 Ganjil",
         }
     return period
+
+
+async def ensure_default_finance_components(db: PostgresDatabase) -> List[Dict[str, Any]]:
+    """Seed the built-in bill types without overwriting admin settings."""
+    created: List[Dict[str, Any]] = []
+    for definition in DEFAULT_FINANCE_COMPONENTS:
+        code = clean(definition.get("code")).upper()
+        existing = await db.finance_components.find_one({"code": code}, {"_id": 0})
+        if existing:
+            continue
+        document = {
+            "id": new_id("component"),
+            **definition,
+            "code": code,
+            "created_at": now_iso(),
+            "updated_at": now_iso(),
+        }
+        await db.finance_components.insert_one(document)
+        created.append(document)
+    return created
 
 
 def student_id_candidates(student: Dict[str, Any] | str) -> List[str]:
@@ -447,6 +503,8 @@ def _bill_document(
         "student_id": clean(student.get("id")),
         "student_name": clean(student.get("name")),
         "nim": clean(student.get("nim")),
+        "prodi_id": clean(student.get("prodi_id")),
+        "prodi_name": clean(student.get("prodi_name") or student.get("prodi_nama")),
         "academic_period_id": clean(period.get("id")),
         "academic_period_code": clean(period.get("code")),
         "academic_period_name": clean(period.get("name")),
@@ -471,12 +529,252 @@ def _bill_document(
     }
 
 
+def _pmb_carryover_items(
+    total_remaining: float,
+    imported: bool,
+    balances: Dict[str, Any],
+) -> List[Dict[str, Any]]:
+    """Build the finance line items for a PMB opening balance."""
+    items: List[Dict[str, Any]] = []
+    if imported:
+        # Imported workbooks do not carry reliable PMB transaction detail;
+        # finance therefore receives the one total manually verified by PMB.
+        items.append(_bill_item(
+            component_id="PMB-OUTSTANDING",
+            component_name="Tunggakan PMB (Import Excel)",
+            category="pmb_carryover",
+            amount=total_remaining,
+            scholarship_eligible=False,
+            discount_eligible=False,
+        ))
+        return items
+
+    registration_remaining = money(balances.get("reg_fee_remaining"))
+    pra_studi_remaining = money(balances.get("pra_fee_remaining"))
+    if registration_remaining > 0:
+        items.append(_bill_item(
+            component_id="PMB-REGISTRATION-ARREARS",
+            component_name="Sisa Biaya Pendaftaran PMB",
+            category="pmb_registration",
+            amount=registration_remaining,
+            scholarship_eligible=False,
+            discount_eligible=False,
+        ))
+    if pra_studi_remaining > 0:
+        items.append(_bill_item(
+            component_id="PMB-PRA-STUDI-ARREARS",
+            component_name="Sisa Biaya Pra-Studi PMB",
+            category="pmb_pra_studi",
+            amount=pra_studi_remaining,
+            scholarship_eligible=False,
+            discount_eligible=False,
+        ))
+    if not items:
+        items.append(_bill_item(
+            component_id="PMB-OUTSTANDING",
+            component_name="Tunggakan PMB",
+            category="pmb_carryover",
+            amount=total_remaining,
+            scholarship_eligible=False,
+            discount_eligible=False,
+        ))
+    return items
+
+
+async def ensure_pmb_carryover_bill(
+    db: PostgresDatabase,
+    *,
+    student: Dict[str, Any],
+    applicant: Dict[str, Any],
+    balances: Dict[str, Any],
+    period: Optional[Dict[str, Any]] = None,
+) -> Dict[str, Any]:
+    """Create one auditable SIAKAD bill for an unpaid PMB balance.
+
+    PMB remains the source of truth for the admission payment history. This
+    helper only creates the opening balance in SIAKAD so the debt is visible
+    in the regular finance module and can participate in clearance rules.
+    Repeated conversion/import-review requests are safe because the bill is
+    identified by the PMB applicant id.
+    """
+    applicant_id = clean(applicant.get("id"))
+    student_id = clean(student.get("id"))
+    if not applicant_id or not student_id:
+        return {"status": "not_required", "created": False, "bill": None, "amount": 0.0}
+
+    imported = clean(applicant.get("source")) == "pmb_excel_import"
+    if imported and clean(applicant.get("manual_payment_status")) not in {"paid", "outstanding"}:
+        return {
+            "status": "manual_review_required",
+            "created": False,
+            "bill": None,
+            "amount": 0.0,
+        }
+
+    total_remaining = money(balances.get("total_remaining_balance"))
+    existing = await db.tuition_bills.find_one(
+        {
+            "source": "pmb_carryover",
+            "pmb_applicant_id": applicant_id,
+            "status": {"$nin": ["cancelled", "void"]},
+        },
+        {"_id": 0},
+    )
+    if existing:
+        # Payment corrections are allowed before the finance team records a
+        # payment. Once a bill has financial activity, do not silently rewrite
+        # the ledger; flag it for an explicit finance reconciliation instead.
+        pending_amount = 0.0
+        payments = getattr(db, "tuition_payments", None)
+        if payments is not None:
+            pending = await payments.find(
+                {"bill_id": clean(existing.get("id")), "status": "pending"},
+                {"_id": 0, "amount": 1},
+            ).to_list(1000)
+            pending_amount = round(sum(money(item.get("amount")) for item in pending), 2)
+        has_financial_activity = money(existing.get("paid_amount")) > 0 or pending_amount > 0
+        existing_amount = money(existing.get("amount"))
+
+        if has_financial_activity and abs(existing_amount - total_remaining) > 0.009:
+            return {
+                "status": "reconciliation_required",
+                "created": False,
+                "bill": existing,
+                "amount": existing_amount,
+                "requested_amount": total_remaining,
+            }
+        if has_financial_activity or abs(existing_amount - total_remaining) <= 0.009:
+            return {
+                "status": "existing",
+                "created": False,
+                "bill": existing,
+                "amount": existing_amount,
+            }
+
+        if total_remaining <= 0:
+            update = {
+                "status": "void",
+                "remaining_amount": 0.0,
+                "voided_at": now_iso(),
+                "void_reason": "Saldo PMB telah dinyatakan lunas pada proses review migrasi.",
+                "migration_snapshot": {
+                    "captured_at": now_iso(),
+                    "reg_fee_remaining": money(balances.get("reg_fee_remaining")),
+                    "pra_fee_remaining": money(balances.get("pra_fee_remaining")),
+                    "total_remaining_balance": 0.0,
+                    "manual_payment_status": clean(applicant.get("manual_payment_status")),
+                },
+                "updated_at": now_iso(),
+            }
+            await db.tuition_bills.update_one({"id": existing.get("id")}, {"$set": update})
+            return {
+                "status": "cleared",
+                "created": False,
+                "bill": {**existing, **update},
+                "amount": 0.0,
+            }
+
+        current_period = period or await get_active_period(db)
+        items = _pmb_carryover_items(total_remaining, imported, balances)
+        totals = _bill_totals(items)
+        due_date = clean(applicant.get("converted_at") or applicant.get("updated_at")) or now_iso()
+        update = {
+            "student_id": student_id,
+            "student_name": clean(student.get("name")),
+            "nim": clean(student.get("nim")),
+            "prodi_id": clean(student.get("prodi_id")),
+            "prodi_name": clean(student.get("prodi_name") or student.get("prodi_nama")),
+            "academic_period_id": clean(current_period.get("id")),
+            "academic_period_code": clean(current_period.get("code")),
+            "academic_period_name": clean(current_period.get("name")),
+            "items": items,
+            **totals,
+            "pending_amount": 0.0,
+            "remaining_amount": totals["amount"],
+            "status": "unpaid",
+            "due_date": due_date,
+            "installments": _installments(totals["amount"], len(existing.get("installments") or []) or 1, due_date),
+            "migration_snapshot": {
+                "captured_at": now_iso(),
+                "reg_fee_remaining": money(balances.get("reg_fee_remaining")),
+                "pra_fee_remaining": money(balances.get("pra_fee_remaining")),
+                "total_remaining_balance": total_remaining,
+                "manual_payment_status": clean(applicant.get("manual_payment_status")),
+            },
+            "updated_at": now_iso(),
+        }
+        await db.tuition_bills.update_one({"id": existing.get("id")}, {"$set": update})
+        return {
+            "status": "updated",
+            "created": False,
+            "bill": {**existing, **update},
+            "amount": totals["amount"],
+        }
+
+    if total_remaining <= 0:
+        return {"status": "not_required", "created": False, "bill": None, "amount": 0.0}
+
+    current_period = period or await get_active_period(db)
+    items = _pmb_carryover_items(total_remaining, imported, balances)
+
+    registration_number = clean(applicant.get("registration_number"))
+    bill = _bill_document(
+        student=student,
+        period=current_period,
+        title=f"Tunggakan PMB{f' — {registration_number}' if registration_number else ''}",
+        items=items,
+        due_date=clean(applicant.get("converted_at") or applicant.get("updated_at")) or now_iso(),
+        category="pmb_carryover",
+        notes=(
+            "Saldo PMB dipindahkan saat aktivasi SIAKAD. "
+            f"Sumber: {'Import Excel' if imported else 'Konversi PMB'}"
+        ),
+        source="pmb_carryover",
+    )
+    bill.update({
+        "pmb_applicant_id": applicant_id,
+        "pmb_registration_number": registration_number,
+        "migration_type": "pmb_to_siakad",
+        "migration_snapshot": {
+            "captured_at": now_iso(),
+            "reg_fee_remaining": money(balances.get("reg_fee_remaining")),
+            "pra_fee_remaining": money(balances.get("pra_fee_remaining")),
+            "total_remaining_balance": total_remaining,
+            "manual_payment_status": clean(applicant.get("manual_payment_status")),
+        },
+    })
+    try:
+        await db.tuition_bills.insert_one(bill)
+    except Exception:
+        # A concurrent conversion may have inserted the same carryover bill
+        # after the lookup above. The unique sparse index makes that race
+        # safe; return the winner instead of creating a second bill.
+        concurrent = await db.tuition_bills.find_one(
+            {
+                "source": "pmb_carryover",
+                "pmb_applicant_id": applicant_id,
+                "status": {"$nin": ["cancelled", "void"]},
+            },
+            {"_id": 0},
+        )
+        if concurrent:
+            return {
+                "status": "existing",
+                "created": False,
+                "bill": concurrent,
+                "amount": money(concurrent.get("amount")),
+            }
+        raise
+    return {"status": "created", "created": True, "bill": bill, "amount": total_remaining}
+
+
 @router.get("/components")
 async def list_components(
     request: Request,
     _: Dict[str, Any] = Depends(get_current_user_from_request),
 ):
     db = get_db(request)
+    await ensure_default_finance_components(db)
     items = await db.finance_components.find({}, {"_id": 0}).sort("name", 1).to_list(500)
     return {"ok": True, "items": items}
 
@@ -707,6 +1005,12 @@ async def create_tuition_bill(
             {"$or": [{"id": payload.academic_period_id}, {"code": payload.academic_period_id}]},
             {"_id": 0},
         ) or {**period, "id": payload.academic_period_id}
+    component = None
+    if payload.component_id:
+        component = await db.finance_components.find_one({"id": payload.component_id}, {"_id": 0})
+        if not component:
+            raise HTTPException(status_code=404, detail="Jenis tagihan tidak ditemukan")
+
     scheme = None
     if payload.scheme_id:
         scheme = await db.finance_schemes.find_one({"id": payload.scheme_id}, {"_id": 0})
@@ -728,23 +1032,33 @@ async def create_tuition_bill(
         if payload.amount is None:
             raise HTTPException(status_code=400, detail="Masukkan minimal satu item atau nominal tagihan")
         items = [_bill_item(
-            component_id="MANUAL",
-            component_name=payload.title or "Biaya Pendidikan",
-            category=payload.category,
+            component_id=component.get("id", "MANUAL") if component else "MANUAL",
+            component_name=component.get("name", "") if component else (payload.title or "Biaya Pendidikan"),
+            category=component.get("category", payload.category) if component else payload.category,
             amount=payload.amount,
+            scholarship_eligible=component.get("scholarship_eligible", True) if component else True,
+            discount_eligible=component.get("discount_eligible", True) if component else True,
         )]
     items = await _apply_automatic_scholarship(items, student)
+    bill_title = payload.title or (component.get("name") if component else "Biaya Pendidikan")
+    bill_category = component.get("category", payload.category) if component else payload.category
     document = _bill_document(
         student=student,
         period=period,
-        title=payload.title,
+        title=bill_title,
         items=items,
         due_date=payload.due_date or now_iso(),
         scheme=scheme,
-        category=payload.category,
+        category=bill_category,
         notes=payload.notes,
         installment_count=payload.installment_count,
     )
+    if component:
+        document.update({
+            "bill_type_id": component.get("id", ""),
+            "bill_type_code": component.get("code", ""),
+            "bill_type_name": component.get("name", ""),
+        })
     await db.tuition_bills.insert_one(document)
     return {"ok": True, "message": "Tagihan berhasil dibuat", "bill": document}
 
@@ -824,6 +1138,101 @@ async def generate_bills_from_scheme(
     return {
         "ok": True,
         "message": f"{created} tagihan dibuat, {skipped} dilewati karena sudah ada",
+        "created": created,
+        "skipped": skipped,
+        "bills": created_bills,
+    }
+
+
+@router.post("/generate-type")
+async def generate_bills_from_component(
+    payload: GenerateComponentBillsInput,
+    request: Request,
+    _: Dict[str, Any] = Depends(require_campus_admin),
+):
+    """Generate one bill type, such as UKT or GEDUNG, for students in bulk."""
+    db = get_db(request)
+    component = await db.finance_components.find_one(
+        {"id": payload.component_id, "is_active": True},
+        {"_id": 0},
+    )
+    if not component:
+        raise HTTPException(status_code=404, detail="Jenis tagihan aktif tidak ditemukan")
+
+    amount = money(payload.amount if payload.amount is not None else component.get("default_amount"))
+    if amount <= 0:
+        raise HTTPException(status_code=400, detail="Nominal tagihan wajib diisi atau diatur pada jenis tagihan")
+
+    period = await get_active_period(db)
+    if payload.academic_period_id:
+        period = await db.academic_periods.find_one(
+            {"$or": [{"id": payload.academic_period_id}, {"code": payload.academic_period_id}]},
+            {"_id": 0},
+        ) or {**period, "id": payload.academic_period_id}
+
+    query: Dict[str, Any] = {
+        "role": "student",
+        "status": {"$nin": ["deleted", "inactive", "lulus", "do"]},
+    }
+    if payload.student_ids:
+        query["id"] = {"$in": payload.student_ids}
+    elif payload.prodi_id:
+        query["prodi_id"] = payload.prodi_id
+    students = await db.users.find(query, {"_id": 0}).to_list(5000)
+
+    created = 0
+    skipped = 0
+    created_bills: List[Dict[str, Any]] = []
+    bill_title = payload.title or f"{component.get('name', 'Tagihan')} — {period.get('name', period.get('id', ''))}"
+    for student in students:
+        existing = await db.tuition_bills.find_one(
+            {
+                "student_id": student.get("id"),
+                "academic_period_id": period.get("id"),
+                "bill_type_id": component.get("id"),
+                "status": {"$nin": ["cancelled", "void"]},
+            },
+            {"_id": 0, "id": 1},
+        )
+        if existing:
+            skipped += 1
+            continue
+
+        item = _bill_item(
+            component_id=component.get("id", ""),
+            component_name=component.get("name", "Tagihan"),
+            category=component.get("category", "tuition"),
+            amount=amount,
+            scholarship_eligible=bool(component.get("scholarship_eligible", True)),
+            discount_eligible=bool(component.get("discount_eligible", True)),
+        )
+        items = await _apply_automatic_scholarship([item], student)
+        bill = _bill_document(
+            student=student,
+            period=period,
+            title=bill_title,
+            items=items,
+            due_date=payload.due_date or now_iso(),
+            category=component.get("category", "tuition"),
+            notes="Dibuat oleh generator jenis tagihan",
+            installment_count=payload.installment_count,
+            source="component_generator",
+        )
+        bill.update({
+            "bill_type_id": component.get("id", ""),
+            "bill_type_code": component.get("code", ""),
+            "bill_type_name": component.get("name", ""),
+        })
+        await db.tuition_bills.insert_one(bill)
+        created += 1
+        created_bills.append(bill)
+
+    scope = "mahasiswa terpilih" if payload.student_ids else (
+        f"mahasiswa aktif pada prodi {payload.prodi_id}" if payload.prodi_id else "semua mahasiswa aktif"
+    )
+    return {
+        "ok": True,
+        "message": f"{created} tagihan {component.get('name', 'jenis')} dibuat untuk {scope}, {skipped} dilewati karena sudah ada",
         "created": created,
         "skipped": skipped,
         "bills": created_bills,
@@ -1042,19 +1451,23 @@ async def finance_dashboard(
     if academic_period_id:
         query["academic_period_id"] = academic_period_id
     bills = await db.tuition_bills.find(query, {"_id": 0}).to_list(5000)
+    active_bills = [bill for bill in bills if clean(bill.get("status")) not in {"cancelled", "void"}]
     pending_payments = await db.tuition_payments.find({"status": "pending"}, {"_id": 0}).to_list(5000)
-    total_billed = round(sum(money(bill.get("amount")) for bill in bills), 2)
-    total_paid = round(sum(money(bill.get("paid_amount")) for bill in bills), 2)
+    total_billed = round(sum(money(bill.get("amount")) for bill in active_bills), 2)
+    total_paid = round(sum(money(bill.get("paid_amount")) for bill in active_bills), 2)
+    pmb_carryover_bills = [bill for bill in active_bills if clean(bill.get("source")) == "pmb_carryover"]
     return {
         "ok": True,
         "summary": {
-            "bill_count": len(bills),
-            "paid_bill_count": sum(bill.get("status") == "paid" for bill in bills),
+            "bill_count": len(active_bills),
+            "paid_bill_count": sum(bill.get("status") == "paid" for bill in active_bills),
             "total_billed": total_billed,
             "total_paid": total_paid,
             "total_outstanding": round(max(total_billed - total_paid, 0), 2),
             "pending_payment_count": len(pending_payments),
             "pending_payment_amount": round(sum(money(payment.get("amount")) for payment in pending_payments), 2),
+            "pmb_carryover_bill_count": len(pmb_carryover_bills),
+            "pmb_carryover_outstanding": round(sum(money(bill.get("remaining_amount")) for bill in pmb_carryover_bills), 2),
         },
         "pending_payments": pending_payments,
     }

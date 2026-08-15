@@ -2,6 +2,60 @@
 
 Semua perubahan penting pada aplikasi ini dicatat di sini. Versi rilis utama disimpan di file [`VERSION`](./VERSION), sedangkan versi skema database yang sudah diterapkan dicatat oleh tabel `app_schema_migrations` di PostgreSQL.
 
+## [1.11.0] — 2026-08-15
+
+### CMS Landing Page PMB
+
+- Menambahkan pengaturan foto landing page yang dapat dikelola Admin PMB tanpa mengubah kode.
+- Menyediakan empat slot foto: hero utama, area masuk kampus, Learning Center, dan foto udara/arsitektur.
+- Menambahkan preview foto, upload JPG/PNG/WEBP maksimal 10 MB, penanda foto bawaan atau kustom, serta opsi mengembalikan foto bawaan.
+- Foto kustom yang diunggah dipakai bersama oleh landing page PMB di SIAKAD dan portal PMB mandiri.
+- Menyelaraskan konfigurasi foto dengan CMS teks, CTA, statistik, konten, dan visibilitas section yang sudah tersedia.
+
+## [1.10.0] — 2026-08-15
+
+### PMB, import mahasiswa, dan migrasi ke SIAKAD
+
+- Menambahkan normalisasi import mahasiswa baru dari Excel. Data hasil import tetap ditampilkan walaupun belum lengkap dan diberi penanda bahwa data berasal dari metode import.
+- Menambahkan tindak lanjut manual Admin PMB untuk status pembayaran/lunas atau tunggakan beserta nominal tunggakan, input nilai akhir CBT dengan grade otomatis, serta generate SK secara manual.
+- Menyelaraskan proses migrasi camaba menjadi mahasiswa aktif agar akun, Prodi, kelas, status akademik, dan data keuangan awal dapat diteruskan ke sistem utama secara aman.
+- Menjadikan Prodi dan Kelas camaba dapat diubah oleh admin.
+- Menambahkan proses wawancara setelah CBT, pengaturan jadwal wawancara oleh admin, pembangkitan link Google Meet pada jadwal, serta penampilan link kepada camaba pada hari wawancara.
+
+### Keuangan kampus
+
+- Menambahkan pengelolaan tagihan semester/UKT secara custom per mahasiswa maupun generate otomatis untuk seluruh mahasiswa.
+- Menambahkan jenis tagihan bawaan **UKT** dan **GEDUNG**, serta kemampuan admin menambahkan jenis tagihan lain.
+- Menambahkan pilihan Prodi pada generate tagihan agar nominal UKT dapat dibedakan per program studi.
+- Menyelaraskan skema pembiayaan/BIPOT dengan master tahun ajaran dan Prodi dari database, termasuk catatan/panduan penggunaan pada menu keuangan.
+- Merapikan tampilan halaman keuangan agar lebih informatif dan mudah digunakan.
+
+### Akademik dan integrasi Neo Feeder
+
+- Memastikan kelas tidak dapat dibuat atau diduplikasi apabila mata kuliah belum memiliki dosen pengampu yang valid.
+- Menormalisasi penamaan rombel agar lebih jelas dan tidak membingungkan saat dikirim sebagai `nama_kelas_kuliah` ke Neo Feeder, misalnya menggunakan prefix Prodi dan nomor urut.
+- Menambahkan penjelasan fungsi kode/nomor kelas dan penyelarasan perilaku penggunaan kelas lintas semester.
+
+### Login, branding, dan navigasi
+
+- Memperbarui copy halaman login menjadi **Akses Masuk**, label field menjadi **Username**, dan deskripsi layanan akademik sesuai identitas kampus/aplikasi.
+- Menghapus teks internal `002_domain_tables` dari sidebar dan halaman login.
+- Menambahkan catatan/panduan pada menu keuangan dan memperjelas beberapa istilah serta validasi pada form admin.
+
+### Pemeliharaan data per semester
+
+- Menambahkan menu **Bersihkan Data per Semester** pada menu Pemeliharaan Data.
+- Admin dapat memilih semester dari master Tahun Ajaran, melihat ringkasan data terdampak, lalu menghapus data operasional semester seperti kelas, materi, tugas, nilai, presensi, KRS/KHS, tagihan, pembayaran, RPS, dan file terkait.
+- Menambahkan konfirmasi berlapis dengan frasa `HAPUS SEMESTER` dan pengetikan ulang nama semester.
+- Akun/profil mahasiswa, Prodi, mata kuliah, kurikulum, dosen, skema biaya, dan master semester tetap dipertahankan.
+
+### Validasi rilis
+
+- Versi aplikasi dinaikkan dari `1.9.1` ke `1.10.0` pada `VERSION`, `frontend/package.json`, `frontend/package-lock.json`, dan `frontend-pmb/package.json`.
+- Versi backend tetap membaca sumber kebenaran dari `VERSION`; endpoint `GET /api/version` akan mengembalikan `1.10.0` setelah backend dimulai ulang.
+- Versi skema PostgreSQL tetap `002_domain_tables`; tidak ada migration database baru.
+- Production build frontend utama dan portal PMB berhasil, serta pengujian backend terkait pembaruan PMB/keuangan berhasil dijalankan.
+
 ## [1.9.1] — 2026-08-14
 
 ### Kelengkapan data fisik mahasiswa

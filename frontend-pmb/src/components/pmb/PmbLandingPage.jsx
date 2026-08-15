@@ -178,6 +178,12 @@ export function PmbLandingPage({ onOpenRegister, onOpenLogin, onAuth, branding, 
   const campusAddress = brandingState?.campus_address || settings?.landing_contact_address || "";
   const campusPhone = brandingState?.campus_whatsapp || brandingState?.campus_phone || settings?.landing_contact_phone || "";
   const campusEmail = brandingState?.campus_email || settings?.landing_contact_email || "";
+  const campusAssets = {
+    hero: resolveMediaUrl(settings?.landing_images?.hero || CAMPUS_ASSETS.hero),
+    entrance: resolveMediaUrl(settings?.landing_images?.entrance || CAMPUS_ASSETS.entrance),
+    learningCenter: resolveMediaUrl(settings?.landing_images?.learning_center || CAMPUS_ASSETS.learningCenter),
+    aerial: resolveMediaUrl(settings?.landing_images?.aerial || CAMPUS_ASSETS.aerial),
+  };
 
   return (
     <div className="min-h-screen sci-landing-bg text-slate-100 font-sans selection:bg-sky-500 selection:text-white relative">
@@ -370,7 +376,7 @@ export function PmbLandingPage({ onOpenRegister, onOpenLogin, onAuth, branding, 
               <div className="relative w-full max-w-[650px]">
                 <div className="overflow-hidden rounded-[2rem] border border-white/20 bg-slate-950/40 p-2 shadow-2xl shadow-sky-950/50 rotate-[1deg]">
                   <img
-                    src={CAMPUS_ASSETS.hero}
+                    src={campusAssets.hero}
                     alt="Gedung utama Politeknik SCI"
                     className="aspect-[16/11] w-full rounded-[1.5rem] object-cover"
                     loading="eager"
@@ -387,7 +393,7 @@ export function PmbLandingPage({ onOpenRegister, onOpenLogin, onAuth, branding, 
 
                 <div className="absolute -bottom-12 -left-3 sm:-left-10 w-32 sm:w-40 overflow-hidden rounded-2xl border-4 border-[#061a3d] bg-slate-900 shadow-2xl shadow-sky-950/70 -rotate-6">
                   <img
-                    src={CAMPUS_ASSETS.aerial}
+                    src={campusAssets.aerial}
                     alt="Sudut arsitektur Politeknik SCI"
                     className="aspect-[4/5] w-full object-cover"
                     loading="lazy"
@@ -396,7 +402,7 @@ export function PmbLandingPage({ onOpenRegister, onOpenLogin, onAuth, branding, 
 
                 <div className="absolute -right-2 sm:-right-8 -top-10 w-40 sm:w-52 overflow-hidden rounded-2xl border-4 border-[#061a3d] bg-slate-900 shadow-2xl shadow-sky-950/70 rotate-6">
                   <img
-                    src={CAMPUS_ASSETS.learningCenter}
+                    src={campusAssets.learningCenter}
                     alt="Learning Center Politeknik SCI"
                     className="aspect-[3/2] w-full object-cover"
                     loading="lazy"
@@ -406,7 +412,7 @@ export function PmbLandingPage({ onOpenRegister, onOpenLogin, onAuth, branding, 
 
                 <div className="absolute right-3 -bottom-8 sm:right-8 sm:-bottom-10 hidden sm:block w-44 overflow-hidden rounded-2xl border-4 border-[#061a3d] bg-slate-900 shadow-2xl shadow-sky-950/70 rotate-3">
                   <img
-                    src={CAMPUS_ASSETS.entrance}
+                    src={campusAssets.entrance}
                     alt="Area masuk kampus Politeknik SCI"
                     className="aspect-[16/10] w-full object-cover"
                     loading="lazy"

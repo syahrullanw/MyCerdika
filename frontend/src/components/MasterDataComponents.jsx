@@ -33,6 +33,7 @@ import {
   X,
   Search,
   Printer,
+  Trash2,
 } from "lucide-react";
 
 // ─── helpers ──────────────────────────────────────────────────────────────────
@@ -345,7 +346,7 @@ export function WizardSemesterBaru({ onDone }) {
     setGenLog([]);
     const toGenerate = selectedMk.filter((id) => {
       const mk = mkList.find((m) => m.id === id);
-      return mk && !mk.sudah_punya_kelas;
+      return mk && !mk.sudah_punya_kelas && (mk.has_dosen_pengampu || mk.dosen_utama_id);
     });
     const log = toGenerate.map((id) => {
       const mk = mkList.find((m) => m.id === id);
@@ -364,9 +365,11 @@ export function WizardSemesterBaru({ onDone }) {
         toGenerate.forEach((id, i) => {
           const r = byId[id] || {};
           if (r.status === "created") {
-            log[i] = { id, name: r.course_name || "", status: "success", message: "Rombel \"01\" berhasil dibuat" };
+            log[i] = { id, name: r.course_name || "", status: "success", message: "Rombel " + (r.class_name || "baru") + " berhasil dibuat" };
           } else if (r.status === "exists") {
             log[i] = { id, name: r.course_name || "", status: "exists", message: "MK sudah punya kelas (dilewati)" };
+          } else if (r.status === "blocked") {
+            log[i] = { id, name: r.course_name || "", status: "error", message: r.message || "Dosen pengampu belum ditetapkan" };
           } else {
             log[i] = { id, name: r.course_name || "", status: "error", message: "Gagal membuat rombel" };
           }
@@ -578,7 +581,7 @@ export function WizardSemesterBaru({ onDone }) {
         const selectedCount = selectedMk.length;
         const toGenerateCount = selectedMk.filter((id) => {
           const mk = mkList.find((m) => m.id === id);
-          return mk && !mk.sudah_punya_kelas;
+          return mk && !mk.sudah_punya_kelas && (mk.has_dosen_pengampu || mk.dosen_utama_id);
         }).length;
 
         return (
@@ -596,7 +599,7 @@ export function WizardSemesterBaru({ onDone }) {
                   <button
                     type="button"
                     onClick={() => {
-                      const selectableIds = mkList.filter((m) => !m.sudah_punya_kelas).map((m) => m.id);
+                      const selectableIds = mkList.filter((m) => !m.sudah_punya_kelas && (m.has_dosen_pengampu || m.dosen_utama_id)).map((m) => m.id);
                       const allSelected = selectableIds.length > 0 && selectableIds.every((id) => selectedMk.includes(id));
                       setSelectedMk((p) => {
                         const locked = mkList.filter((m) => m.sudah_punya_kelas).map((m) => m.id);
@@ -608,7 +611,7 @@ export function WizardSemesterBaru({ onDone }) {
                     }}
                     className="text-xs font-semibold px-2.5 py-1 rounded-md bg-indigo-50 text-indigo-700 hover:bg-indigo-100 transition"
                   >
-                    {mkList.filter((m) => !m.sudah_punya_kelas).every((m) => selectedMk.includes(m.id)) && mkList.some((m) => !m.sudah_punya_kelas)
+                    {mkList.filter((m) => !m.sudah_punya_kelas && (m.has_dosen_pengampu || m.dosen_utama_id)).every((m) => selectedMk.includes(m.id)) && mkList.some((m) => !m.sudah_punya_kelas && (m.has_dosen_pengampu || m.dosen_utama_id))
                       ? "Batalkan Semua"
                       : "Pilih Semua (Semua Prodi)"}
                   </button>
@@ -618,7 +621,9 @@ export function WizardSemesterBaru({ onDone }) {
 
             <InfoBox variant="info">
               Daftar MK diambil dari halaman <strong>Kurikulum</strong>. MK yang sudah punya kelas pada semester ini
-              otomatis tercentang & terkunci. Centang MK yang ingin ditawarkan, lalu tekan <strong>Generate Kelas</strong>.
+              otomatis tercentang & terkunci. Kelas baru memakai format nama rombel <strong>kode prodi + nomor</strong>,
+              misalnya <strong>RKJ01</strong> (maksimal 5 karakter untuk Neo Feeder). Centang MK yang ingin ditawarkan,
+              lalu tekan <strong>Generate Kelas</strong>.
             </InfoBox>
 
             {/* Log transparan proses generate */}
@@ -684,7 +689,7 @@ export function WizardSemesterBaru({ onDone }) {
                   <div className="space-y-3 max-h-[420px] overflow-y-auto pr-1">
                     {semList.map((semLabel) => {
                       const items = activeProdiGroup[semLabel];
-                      const selectable = items.filter((m) => !m.sudah_punya_kelas);
+                      const selectable = items.filter((m) => !m.sudah_punya_kelas && (m.has_dosen_pengampu || m.dosen_utama_id));
                       const allSemSelected = selectable.length > 0 && selectable.every((m) => selectedMk.includes(m.id));
 
                       return (
@@ -718,12 +723,15 @@ export function WizardSemesterBaru({ onDone }) {
                             {items.map((mk) => {
                               const isSelected = selectedMk.includes(mk.id);
                               const locked = mk.sudah_punya_kelas;
+                              const hasLecturer = mk.has_dosen_pengampu || mk.dosen_utama_id;
                               return (
                                 <label
                                   key={mk.id}
                                   className={`flex items-start gap-2 p-2.5 rounded-lg border transition text-xs ${
                                     locked
                                       ? "bg-emerald-50/50 border-emerald-200 cursor-default"
+                                      : !hasLecturer
+                                        ? "bg-amber-50/60 border-amber-200 cursor-not-allowed"
                                       : isSelected
                                         ? "bg-white border-indigo-500 bg-indigo-50/60 ring-1 ring-indigo-300 shadow-2xs cursor-pointer"
                                         : "bg-white border-slate-200 hover:border-slate-300 hover:bg-slate-50 cursor-pointer"
@@ -733,7 +741,7 @@ export function WizardSemesterBaru({ onDone }) {
                                     type="checkbox"
                                     className="mt-0.5 rounded border-slate-300 text-indigo-600 focus:ring-indigo-500"
                                     checked={isSelected}
-                                    disabled={locked}
+                                    disabled={locked || !hasLecturer}
                                     onChange={(e) =>
                                       setSelectedMk((p) => (e.target.checked ? [...p, mk.id] : p.filter((x) => x !== mk.id)))
                                     }
@@ -763,12 +771,16 @@ export function WizardSemesterBaru({ onDone }) {
                                         </span>
                                       )}
                                     </div>
-                                    {mk.dosen_utama_nama && (
+                                    {mk.dosen_utama_nama ? (
                                       <div className="text-[10px] text-slate-500 mt-1 truncate" title={mk.dosen_utama_nama}>
                                         <UserCheck className="w-3 h-3 text-indigo-500 inline -mt-0.5 mr-0.5" />
                                         {mk.dosen_utama_nama}
                                       </div>
-                                    )}
+                                    ) : !hasLecturer ? (
+                                      <div className="text-[10px] font-semibold text-amber-700 mt-1">
+                                        Dosen pengampu belum ditetapkan
+                                      </div>
+                                    ) : null}
                                   </div>
                                 </label>
                               );
@@ -1028,6 +1040,7 @@ export function ProdiMasterPage() {
   const [editing, setEditing] = useState(null);
   const [showForm, setShowForm] = useState(false);
   const [loading, setLoading] = useState(false);
+  const [deleteLoading, setDeleteLoading] = useState("");
 
   // Modal Assign Mahasiswa
   const [activeProdiAssign, setActiveProdiAssign] = useState(null);
@@ -1038,7 +1051,7 @@ export function ProdiMasterPage() {
 
   const loadData = useCallback(() => {
     API("/api/v1/master/config").then((c) => c && typeof c.use_fakultas === "boolean" && setUseFakultas(c.use_fakultas));
-    API("/api/v1/master/prodi").then((d) => Array.isArray(d) && setList(d));
+    API("/api/v1/master/prodi").then((d) => Array.isArray(d) && setList(d.filter((item) => item.status !== "deleted")));
     API("/api/v1/master/fakultas").then((d) => Array.isArray(d) && setFakultasList(d));
     API("/api/v1/master/dosen").then((d) => Array.isArray(d) && setDosenList(d));
     API("/api/students").then((d) => Array.isArray(d?.data) ? setAllStudents(d.data) : Array.isArray(d) && setAllStudents(d));
@@ -1057,6 +1070,19 @@ export function ProdiMasterPage() {
     setShowForm(false);
     setEditing(null);
     setForm({ kode: "", nama: "", fakultas_id: "", jenjang: "S1", akreditasi: "B", kaprodi: "", status: "active" });
+    loadData();
+  };
+
+  const removeProdi = async (prodi) => {
+    const prodiName = prodi.nama || prodi.name || prodi.kode || prodi.id;
+    if (!window.confirm(`Hapus program studi ${prodiName}? Data master akan diarsipkan dan tidak muncul lagi di pilihan prodi.`)) return;
+    setDeleteLoading(prodi.id);
+    const res = await API(`/api/v1/master/prodi/${prodi.id}`, { method: "DELETE" });
+    setDeleteLoading("");
+    if (!res.ok) {
+      window.alert(res.detail || "Program studi tidak dapat dihapus.");
+      return;
+    }
     loadData();
   };
 
@@ -1242,6 +1268,16 @@ export function ProdiMasterPage() {
                         }}
                       >
                         Edit
+                      </Btn>
+                      <Btn
+                        size="sm"
+                        variant="danger"
+                        disabled={deleteLoading === p.id}
+                        onClick={() => removeProdi(p)}
+                        title="Hapus Prodi"
+                      >
+                        {deleteLoading === p.id ? <Loader2 className="w-3 h-3 animate-spin" /> : <Trash2 className="w-3 h-3" />}
+                        {deleteLoading === p.id ? "Menghapus..." : "Hapus"}
                       </Btn>
                     </div>
                   </td>

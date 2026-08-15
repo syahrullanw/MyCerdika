@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import bcrypt
+import asyncio
 import hashlib
 import httpx
 import io
@@ -36,6 +37,8 @@ from postgres_database import PostgresDatabase
 
 router = APIRouter(prefix="/api/v1/pmb", tags=["PMB - Penerimaan Mahasiswa Baru"])
 
+IMPORTED_STUDENT_SOURCE = "pmb_excel_import"
+
 
 import math
 import smtplib
@@ -65,6 +68,48 @@ def new_id() -> str:
 
 def get_db(request: Request) -> PostgresDatabase:
     return request.app.state.db
+
+
+async def ensure_pmb_carryover_bill(
+    db: PostgresDatabase,
+    *,
+    student: Dict[str, Any],
+    applicant: Dict[str, Any],
+    balances: Dict[str, Any],
+) -> Dict[str, Any]:
+    """Bridge an unpaid PMB balance into the SIAKAD finance ledger."""
+    try:
+        from routers.keuangan import ensure_pmb_carryover_bill as create_bill
+    except ImportError:
+        from backend.routers.keuangan import ensure_pmb_carryover_bill as create_bill
+    return await create_bill(db, student=student, applicant=applicant, balances=balances)
+
+
+def finance_migration_fields(result: Dict[str, Any]) -> Dict[str, Any]:
+    """Normalize the finance bridge result for both PMB and SIAKAD records."""
+    bill = result.get("bill") or {}
+    return {
+        "finance_migration_status": result.get("status") or "not_required",
+        "finance_migration_bill_id": bill.get("id", ""),
+        "finance_migration_amount": result.get("amount", 0.0),
+        "finance_migration_requested_amount": result.get("requested_amount", result.get("amount", 0.0)),
+        "finance_migration_checked_at": now_iso(),
+    }
+
+
+async def persist_finance_migration(
+    db: PostgresDatabase,
+    *,
+    applicant_id: str,
+    student_id: str,
+    result: Dict[str, Any],
+) -> Dict[str, Any]:
+    """Keep the PMB audit trail and the active SIAKAD account in sync."""
+    fields = finance_migration_fields(result)
+    await db.pmb_applicants.update_one({"id": applicant_id}, {"$set": fields})
+    if student_id:
+        await db.users.update_one({"id": student_id, "role": "student"}, {"$set": fields})
+    return fields
 
 
 def hash_password(password: str) -> str:
@@ -438,6 +483,13 @@ async def get_or_init_settings(db: PostgresDatabase) -> Dict[str, Any]:
         "pmb_lead_title": "Ketua Panitia PMB",
         # CMS Halaman PMB (Customizable Landing Page)
         "landing_logo_url": "",
+        # Slot foto landing dapat diisi admin. Jika kosong, frontend memakai foto bawaan.
+        "landing_images": {
+            "hero": "",
+            "entrance": "",
+            "learning_center": "",
+            "aerial": "",
+        },
         "landing_announcement": "Penerimaan Mahasiswa Baru Tahun Akademik 2026/2027 Gelombang 1 Resmi Dibuka! Beasiswa s.d. 100% Tersedia.",
         "landing_hero_badge": "PENERIMAAN MAHASISWA BARU 2026/2027 • GELOMBANG 1",
         "landing_hero_title": "Raih Gelar Sarjana Impian & Bangun Karir Masa Depan Gemilang",
@@ -760,6 +812,184 @@ def extract_academic_year_prefix(settings: Dict[str, Any]) -> str:
     now_year = datetime.now().year
     next_year = now_year + 1
     return f"{str(now_year)[-2:]}{str(next_year)[-2:]}"
+
+
+CONVERSION_REREGISTRATION_STATUSES = {"partial", "completed"}
+
+
+def conversion_block_reason(applicant: Dict[str, Any]) -> str:
+    """Return a user-facing reason when a Camaba is not ready for SIAKAD."""
+    if str(applicant.get("test_status") or "").strip().lower() != "passed":
+        return "Calon mahasiswa belum dinyatakan lulus seleksi."
+    if applicant.get("sk_approved") is not True:
+        return "SK penerimaan belum disetujui."
+    if str(applicant.get("reregistration_status") or "").strip().lower() not in CONVERSION_REREGISTRATION_STATUSES:
+        return "Daftar ulang belum diverifikasi."
+    if not str(applicant.get("prodi_id") or "").strip():
+        return "Program studi belum dipilih."
+    return ""
+
+
+def _normalize_academic_year(value: Any) -> str:
+    raw = str(value or "").strip()
+    pair = re.search(r"(\d{4})\s*[/_-]\s*(\d{4})", raw)
+    if pair:
+        return f"{pair.group(1)}/{pair.group(2)}"
+    single = re.search(r"\d{4}", raw)
+    if single:
+        year = int(single.group(0))
+        return f"{year}/{year + 1}"
+    return ""
+
+
+def _normalize_semester(value: Any) -> str:
+    raw = str(value or "").strip().lower()
+    if "ganjil" in raw or raw in {"1", "odd"}:
+        return "ganjil"
+    if "genap" in raw or raw in {"2", "even"}:
+        return "genap"
+    return raw
+
+
+async def _active_class_context(db: PostgresDatabase, settings: Dict[str, Any]) -> Dict[str, str]:
+    """Resolve the current academic period used for safe Camaba class assignment."""
+    active_ta = await db.tahun_ajaran.find_one({"is_active": True}, {"_id": 0})
+    app_settings = await db.app_settings.find_one({"id": "main"}, {"_id": 0}) or {}
+    period_name = str((settings or {}).get("active_period_name") or "")
+    academic_year = _normalize_academic_year(
+        (active_ta or {}).get("tahun")
+        or app_settings.get("active_academic_year")
+        or period_name
+    )
+    semester = _normalize_semester(
+        (active_ta or {}).get("semester")
+        or app_settings.get("active_semester")
+    )
+    return {
+        "tahun_ajaran_id": str((active_ta or {}).get("id") or "").strip(),
+        "academic_year": academic_year,
+        "semester": semester,
+    }
+
+
+def _class_period_matches(class_doc: Dict[str, Any], context: Dict[str, str]) -> bool:
+    ta_id = context.get("tahun_ajaran_id", "")
+    if ta_id and str(class_doc.get("tahun_ajaran_id") or "").strip() == ta_id:
+        return True
+
+    class_year = _normalize_academic_year(
+        class_doc.get("academic_year") or class_doc.get("tahun_ajaran_label")
+    )
+    target_year = context.get("academic_year", "")
+    if not class_year or not target_year or class_year != target_year:
+        return False
+
+    target_semester = context.get("semester", "")
+    if not target_semester:
+        return True
+    class_semester = _normalize_semester(
+        class_doc.get("semester") or class_doc.get("tahun_ajaran_label")
+    )
+    return class_semester == target_semester
+
+
+def _class_track_matches(class_doc: Dict[str, Any], applicant: Dict[str, Any]) -> bool:
+    """Match optional class track metadata when a campus has configured it."""
+    class_type = str(
+        class_doc.get("class_type")
+        or class_doc.get("admission_class_type")
+        or class_doc.get("jalur_kelas")
+        or ""
+    ).strip().lower()
+    learning_mode = str(
+        class_doc.get("learning_mode")
+        or class_doc.get("admission_learning_mode")
+        or class_doc.get("mode_kuliah")
+        or ""
+    ).strip().lower()
+    applicant_type = str(applicant.get("class_type") or "reguler").strip().lower()
+    applicant_mode = str(applicant.get("learning_mode") or "offline").strip().lower()
+    if class_type and class_type != applicant_type:
+        return False
+    if learning_mode and learning_mode != applicant_mode:
+        return False
+    return True
+
+
+async def _find_conversion_class(
+    db: PostgresDatabase,
+    applicant: Dict[str, Any],
+    settings: Dict[str, Any],
+) -> tuple[Optional[Dict[str, Any]], Dict[str, str]]:
+    """Find one unambiguous active class for the current period.
+
+    A conversion must never silently attach a student to an old or arbitrary
+    class. Existing class records without track metadata are supported only
+    when there is exactly one current-period candidate; otherwise assignment
+    remains pending for an administrator.
+    """
+    context = await _active_class_context(db, settings)
+    prodi_id = str(applicant.get("prodi_id") or "").strip()
+    if not prodi_id:
+        return None, context
+
+    classes = await db.classes.find(
+        {"program_id": prodi_id, "status": "active"},
+        {"_id": 0},
+    ).to_list(500)
+    current = [item for item in classes if _class_period_matches(item, context)]
+    if not current:
+        return None, context
+
+    has_track_metadata = any(
+        str(
+            item.get("class_type")
+            or item.get("admission_class_type")
+            or item.get("jalur_kelas")
+            or item.get("learning_mode")
+            or item.get("admission_learning_mode")
+            or item.get("mode_kuliah")
+            or ""
+        ).strip()
+        for item in current
+    )
+    if has_track_metadata:
+        current = [item for item in current if _class_track_matches(item, applicant)]
+
+    if len(current) != 1:
+        return None, context
+    return current[0], context
+
+
+async def _next_student_nim(
+    db: PostgresDatabase,
+    settings: Dict[str, Any],
+    prodi: Optional[Dict[str, Any]],
+    programs: List[Dict[str, Any]],
+) -> str:
+    """Generate the same year/program/sequence NIM shape used by imports."""
+    year_prefix = extract_academic_year_prefix(settings)
+    _, program_by_id = _student_import_program_context(programs)
+    prodi_id = str((prodi or {}).get("id") or "").strip()
+    normalized_program = program_by_id.get(prodi_id)
+    if not normalized_program and prodi:
+        normalized_program = {
+            "nim_code": _nim_program_code(prodi, 1),
+        }
+    nim_code = str((normalized_program or {}).get("nim_code") or "01").zfill(2)
+    base = f"{year_prefix}{nim_code}"
+
+    existing = await db.users.find({"role": "student"}, {"_id": 0, "nim": 1}).to_list(50000)
+    used_sequences = set()
+    pattern = re.compile(rf"^{re.escape(base)}(\d{{4}})$")
+    for item in existing:
+        match = pattern.fullmatch(str(item.get("nim") or "").strip().upper())
+        if match:
+            used_sequences.add(int(match.group(1)))
+    sequence = max(used_sequences, default=0) + 1
+    while sequence in used_sequences:
+        sequence += 1
+    return f"{base}{sequence:04d}"
 
 
 STUDENT_IMPORT_COLUMN_ALIASES = {
@@ -1190,16 +1420,24 @@ async def import_admin_students_from_excel(
             },
         }
         student_doc.update(item["profile"])
+        student_doc.update({
+            "finance_migration_status": "manual_review_required",
+            "finance_migration_bill_id": "",
+            "finance_migration_amount": 0.0,
+            "finance_migration_requested_amount": 0.0,
+            "finance_migration_checked_at": student_doc.get("imported_at") or now_iso(),
+        })
         await db.users.insert_one(student_doc)
         if item["kelas_id"]:
             await db.classes.update_one({"id": item["kelas_id"]}, {"$addToSet": {"student_ids": student_id}})
         created += 1
         imported_rows.append({**_student_import_public_row(item), "status": "imported", "student_id": student_id})
 
+    await sync_imported_students_to_pmb(db)
     errors = [row for row in prepared["rows"] if row.get("status") == "error"]
     return {
         "ok": True,
-        "message": f"Berhasil mengimpor {created} mahasiswa baru",
+        "message": f"Berhasil mengimpor {created} mahasiswa baru ke SIAKAD dan menandainya untuk review manual PMB",
         "created": created,
         "skipped": skipped + len(errors),
         "total_rows": len(prepared["rows"]),
@@ -1297,6 +1535,97 @@ def session_open_state(session: Dict[str, Any], now: Optional[datetime] = None) 
         state = "expired"
         label = "Berakhir"
     return {"state": state, "label": label}
+
+
+def normalize_utc_datetime(value: Any) -> Optional[datetime]:
+    """Normalisasi waktu jadwal agar selalu tersimpan sebagai ISO UTC."""
+    parsed = parse_dt(value)
+    if not parsed:
+        return None
+    if parsed.tzinfo is None:
+        return parsed.replace(tzinfo=timezone.utc)
+    return parsed.astimezone(timezone.utc)
+
+
+def interview_schedule_state(schedule: Dict[str, Any], now: Optional[datetime] = None) -> Dict[str, str]:
+    """Status slot wawancara berdasarkan waktu dan status publikasinya."""
+    now = now or datetime.now(timezone.utc)
+    start = normalize_utc_datetime(schedule.get("start_at"))
+    end = normalize_utc_datetime(schedule.get("end_at"))
+    if (schedule.get("status") or "closed").lower() != "active":
+        return {"state": "inactive", "label": "Tidak Aktif"}
+    if start and now < start:
+        return {"state": "not_started", "label": "Belum Dimulai"}
+    if end and now > end:
+        return {"state": "expired", "label": "Berakhir"}
+    return {"state": "open", "label": "Hari/Jadwal Wawancara"}
+
+
+def interview_meeting_is_visible(schedule: Dict[str, Any], now: Optional[datetime] = None) -> bool:
+    """Link Meet baru terlihat pada tanggal wawancara sesuai WIB."""
+    if not schedule.get("meeting_url") or (schedule.get("status") or "closed").lower() != "active":
+        return False
+    start = normalize_utc_datetime(schedule.get("start_at"))
+    if not start:
+        return False
+    wib = timezone(timedelta(hours=7))
+    now_wib = (now or datetime.now(timezone.utc)).astimezone(wib)
+    return start.astimezone(wib).date() == now_wib.date()
+
+
+def interview_schedule_payload(
+    schedule: Dict[str, Any],
+    assigned_count: int = 0,
+    include_meeting_url: bool = False,
+    selected: bool = False,
+) -> Dict[str, Any]:
+    state = interview_schedule_state(schedule)
+    meeting_visible = interview_meeting_is_visible(schedule)
+    return {
+        "id": schedule.get("id"),
+        "title": schedule.get("title", ""),
+        "description": schedule.get("description", ""),
+        "start_at": schedule.get("start_at"),
+        "end_at": schedule.get("end_at"),
+        "capacity": int(schedule.get("capacity") or 0),
+        "assigned_count": int(assigned_count or 0),
+        "available_count": max(0, int(schedule.get("capacity") or 0) - int(assigned_count or 0)),
+        "status": schedule.get("status", "active"),
+        "state": state["state"],
+        "state_label": state["label"],
+        "selected": bool(selected),
+        "meeting_url": schedule.get("meeting_url", "") if (include_meeting_url or meeting_visible) else "",
+        "meeting_code": schedule.get("meeting_code", "") if include_meeting_url or meeting_visible else "",
+        "meeting_url_visible": bool(include_meeting_url or meeting_visible),
+        "meeting_url_visibility_note": "Link Google Meet tampil pada hari wawancara." if not (include_meeting_url or meeting_visible) else "",
+        "created_at": schedule.get("created_at", ""),
+        "updated_at": schedule.get("updated_at", ""),
+    }
+
+
+async def create_pmb_google_meet(user_email: str = "") -> Dict[str, Any]:
+    """Buat ruang Google Meet memakai integrasi Google Workspace yang sudah ada di SIAKAD."""
+    try:
+        try:
+            from server import create_google_meet_for_app_user_sync, get_google_drive_settings, google_meet_error_message
+        except ImportError:
+            from ..server import create_google_meet_for_app_user_sync, get_google_drive_settings, google_meet_error_message
+        google_settings = await get_google_drive_settings(mask=False)
+    except Exception as exc:
+        raise HTTPException(status_code=503, detail=f"Konfigurasi Google Meet belum dapat dibaca: {str(exc)[:300]}") from exc
+
+    if not google_settings.get("google_meet_enabled"):
+        raise HTTPException(status_code=503, detail="Google Meet belum diaktifkan pada Pengaturan Kampus.")
+    if not google_settings.get("google_meet_ready"):
+        raise HTTPException(
+            status_code=503,
+            detail="Google Meet belum siap. Admin Kampus perlu menyimpan Service Account dan Email Google Workspace penyelenggara.",
+        )
+
+    try:
+        return await asyncio.to_thread(create_google_meet_for_app_user_sync, google_settings, user_email or "")
+    except Exception as exc:
+        raise HTTPException(status_code=503, detail=google_meet_error_message(exc)) from exc
 
 
 DEFAULT_CBT_QUESTIONS = [
@@ -1838,6 +2167,11 @@ def compute_applicant_balances(applicant: Dict[str, Any], settings: Dict[str, An
         reg_paid = reg_fee
         
     reg_remaining = max(0.0, reg_fee - reg_paid)
+    manual_total_override = None
+    if applicant.get("source") == IMPORTED_STUDENT_SOURCE and applicant.get("manual_payment_status") in {"paid", "outstanding"}:
+        manual_total_override = max(0.0, float(applicant.get("manual_payment_outstanding") or 0))
+        reg_remaining = max(0.0, min(reg_fee, manual_total_override))
+        reg_paid = max(0.0, reg_fee - reg_remaining)
     
     # Pra-Studi Fee
     pra_fee = float(applicant.get("pra_studi_fee") or settings.get("pra_studi_total_fee") or 3500000)
@@ -1850,7 +2184,7 @@ def compute_applicant_balances(applicant: Dict[str, Any], settings: Dict[str, An
         pra_paid = pra_fee
         
     pra_remaining = max(0.0, pra_fee - pra_paid)
-    total_remaining = reg_remaining + pra_remaining
+    total_remaining = manual_total_override if manual_total_override is not None else reg_remaining + pra_remaining
 
     return {
         "reg_fee_total": reg_fee,
@@ -1862,6 +2196,220 @@ def compute_applicant_balances(applicant: Dict[str, Any], settings: Dict[str, An
         "total_remaining_balance": total_remaining,
         "payment_history": history,
     }
+
+
+def _imported_student_is_marked(student: Dict[str, Any]) -> bool:
+    registration = student.get("registration") or {}
+    return (
+        student.get("source") == IMPORTED_STUDENT_SOURCE
+        or registration.get("source") == IMPORTED_STUDENT_SOURCE
+    )
+
+
+def _imported_student_registration_number(student: Dict[str, Any]) -> str:
+    nim = str(student.get("nim") or "").strip()
+    if nim:
+        return f"IMP-{nim}"
+    student_id = str(student.get("id") or "").strip().replace(" ", "")
+    return f"IMP-{student_id[-12:]}"
+
+
+def _imported_initial_installments(settings: Dict[str, Any]) -> List[Dict[str, Any]]:
+    year = _academic_intake_year(settings)
+    return [
+        {
+            "term": 1,
+            "name": "Cicilan 1 (Uang Muka Pra-Studi)",
+            "amount": float(settings.get("installment_1_amount", 1500000)),
+            "status": "unpaid",
+            "paid_at": "",
+            "due_date": f"{year}-08-25",
+        },
+        {
+            "term": 2,
+            "name": "Cicilan 2 Pra-Studi",
+            "amount": float(settings.get("installment_2_amount", 1000000)),
+            "status": "unpaid",
+            "paid_at": "",
+            "due_date": f"{year}-09-25",
+        },
+        {
+            "term": 3,
+            "name": "Cicilan 3 Pra-Studi (Pelunasan)",
+            "amount": float(settings.get("installment_3_amount", 1000000)),
+            "status": "unpaid",
+            "paid_at": "",
+            "due_date": f"{year}-10-25",
+        },
+    ]
+
+
+async def _build_imported_student_applicant(
+    db: PostgresDatabase,
+    student: Dict[str, Any],
+    settings: Dict[str, Any],
+) -> Dict[str, Any]:
+    """Build a PMB review record linked to an existing Excel-imported student."""
+    prodi_id = str(student.get("prodi_id") or "").strip()
+    prodi_name = str(student.get("prodi_name") or "").strip()
+    prodi_kode = str(student.get("prodi_kode") or "").strip()
+    if prodi_id and (not prodi_name or not prodi_kode):
+        program = await db.programs.find_one({"id": prodi_id}, {"_id": 0})
+        if program:
+            prodi_name = prodi_name or program.get("nama") or program.get("name") or ""
+            prodi_kode = prodi_kode or program.get("kode") or program.get("code") or ""
+
+    student_id = str(student.get("id") or "").strip()
+    imported_at = student.get("imported_at") or student.get("created_at") or now_iso()
+    nim = str(student.get("nim") or "").strip()
+    reg_number = _imported_student_registration_number(student)
+    return {
+        "id": f"pmb_import_{student_id}",
+        "registration_number": reg_number,
+        "gelombang": "Import Excel",
+        "period_name": settings.get("active_period_name", "TA 2026/2027"),
+        "created_at": imported_at,
+        "updated_at": now_iso(),
+        "current_step": 1,
+        "status": "imported_needs_review",
+        "source": IMPORTED_STUDENT_SOURCE,
+        "source_label": "Import Excel",
+        "imported_from_excel": True,
+        "manual_completion_required": True,
+        "manual_completion_status": "pending",
+        "source_student_id": student_id,
+        "student_user_id": student_id,
+        "password_hash": student.get("password_hash") or "",
+        "name": student.get("name") or "",
+        "gender": student.get("gender") or "L",
+        "tempat_lahir": student.get("tempat_lahir") or "",
+        "tanggal_lahir": student.get("tanggal_lahir") or "",
+        "whatsapp": student.get("whatsapp") or "",
+        "alamat": student.get("alamat") or "",
+        "nik": student.get("nik") or "",
+        "nisn": student.get("nisn") or "",
+        "nama_ibu_kandung": student.get("nama_ibu_kandung") or "",
+        "email": student.get("email") or "",
+        "asal_sekolah": student.get("asal_sekolah") or "",
+        "npsn_sekolah": student.get("npsn_sekolah") or "",
+        "alamat_sekolah": student.get("alamat_sekolah") or "",
+        "jurusan_asal": student.get("jurusan_asal") or "",
+        "tahun_lulus": student.get("tahun_lulus") or "",
+        "tinggi_badan": student.get("tinggi_badan") or 0.0,
+        "berat_badan": student.get("berat_badan") or 0.0,
+        "prodi_id": prodi_id,
+        "prodi_name": prodi_name,
+        "prodi_kode": prodi_kode,
+        "prodi_id_2": "",
+        "prodi_2_name": "",
+        "class_type": student.get("class_type") or "reguler",
+        "learning_mode": student.get("learning_mode") or "offline",
+        "info_source": "Import Excel",
+        "referral_code": "",
+        "referrer_id": "",
+        "referrer_name": "",
+        "referrer_category": "",
+        "reg_payment_fee": float(settings.get("registration_fee", 250000)),
+        "reg_payment_code": "",
+        "reg_payment_amount": float(settings.get("registration_fee", 250000)),
+        "reg_payment_status": "manual_pending",
+        "reg_payment_method": "",
+        "reg_payment_proof": "",
+        "reg_paid_at": "",
+        "reg_verified_at": "",
+        "manual_payment_status": "pending",
+        "manual_payment_outstanding": 0.0,
+        "manual_payment_notes": "",
+        "finance_migration_status": "manual_review_required",
+        "finance_migration_bill_id": "",
+        "finance_migration_amount": 0.0,
+        "finance_migration_requested_amount": 0.0,
+        "finance_migration_checked_at": imported_at,
+        "wa_group_joined": False,
+        "wa_group_joined_at": "",
+        "test_type": "offline",
+        "test_score": None,
+        "test_status": "pending",
+        "test_grade": "",
+        "test_grade_label": "",
+        "test_grade_color": "",
+        "test_grade_description": "",
+        "test_completed_at": None,
+        "offline_examiner_notes": "",
+        "online_zoom_url": "",
+        "cbt_answers": {},
+        "reregistration_status": "pending",
+        "pra_studi_fee": float(settings.get("pra_studi_total_fee", 3500000)),
+        "pra_studi_scheme": "installment",
+        "pra_studi_payment_code": "",
+        "pra_studi_payment_amount": float(settings.get("pra_studi_total_fee", 3500000)),
+        "pra_studi_payment_status": "",
+        "pra_studi_payment_method": "",
+        "pra_studi_payment_proof": "",
+        "pra_studi_paid_at": "",
+        "installments": _imported_initial_installments(settings),
+        "shirt_size": student.get("shirt_size") or "",
+        "shirt_notes": student.get("shirt_notes") or "",
+        "sibermaru_confirmed": False,
+        "emergency_contact_name": "",
+        "emergency_contact_phone": "",
+        "health_notes": "",
+        # The SIAKAD account already exists; PMB keeps the review trail linked to it.
+        "is_converted_to_student": True,
+        "generated_nim": nim,
+        "converted_at": imported_at,
+        "class_ids": student.get("class_ids") or [],
+    }
+
+
+async def sync_imported_students_to_pmb(db: PostgresDatabase) -> int:
+    """Backfill PMB review records for students imported before this workflow existed."""
+    settings = await get_or_init_settings(db)
+    students = await db.users.find(
+        {"role": "student", "$or": [
+            {"source": IMPORTED_STUDENT_SOURCE},
+            {"registration.source": IMPORTED_STUDENT_SOURCE},
+        ]},
+        {"_id": 0},
+    ).to_list(5000)
+    created = 0
+    for student in students:
+        if not _imported_student_is_marked(student):
+            continue
+        student_id = str(student.get("id") or "").strip()
+        if not student_id:
+            continue
+        existing = await db.pmb_applicants.find_one(
+            {"source_student_id": student_id},
+            {"_id": 0, "id": 1, "finance_migration_status": 1, "finance_migration_bill_id": 1,
+             "finance_migration_amount": 1, "finance_migration_requested_amount": 1,
+             "finance_migration_checked_at": 1},
+        )
+        if existing:
+            finance_defaults = {}
+            if "finance_migration_status" not in existing:
+                finance_defaults["finance_migration_status"] = "manual_review_required"
+            if "finance_migration_bill_id" not in existing:
+                finance_defaults["finance_migration_bill_id"] = ""
+            if "finance_migration_amount" not in existing:
+                finance_defaults["finance_migration_amount"] = 0.0
+            if "finance_migration_requested_amount" not in existing:
+                finance_defaults["finance_migration_requested_amount"] = 0.0
+            if "finance_migration_checked_at" not in existing:
+                finance_defaults["finance_migration_checked_at"] = student.get("imported_at") or student.get("created_at") or now_iso()
+            if finance_defaults:
+                await db.pmb_applicants.update_one({"id": existing.get("id")}, {"$set": finance_defaults})
+                await db.users.update_one({"id": student_id, "role": "student"}, {"$set": finance_defaults})
+            continue
+        applicant = await _build_imported_student_applicant(db, student, settings)
+        try:
+            await db.pmb_applicants.insert_one(applicant)
+            created += 1
+        except Exception:
+            # Two admin requests can perform the one-time backfill concurrently.
+            # The unique document id makes the second insert harmless.
+            continue
+    return created
 
 
 class PmbShirtSizeInput(BaseModel):
@@ -1893,6 +2441,19 @@ class PmbTestSessionInput(BaseModel):
     status: Optional[str] = Field("active", description="'draft' | 'active' | 'closed'")
 
 
+class PmbInterviewScheduleInput(BaseModel):
+    title: str = Field(..., min_length=3, description="Nama slot wawancara")
+    description: Optional[str] = Field("", description="Instruksi atau keterangan wawancara")
+    start_at: str = Field(..., description="Waktu mulai wawancara (ISO)")
+    end_at: str = Field(..., description="Waktu selesai wawancara (ISO)")
+    capacity: int = Field(10, ge=1, le=500, description="Kuota camaba pada slot")
+    status: Optional[str] = Field("active", description="'draft' | 'active' | 'closed'")
+
+
+class PmbInterviewSelectionInput(BaseModel):
+    schedule_id: str = Field(..., min_length=1, description="ID slot wawancara yang dipilih")
+
+
 class PmbCbtStartInput(BaseModel):
     session_id: str = Field(..., min_length=1)
     token: str = Field(..., min_length=4, description="Token ujian dari panitia PMB")
@@ -1922,9 +2483,21 @@ class PmbTokenRegenInput(BaseModel):
 
 
 class PmbOfflineScoreInput(BaseModel):
-    score: float = Field(..., description="Nilai Tes Offline 0-100")
+    score: float = Field(..., ge=0, le=100, description="Nilai Tes Offline 0-100")
     status: str = Field("passed", description="'passed' atau 'failed'")
     notes: Optional[str] = Field("", description="Catatan Hasil Penguji")
+
+
+class PmbImportedPaymentStatusInput(BaseModel):
+    status: str = Field("paid", description="'paid' (lunas) atau 'outstanding' (ada tunggakan)")
+    outstanding_amount: float = Field(0, ge=0, description="Total nominal tunggakan pembayaran PMB")
+    notes: Optional[str] = Field("", description="Catatan verifikasi manual admin")
+
+
+class PmbAdminPlacementInput(BaseModel):
+    prodi_id: str = Field(..., min_length=1, description="ID Program Studi pilihan utama")
+    class_type: str = Field("reguler", description="Tipe jalur PMB: reguler, weekend, atau khusus")
+    learning_mode: str = Field("offline", description="Mode kuliah: online atau offline")
 
 
 class PmbApproveAdmissionInput(BaseModel):
@@ -1963,6 +2536,10 @@ class PmbSettingsInput(BaseModel):
         description="Pengaturan kelas yang dibuka per prodi (misal: {'s1_ti': ['reguler_offline', 'reguler_online']})"
     )
     landing_logo_url: Optional[str] = None
+    landing_images: Optional[Dict[str, str]] = Field(
+        None,
+        description="URL foto landing PMB per slot: hero, entrance, learning_center, aerial",
+    )
     landing_sections_visibility: Optional[Dict[str, bool]] = Field(
         None,
         description="Kontrol tampilan section pada landing page PMB"
@@ -2765,7 +3342,8 @@ async def get_my_application(request: Request, applicant: Dict[str, Any] = Depen
     # 3: Pembayaran Form
     # 4: Grup WhatsApp Resmi
     # 5: Pilih Tes Seleksi
-    # 6/7: Ujian CBT (Offline GPS / Online Mandiri)
+    # 6: Ujian CBT (Offline GPS / Online Mandiri)
+    # 7: Pilih Jadwal & Ikuti Wawancara
     # 8: Surat Keputusan (SK) Penerimaan & Approval Admin PMB
     # 9: Daftar Ulang (Pembayaran Pra-Studi & Ukuran Jas Almamater)
     # 10: Orientasi Sibermaru & Akses Masuk SIAKAD (Klaim NIM)
@@ -2775,9 +3353,11 @@ async def get_my_application(request: Request, applicant: Dict[str, Any] = Depen
         if applicant.get("wa_group_joined"):
             step = max(step, 5)
             if applicant.get("test_type"):
-                step = max(step, 6 if applicant.get("test_type") == "offline" else 7)
+                step = max(step, 6)
                 if applicant.get("test_status") == "passed":
-                    step = max(step, 8)
+                    step = max(step, 7)
+                    if applicant.get("interview_schedule_id"):
+                        step = max(step, 8)
                     if applicant.get("sk_approved"):
                         step = max(step, 9)
                         if applicant.get("reregistration_status") in ["partial", "completed"] and applicant.get("shirt_size"):
@@ -2786,10 +3366,128 @@ async def get_my_application(request: Request, applicant: Dict[str, Any] = Depen
     applicant["current_step"] = step
     safe_applicant = {k: v for k, v in applicant.items() if k != "password_hash"}
 
+    interview_schedule = None
+    interview_schedule_id = applicant.get("interview_schedule_id")
+    if interview_schedule_id:
+        interview_schedule = await db.pmb_interview_schedules.find_one(
+            {"id": interview_schedule_id}, {"_id": 0}
+        )
+        if interview_schedule:
+            assigned_count = await db.pmb_applicants.count_documents(
+                {"interview_schedule_id": interview_schedule_id}
+            )
+            interview_schedule = interview_schedule_payload(
+                interview_schedule,
+                assigned_count=assigned_count,
+                include_meeting_url=False,
+                selected=True,
+            )
+    safe_applicant["interview_schedule"] = interview_schedule
+
     return {
         "ok": True,
         "applicant": safe_applicant,
         "settings": settings
+    }
+
+
+@router.get("/interview/schedules")
+async def list_interview_schedules_for_applicant(
+    request: Request,
+    applicant: Dict[str, Any] = Depends(get_current_applicant),
+):
+    """Camaba: melihat slot wawancara yang masih tersedia setelah lulus CBT."""
+    db: PostgresDatabase = get_db(request)
+    if applicant.get("test_status") != "passed":
+        return {
+            "ok": True,
+            "eligible": False,
+            "message": "Jadwal wawancara tersedia setelah hasil CBT menyatakan LULUS.",
+            "selected": None,
+            "schedules": [],
+        }
+
+    selected_id = str(applicant.get("interview_schedule_id") or "").strip()
+    schedules = await db.pmb_interview_schedules.find({}, {"_id": 0}).to_list(500)
+    schedules = sorted(schedules, key=lambda item: normalize_utc_datetime(item.get("start_at")) or datetime.max)
+    result = []
+    selected = None
+    for schedule in schedules:
+        assigned_count = await db.pmb_applicants.count_documents({"interview_schedule_id": schedule.get("id")})
+        is_selected = schedule.get("id") == selected_id
+        state = interview_schedule_state(schedule)
+        if is_selected:
+            selected = interview_schedule_payload(schedule, assigned_count, selected=True)
+        if state["state"] == "expired" or state["state"] == "inactive":
+            continue
+        if assigned_count >= int(schedule.get("capacity") or 0) and not is_selected:
+            continue
+        result.append(interview_schedule_payload(schedule, assigned_count, selected=is_selected))
+
+    return {
+        "ok": True,
+        "eligible": True,
+        "message": "Silakan pilih salah satu jadwal wawancara yang tersedia.",
+        "selected": selected,
+        "schedules": result,
+    }
+
+
+@router.post("/interview/select")
+async def select_interview_schedule(
+    payload: PmbInterviewSelectionInput,
+    request: Request,
+    applicant: Dict[str, Any] = Depends(get_current_applicant),
+):
+    """Camaba: memilih atau mengganti slot wawancara setelah lulus CBT."""
+    db: PostgresDatabase = get_db(request)
+    if applicant.get("test_status") != "passed":
+        raise HTTPException(status_code=400, detail="Jadwal wawancara hanya dapat dipilih setelah camaba lulus CBT.")
+
+    schedule = await db.pmb_interview_schedules.find_one({"id": payload.schedule_id}, {"_id": 0})
+    if not schedule:
+        raise HTTPException(status_code=404, detail="Jadwal wawancara tidak ditemukan")
+    if (schedule.get("status") or "closed").lower() != "active":
+        raise HTTPException(status_code=409, detail="Jadwal wawancara tersebut sudah tidak aktif")
+
+    start = normalize_utc_datetime(schedule.get("start_at"))
+    end = normalize_utc_datetime(schedule.get("end_at"))
+    now = datetime.now(timezone.utc)
+    if start and now >= start:
+        raise HTTPException(status_code=409, detail="Jadwal wawancara sudah dimulai dan tidak dapat dipilih")
+    if end and end <= now:
+        raise HTTPException(status_code=409, detail="Jadwal wawancara sudah berakhir")
+
+    current_schedule_id = str(applicant.get("interview_schedule_id") or "").strip()
+    current_schedule = None
+    if current_schedule_id and current_schedule_id != payload.schedule_id:
+        current_schedule = await db.pmb_interview_schedules.find_one({"id": current_schedule_id}, {"_id": 0})
+        current_start = normalize_utc_datetime((current_schedule or {}).get("start_at"))
+        if current_start and now >= current_start:
+            raise HTTPException(status_code=409, detail="Jadwal wawancara yang sedang dipilih sudah dimulai dan tidak dapat diganti")
+
+    assigned_count = await db.pmb_applicants.count_documents({"interview_schedule_id": payload.schedule_id})
+    if payload.schedule_id != current_schedule_id and assigned_count >= int(schedule.get("capacity") or 0):
+        raise HTTPException(status_code=409, detail="Kuota jadwal wawancara sudah penuh")
+
+    selected_at = now_iso()
+    updates = {
+        "interview_schedule_id": payload.schedule_id,
+        "interview_schedule_title": schedule.get("title", ""),
+        "interview_start_at": schedule.get("start_at", ""),
+        "interview_end_at": schedule.get("end_at", ""),
+        "interview_status": "scheduled",
+        "interview_selected_at": selected_at,
+        "current_step": max(applicant.get("current_step", 1), 8),
+        "updated_at": selected_at,
+    }
+    await db.pmb_applicants.update_one({"id": applicant["id"]}, {"$set": updates})
+    selected = interview_schedule_payload(schedule, assigned_count + (0 if payload.schedule_id == current_schedule_id else 1), selected=True)
+    return {
+        "ok": True,
+        "message": "Jadwal wawancara berhasil dipilih",
+        "applicant": {**applicant, **updates},
+        "interview": selected,
     }
 
 
@@ -3908,7 +4606,7 @@ async def pay_pra_studi_fee(payload: PmbReregisterPayInput, request: Request, ap
         "installments": installments,
         "reregistration_status": "pending_verification",
         "payment_history": history,
-        "current_step": max(applicant.get("current_step", 1), 8),
+        "current_step": max(applicant.get("current_step", 1), 9),
         **pra_updates_payment,
     }
 
@@ -3953,7 +4651,7 @@ async def set_shirt_size(payload: PmbShirtSizeInput, request: Request, applicant
     if size not in ["S", "M", "L", "XL", "XXL", "XXXL"]:
         size = "L"
 
-    next_step = 9 if applicant.get("reregistration_status") in ["partial", "completed"] else 8
+    next_step = 10 if applicant.get("reregistration_status") in ["partial", "completed"] else 9
 
     updates = {
         "shirt_size": size,
@@ -3986,7 +4684,7 @@ async def confirm_sibermaru(payload: PmbSibermaruConfirmInput, request: Request,
         "emergency_contact_phone": (payload.emergency_contact_phone or "").strip(),
         "health_notes": payload.health_notes or "",
         "sibermaru_confirmed_at": now_iso(),
-        "current_step": max(applicant.get("current_step", 1), 9)
+        "current_step": max(applicant.get("current_step", 1), 10)
     }
 
     await db.pmb_applicants.update_one({"id": applicant["id"]}, {"$set": updates})
@@ -4158,6 +4856,130 @@ async def get_admission_letter(request: Request, applicant: Dict[str, Any] = Dep
 # ADMIN PMB & REFERRAL & ANALYTICS ENDPOINTS
 # ==========================================
 
+@router.get("/admin/interview-schedules")
+async def list_admin_interview_schedules(request: Request, user: Dict[str, Any] = Depends(require_admin)):
+    """Admin: daftar slot wawancara beserta kuota dan link Google Meet."""
+    db: PostgresDatabase = get_db(request)
+    schedules = await db.pmb_interview_schedules.find({}, {"_id": 0}).to_list(500)
+    schedules = sorted(schedules, key=lambda item: normalize_utc_datetime(item.get("start_at")) or datetime.min, reverse=True)
+    result = []
+    for schedule in schedules:
+        assigned_count = await db.pmb_applicants.count_documents({"interview_schedule_id": schedule.get("id")})
+        result.append(interview_schedule_payload(schedule, assigned_count, include_meeting_url=True))
+    return {"ok": True, "schedules": result}
+
+
+@router.post("/admin/interview-schedules")
+async def create_admin_interview_schedule(
+    payload: PmbInterviewScheduleInput,
+    request: Request,
+    user: Dict[str, Any] = Depends(require_admin),
+):
+    """Admin: membuat slot wawancara dan otomatis membuat ruang Google Meet."""
+    db: PostgresDatabase = get_db(request)
+    start = normalize_utc_datetime(payload.start_at)
+    end = normalize_utc_datetime(payload.end_at)
+    if not start or not end:
+        raise HTTPException(status_code=400, detail="Format waktu jadwal tidak valid (gunakan tanggal dan jam yang benar)")
+    if end <= start:
+        raise HTTPException(status_code=400, detail="Waktu selesai harus setelah waktu mulai")
+
+    status = (payload.status or "active").strip().lower()
+    if status not in {"draft", "active", "closed"}:
+        raise HTTPException(status_code=400, detail="Status jadwal harus draft, active, atau closed")
+
+    meet = await create_pmb_google_meet(user.get("email") or "")
+    schedule = {
+        "id": f"pmb_interview_{uuid4().hex[:10]}",
+        "title": payload.title.strip(),
+        "description": (payload.description or "").strip(),
+        "start_at": start.isoformat(),
+        "end_at": end.isoformat(),
+        "capacity": int(payload.capacity),
+        "status": status,
+        "meeting_url": meet.get("meeting_url", ""),
+        "meeting_code": meet.get("meeting_code", ""),
+        "meeting_space_name": meet.get("meeting_space_name", ""),
+        "meeting_organizer_email": meet.get("organizer_email", ""),
+        "created_by": user.get("id") or user.get("username") or "admin",
+        "created_at": now_iso(),
+        "updated_at": now_iso(),
+    }
+    await db.pmb_interview_schedules.insert_one(schedule)
+    return {
+        "ok": True,
+        "message": "Jadwal wawancara berhasil dibuat dan link Google Meet otomatis digenerate",
+        "schedule": interview_schedule_payload(schedule, include_meeting_url=True),
+    }
+
+
+@router.put("/admin/interview-schedules/{schedule_id}")
+async def update_admin_interview_schedule(
+    schedule_id: str,
+    payload: PmbInterviewScheduleInput,
+    request: Request,
+    user: Dict[str, Any] = Depends(require_admin),
+):
+    """Admin: mengubah waktu, kuota, atau keterangan slot tanpa mengganti link Meet."""
+    db: PostgresDatabase = get_db(request)
+    existing = await db.pmb_interview_schedules.find_one({"id": schedule_id}, {"_id": 0})
+    if not existing:
+        raise HTTPException(status_code=404, detail="Jadwal wawancara tidak ditemukan")
+    start = normalize_utc_datetime(payload.start_at)
+    end = normalize_utc_datetime(payload.end_at)
+    if not start or not end or end <= start:
+        raise HTTPException(status_code=400, detail="Rentang waktu jadwal tidak valid")
+    status = (payload.status or "active").strip().lower()
+    if status not in {"draft", "active", "closed"}:
+        raise HTTPException(status_code=400, detail="Status jadwal harus draft, active, atau closed")
+
+    assigned_count = await db.pmb_applicants.count_documents({"interview_schedule_id": schedule_id})
+    if int(payload.capacity) < assigned_count:
+        raise HTTPException(status_code=409, detail=f"Kuota tidak boleh kurang dari jumlah camaba terpilih ({assigned_count})")
+
+    updated_at = now_iso()
+    updates = {
+        "title": payload.title.strip(),
+        "description": (payload.description or "").strip(),
+        "start_at": start.isoformat(),
+        "end_at": end.isoformat(),
+        "capacity": int(payload.capacity),
+        "status": status,
+        "updated_at": updated_at,
+        "updated_by": user.get("id") or user.get("username") or "admin",
+    }
+    await db.pmb_interview_schedules.update_one({"id": schedule_id}, {"$set": updates})
+    await db.pmb_applicants.update_many(
+        {"interview_schedule_id": schedule_id},
+        {"$set": {
+            "interview_schedule_title": updates["title"],
+            "interview_start_at": updates["start_at"],
+            "interview_end_at": updates["end_at"],
+            "updated_at": updated_at,
+        }},
+    )
+    updated = await db.pmb_interview_schedules.find_one({"id": schedule_id}, {"_id": 0})
+    return {
+        "ok": True,
+        "message": "Jadwal wawancara berhasil diperbarui",
+        "schedule": interview_schedule_payload(updated, assigned_count, include_meeting_url=True),
+    }
+
+
+@router.delete("/admin/interview-schedules/{schedule_id}")
+async def delete_admin_interview_schedule(schedule_id: str, request: Request, user: Dict[str, Any] = Depends(require_admin)):
+    """Admin: menghapus slot yang belum dipilih camaba."""
+    db: PostgresDatabase = get_db(request)
+    existing = await db.pmb_interview_schedules.find_one({"id": schedule_id}, {"_id": 0})
+    if not existing:
+        raise HTTPException(status_code=404, detail="Jadwal wawancara tidak ditemukan")
+    assigned_count = await db.pmb_applicants.count_documents({"interview_schedule_id": schedule_id})
+    if assigned_count:
+        raise HTTPException(status_code=409, detail="Jadwal tidak dapat dihapus karena sudah dipilih camaba. Ubah statusnya menjadi Tidak Aktif.")
+    await db.pmb_interview_schedules.delete_one({"id": schedule_id})
+    return {"ok": True, "message": "Jadwal wawancara berhasil dihapus"}
+
+
 @router.get("/admin/applicants")
 async def list_pmb_applicants(
     request: Request,
@@ -4171,6 +4993,7 @@ async def list_pmb_applicants(
 ):
     """Admin: Melihat daftar seluruh pendaftar PMB."""
     db: PostgresDatabase = get_db(request)
+    await sync_imported_students_to_pmb(db)
     query: Dict[str, Any] = {}
 
     if prodi_id:
@@ -4226,6 +5049,88 @@ async def get_applicant_detail(applicant_id: str, request: Request, user: Dict[s
     if not applicant:
         raise HTTPException(status_code=404, detail="Data pendaftar tidak ditemukan")
     return {"ok": True, "applicant": applicant}
+
+
+@router.put("/admin/applicants/{applicant_id}/placement")
+async def admin_update_applicant_placement(
+    applicant_id: str,
+    payload: PmbAdminPlacementInput,
+    request: Request,
+    user: Dict[str, Any] = Depends(require_admin),
+):
+    """Admin: ubah Prodi dan jalur kelas PMB pendaftar."""
+    db: PostgresDatabase = get_db(request)
+    applicant = await db.pmb_applicants.find_one({"id": applicant_id}, {"_id": 0, "password_hash": 0})
+    if not applicant:
+        raise HTTPException(status_code=404, detail="Data pendaftar tidak ditemukan")
+
+    prodi_id = str(payload.prodi_id or "").strip()
+    class_type = str(payload.class_type or "reguler").strip().lower()
+    learning_mode = str(payload.learning_mode or "offline").strip().lower()
+
+    if class_type not in {"reguler", "weekend", "khusus"}:
+        raise HTTPException(status_code=400, detail="Tipe kelas harus Reguler, Weekend, atau Khusus")
+    if learning_mode not in {"online", "offline"}:
+        raise HTTPException(status_code=400, detail="Mode kuliah harus Online atau Offline")
+
+    # Jalur Weekend selalu online dan jalur Khusus selalu offline.
+    if class_type == "weekend":
+        learning_mode = "online"
+    elif class_type == "khusus":
+        learning_mode = "offline"
+
+    prodi = await db.programs.find_one({"id": prodi_id}, {"_id": 0})
+    if not prodi:
+        raise HTTPException(status_code=400, detail="Program studi yang dipilih tidak ditemukan")
+
+    settings = await get_or_init_settings(db)
+    selected_class_key = f"{class_type}_{learning_mode}"
+    prodi_class_settings = settings.get("prodi_class_settings") or {}
+    allowed_classes = prodi_class_settings.get(prodi_id)
+    if isinstance(allowed_classes, list) and allowed_classes and selected_class_key not in allowed_classes:
+        prodi_name = prodi.get("nama") or prodi.get("name") or "Program Studi"
+        raise HTTPException(
+            status_code=400,
+            detail=f"Jalur {selected_class_key.replace('_', ' ').title()} tidak dibuka untuk Program Studi {prodi_name}.",
+        )
+
+    prodi_name = prodi.get("nama") or prodi.get("name") or ""
+    prodi_kode = prodi.get("kode") or prodi.get("code") or ""
+    updated_at = now_iso()
+    placement_updates = {
+        "prodi_id": prodi_id,
+        "prodi_name": prodi_name,
+        "prodi_kode": prodi_kode,
+        "class_type": class_type,
+        "learning_mode": learning_mode,
+        "admin_placement_updated_at": updated_at,
+        "admin_placement_updated_by": user.get("name") or user.get("username") or user.get("id") or "Admin",
+        "updated_at": updated_at,
+    }
+    await db.pmb_applicants.update_one({"id": applicant_id}, {"$set": placement_updates})
+
+    # Jika pendaftar sudah terhubung ke akun SIAKAD, jaga agar profil utama tetap konsisten.
+    student_user_id = str(applicant.get("student_user_id") or "").strip()
+    if student_user_id:
+        await db.users.update_one(
+            {"id": student_user_id},
+            {"$set": {
+                "prodi_id": prodi_id,
+                "prodi_name": prodi_name,
+                "prodi_kode": prodi_kode,
+                "class_type": class_type,
+                "learning_mode": learning_mode,
+                "updated_at": updated_at,
+            }},
+        )
+
+    updated = await db.pmb_applicants.find_one({"id": applicant_id}, {"_id": 0, "password_hash": 0})
+    return {
+        "ok": True,
+        "message": "Program studi dan jalur kelas berhasil diperbarui",
+        "applicant": updated,
+        "siakad_synced": bool(student_user_id),
+    }
 
 
 @router.post("/admin/applicants/{applicant_id}/verify-payment")
@@ -4369,6 +5274,117 @@ async def admin_verify_specific_payment_transaction(
     }
 
 
+@router.post("/admin/applicants/{applicant_id}/imported-payment-status")
+async def admin_set_imported_payment_status(
+    applicant_id: str,
+    payload: PmbImportedPaymentStatusInput,
+    request: Request,
+    user: Dict[str, Any] = Depends(require_admin),
+):
+    """Admin: input manual status pembayaran untuk mahasiswa hasil import Excel."""
+    db: PostgresDatabase = get_db(request)
+    settings = await get_or_init_settings(db)
+    applicant = await db.pmb_applicants.find_one({"id": applicant_id}, {"_id": 0})
+    if not applicant:
+        raise HTTPException(status_code=404, detail="Data pendaftar tidak ditemukan")
+    if applicant.get("source") != IMPORTED_STUDENT_SOURCE:
+        raise HTTPException(status_code=400, detail="Aksi ini hanya tersedia untuk data hasil Import Excel")
+
+    status = str(payload.status or "").strip().lower()
+    if status in {"lunas", "paid", "verified", "terbayar"}:
+        status = "paid"
+    elif status in {"outstanding", "tunggakan", "partial", "belum_lunas"}:
+        status = "outstanding"
+    else:
+        raise HTTPException(status_code=400, detail="Status pembayaran harus Lunas atau Ada Tunggakan")
+
+    reg_fee = float(applicant.get("reg_payment_fee") or settings.get("registration_fee") or 250000)
+    outstanding = float(payload.outstanding_amount or 0)
+    if status == "outstanding" and outstanding <= 0:
+        raise HTTPException(status_code=400, detail="Nominal tunggakan wajib diisi dan harus lebih dari 0")
+    if status == "paid":
+        outstanding = 0.0
+
+    paid_amount = max(0.0, reg_fee - outstanding)
+    updates = {
+        "manual_payment_status": status,
+        "manual_payment_outstanding": outstanding,
+        "manual_payment_notes": str(payload.notes or "").strip(),
+        "manual_payment_updated_at": now_iso(),
+        "manual_payment_updated_by": user.get("name") or user.get("username") or user.get("id") or "Admin",
+        "reg_payment_status": "verified" if status == "paid" else ("partial" if paid_amount > 0 else "pending"),
+        "registration_fee_paid": status == "paid",
+        "reg_fee_paid_amount": paid_amount,
+        "reg_fee_remaining": min(reg_fee, outstanding),
+        "status": "imported_needs_review",
+        "manual_completion_status": "payment_reviewed",
+        "updated_at": now_iso(),
+    }
+    await db.pmb_applicants.update_one({"id": applicant_id}, {"$set": updates})
+    updated = await db.pmb_applicants.find_one({"id": applicant_id}, {"_id": 0, "password_hash": 0})
+    balances = compute_applicant_balances(updated or {**applicant, **updates}, settings)
+    finance_migration: Dict[str, Any] = {
+        "status": "student_not_found",
+        "created": False,
+        "bill": None,
+        "amount": 0.0,
+    }
+    student_id = str((updated or applicant).get("student_user_id") or "").strip()
+    if student_id:
+        student = await db.users.find_one({"id": student_id, "role": "student"}, {"_id": 0})
+        if student:
+            finance_migration = await ensure_pmb_carryover_bill(
+                db,
+                student=student,
+                applicant=updated or {**applicant, **updates},
+                balances=balances,
+            )
+            finance_fields = await persist_finance_migration(
+                db,
+                applicant_id=applicant_id,
+                student_id=student_id,
+                result=finance_migration,
+            )
+            if updated is not None:
+                updated = {**updated, **finance_fields}
+        else:
+            finance_migration = {
+                "status": "student_not_found",
+                "created": False,
+                "bill": None,
+                "amount": 0.0,
+            }
+            finance_fields = await persist_finance_migration(
+                db,
+                applicant_id=applicant_id,
+                student_id="",
+                result=finance_migration,
+            )
+            if updated is not None:
+                updated = {**updated, **finance_fields}
+    else:
+        finance_fields = await persist_finance_migration(
+            db,
+            applicant_id=applicant_id,
+            student_id="",
+            result=finance_migration,
+        )
+        if updated is not None:
+            updated = {**updated, **finance_fields}
+    return {
+        "ok": True,
+        "message": "Status pembayaran manual berhasil disimpan",
+        "applicant": updated,
+        "balances": balances,
+        "finance_migration": {
+            "status": finance_migration.get("status"),
+            "created": finance_migration.get("created", False),
+            "bill_id": (finance_migration.get("bill") or {}).get("id", ""),
+            "amount": finance_migration.get("amount", 0.0),
+        },
+    }
+
+
 @router.post("/admin/applicants/{applicant_id}/offline-score")
 async def admin_input_offline_score(
     applicant_id: str,
@@ -4378,11 +5394,14 @@ async def admin_input_offline_score(
 ):
     """Admin/Penguji: Input nilai tes offline dan penetapan status kelulusan."""
     db: PostgresDatabase = get_db(request)
+    settings = await get_or_init_settings(db)
     applicant = await db.pmb_applicants.find_one({"id": applicant_id}, {"_id": 0})
     if not applicant:
         raise HTTPException(status_code=404, detail="Pendaftar tidak ditemukan")
 
-    is_passed = payload.status.lower() == "passed" or payload.score >= 70
+    passing_grade = float(settings.get("passing_grade", 70) or 70)
+    grade_info = determine_cbt_grade(payload.score, settings.get("cbt_grade_settings"))
+    is_passed = payload.score >= passing_grade
     status_str = "passed" if is_passed else "failed"
     next_step = 7 if is_passed else 6
 
@@ -4390,6 +5409,10 @@ async def admin_input_offline_score(
         "test_type": "offline",
         "test_score": payload.score,
         "test_status": status_str,
+        "test_grade": grade_info["grade"],
+        "test_grade_label": grade_info["label"],
+        "test_grade_color": grade_info["badge_color"],
+        "test_grade_description": grade_info["description"],
         "offline_examiner_notes": payload.notes or "",
         "test_completed_at": now_iso(),
         "current_step": max(applicant.get("current_step", 1), next_step),
@@ -4397,7 +5420,11 @@ async def admin_input_offline_score(
     }
 
     await db.pmb_applicants.update_one({"id": applicant_id}, {"$set": updates})
-    return {"ok": True, "message": f"Nilai tes offline ({payload.score}) & status '{status_str}' berhasil disimpan"}
+    return {
+        "ok": True,
+        "message": f"Nilai tes offline ({payload.score}) & status '{status_str}' berhasil disimpan",
+        "test_grade": grade_info,
+    }
 
 
 @router.post("/admin/applicants/{applicant_id}/approve-admission")
@@ -4416,6 +5443,10 @@ async def admin_approve_admission(
         raise HTTPException(status_code=404, detail="Pendaftar tidak ditemukan")
 
     is_approved = payload.approval_status.lower() == "approved"
+    if is_approved and applicant.get("source") == IMPORTED_STUDENT_SOURCE and applicant.get("test_status") != "passed":
+        raise HTTPException(status_code=409, detail="SK hanya dapat diterbitkan setelah nilai tes menyatakan calon mahasiswa lulus.")
+    if is_approved and applicant.get("test_status") == "passed" and not applicant.get("interview_schedule_id"):
+        raise HTTPException(status_code=409, detail="SK hanya dapat diterbitkan setelah camaba memilih jadwal wawancara.")
     year_prefix = extract_academic_year_prefix(settings)
     default_sk = f"SK-PMB/{year_prefix}/{applicant.get('registration_number', '0001')}"
     sk_number = (payload.sk_number or "").strip() or applicant.get("sk_number") or default_sk
@@ -4435,7 +5466,7 @@ async def admin_approve_admission(
     }
 
     if is_approved:
-        updates["current_step"] = max(applicant.get("current_step", 1), 8)
+        updates["current_step"] = max(applicant.get("current_step", 1), 9)
 
     await db.pmb_applicants.update_one({"id": applicant_id}, {"$set": updates})
 
@@ -4470,7 +5501,11 @@ async def bulk_approve_admissions(
     if payload.applicant_ids:
         query = {"id": {"$in": payload.applicant_ids}}
 
-    passed_applicants = await db.pmb_applicants.find(query, {"_id": 0}).to_list(1000)
+    passed_applicants = [
+        app for app in await db.pmb_applicants.find(query, {"_id": 0}).to_list(1000)
+        if not (app.get("source") == IMPORTED_STUDENT_SOURCE and app.get("test_status") != "passed")
+        and (app.get("test_status") != "passed" or app.get("interview_schedule_id"))
+    ]
     year_prefix = extract_academic_year_prefix(settings)
     approver_name = user.get("name") or user.get("username") or "Panitia PMB"
     sk_date = payload.sk_date.strip() if payload.sk_date else datetime.now().strftime("%d %B %Y")
@@ -4488,7 +5523,7 @@ async def bulk_approve_admissions(
                 "sk_approved_by": approver_name,
                 "decision_notes": "Dinyatakan DITERIMA Resmi melalui Keputusan Panitia PMB.",
                 "status": "accepted",
-                "current_step": max(app.get("current_step", 1), 8),
+                "current_step": max(app.get("current_step", 1), 9),
                 "updated_at": now_iso(),
             }
             await db.pmb_applicants.update_one({"id": app["id"]}, {"$set": updates})
@@ -4518,7 +5553,7 @@ async def admin_verify_reregistration(applicant_id: str, request: Request, user:
     updates = {
         "reregistration_status": "completed",
         "installments": installments,
-        "current_step": max(applicant.get("current_step", 1), 8)
+        "current_step": max(applicant.get("current_step", 1), 10 if applicant.get("shirt_size") else 9)
     }
     await db.pmb_applicants.update_one({"id": applicant_id}, {"$set": updates})
 
@@ -4546,29 +5581,97 @@ async def admin_convert_applicant_to_student(
         raise HTTPException(status_code=404, detail="Pendaftar tidak ditemukan")
 
     if applicant.get("is_converted_to_student"):
+        finance_migration: Dict[str, Any] = {
+            "status": "student_not_found",
+            "created": False,
+            "bill": None,
+            "amount": 0.0,
+        }
+        existing_student_id = str(applicant.get("student_user_id") or "").strip()
+        if existing_student_id:
+            existing_student = await db.users.find_one(
+                {"id": existing_student_id, "role": "student"},
+                {"_id": 0},
+            )
+            if existing_student:
+                balances = compute_applicant_balances(applicant, settings)
+                finance_migration = await ensure_pmb_carryover_bill(
+                    db,
+                    student=existing_student,
+                    applicant=applicant,
+                    balances=balances,
+                )
+                await persist_finance_migration(
+                    db,
+                    applicant_id=applicant_id,
+                    student_id=existing_student_id,
+                    result=finance_migration,
+                )
+            else:
+                await persist_finance_migration(
+                    db,
+                    applicant_id=applicant_id,
+                    student_id="",
+                    result=finance_migration,
+                )
         return {
             "ok": True,
             "message": f"Mahasiswa sudah pernah diaktifkan sebelumnya dengan NIM {applicant.get('generated_nim')}",
             "nim": applicant.get("generated_nim"),
-            "student_id": applicant.get("student_user_id")
+            "student_id": applicant.get("student_user_id"),
+            "class_assignment_status": applicant.get("class_assignment_status", "assigned"),
+            "finance_migration": {
+                "status": finance_migration.get("status"),
+                "created": finance_migration.get("created", False),
+                "bill_id": (finance_migration.get("bill") or {}).get("id", ""),
+                "amount": finance_migration.get("amount", 0.0),
+            },
         }
 
-    year_prefix = extract_academic_year_prefix(settings)
+    block_reason = conversion_block_reason(applicant)
+    if block_reason:
+        raise HTTPException(status_code=409, detail=block_reason)
+
     prodi_id = applicant.get("prodi_id") or ""
     prodi = await db.programs.find_one({"id": prodi_id}, {"_id": 0}) if prodi_id else None
-    
-    prodi_kode = (prodi.get("kode") or prodi.get("code", "01")) if prodi else "01"
-    prodi_code_clean = re.sub(r"\D", "", prodi_kode) or "01"
 
-    count_students = await db.users.count_documents({"role": "student"})
-    generated_nim = f"{year_prefix}{prodi_code_clean.zfill(2)}{count_students + 1:04d}"
+    if not prodi:
+        raise HTTPException(status_code=409, detail="Program studi Camaba tidak ditemukan di master data.")
 
-    dup = await db.users.find_one({"nim": generated_nim}, {"_id": 0})
-    if dup:
-        generated_nim = f"{year_prefix}{prodi_code_clean.zfill(2)}{count_students + 2:04d}"
+    programs = await db.programs.find(
+        {},
+        {"_id": 0, "id": 1, "kode": 1, "code": 1, "nama": 1, "name": 1, "nim_code": 1, "kode_nim": 1},
+    ).to_list(2000)
+    generated_nim = await _next_student_nim(db, settings, prodi, programs)
+    identity_conflict = await db.users.find_one(
+        {
+            "$or": [
+                {"email": applicant.get("email")},
+                {"whatsapp": applicant.get("whatsapp")},
+                {"nim": generated_nim},
+                {"username": generated_nim.lower()},
+            ]
+        },
+        {"_id": 0, "id": 1, "email": 1, "whatsapp": 1, "nim": 1, "username": 1},
+    )
+    if identity_conflict:
+        raise HTTPException(
+            status_code=409,
+            detail="Email, nomor WhatsApp, atau NIM Camaba sudah digunakan oleh akun SIAKAD lain.",
+        )
 
-    student_class = await db.classes.find_one({"program_id": prodi_id}, {"_id": 0})
-    class_id = student_class.get("id") if student_class else ""
+    student_class, class_context = await _find_conversion_class(db, applicant, settings)
+    class_id = str(student_class.get("id") or "").strip() if student_class else ""
+    class_assignment_status = "assigned" if class_id else "pending"
+    class_assignment_note = (
+        "Kelas aktif periode berjalan berhasil dipilih."
+        if class_id
+        else "Belum ada satu kelas aktif periode berjalan yang cocok dan tidak ambigu; penugasan kelas perlu dilakukan admin."
+    )
+    intake_year = _academic_intake_year(settings)
+    prodi_kode = prodi.get("kode") or prodi.get("code") or "01"
+    prodi_nama = prodi.get("nama") or prodi.get("name") or applicant.get("prodi_name", "")
+    password_source = "pmb" if applicant.get("password_hash") else "default"
 
     student_user_id = f"mhs_{uuid4().hex[:12]}"
     student_doc = {
@@ -4583,9 +5686,13 @@ async def admin_convert_applicant_to_student(
         "status": "active",
         "class_ids": [class_id] if class_id else [],
         "prodi_id": prodi_id,
-        "prodi_name": applicant.get("prodi_name", ""),
+        "prodi_name": prodi_nama,
         "prodi_kode": prodi_kode,
-        "angkatan": year_prefix,
+        "prodi_id_2": applicant.get("prodi_id_2", ""),
+        "prodi_2_name": applicant.get("prodi_2_name", ""),
+        "angkatan": intake_year,
+        "academic_year": class_context.get("academic_year", ""),
+        "semester": class_context.get("semester", ""),
         "gender": applicant.get("gender", "L"),
         "tempat_lahir": applicant.get("tempat_lahir", ""),
         "tanggal_lahir": applicant.get("tanggal_lahir", ""),
@@ -4593,6 +5700,16 @@ async def admin_convert_applicant_to_student(
         "alamat": applicant.get("alamat", ""),
         "kota": applicant.get("kota", ""),
         "provinsi": applicant.get("provinsi", ""),
+        "nik": applicant.get("nik", ""),
+        "nisn": applicant.get("nisn", ""),
+        "nama_ibu_kandung": applicant.get("nama_ibu_kandung", ""),
+        "asal_sekolah": applicant.get("asal_sekolah", ""),
+        "npsn_sekolah": applicant.get("npsn_sekolah", ""),
+        "alamat_sekolah": applicant.get("alamat_sekolah", ""),
+        "jurusan_asal": applicant.get("jurusan_asal", ""),
+        "tahun_lulus": applicant.get("tahun_lulus", ""),
+        "tinggi_badan": applicant.get("tinggi_badan", 0.0),
+        "berat_badan": applicant.get("berat_badan", 0.0),
         "class_type": applicant.get("class_type", "reguler"),
         "learning_mode": applicant.get("learning_mode", "offline"),
         "shirt_size": applicant.get("shirt_size", "L"),
@@ -4600,33 +5717,147 @@ async def admin_convert_applicant_to_student(
         "emergency_contact_phone": applicant.get("emergency_contact_phone", ""),
         "referral_code": applicant.get("referral_code", ""),
         "referrer_name": applicant.get("referrer_name", ""),
+        "referrer_id": applicant.get("referrer_id", ""),
+        "referrer_category": applicant.get("referrer_category", ""),
+        "info_source": applicant.get("info_source", ""),
+        "pmb_applicant_id": applicant_id,
+        "pmb_registration_number": applicant.get("registration_number", ""),
+        "siakad_password_source": password_source,
+        "class_assignment_status": class_assignment_status,
+        "class_assignment_note": class_assignment_note,
+        "registration": {
+            "source": "pmb",
+            "applicant_id": applicant_id,
+            "registration_number": applicant.get("registration_number", ""),
+            "period_name": applicant.get("period_name", ""),
+            "gelombang": applicant.get("gelombang", ""),
+            "test_status": applicant.get("test_status", ""),
+            "test_score": applicant.get("test_score"),
+            "sk_approved": bool(applicant.get("sk_approved")),
+            "sk_number": applicant.get("sk_number", ""),
+            "sk_date": applicant.get("sk_date", ""),
+            "reregistration_status": applicant.get("reregistration_status", ""),
+        },
         "created_at": now_iso(),
         "last_login_at": "",
     }
 
-    await db.users.insert_one(student_doc)
+    inserted_student = False
+    linked_class = False
+    finance_migration: Dict[str, Any] = {
+        "status": "not_required",
+        "created": False,
+        "bill": None,
+        "amount": 0.0,
+    }
+    try:
+        await db.users.insert_one(student_doc)
+        inserted_student = True
 
-    if class_id:
-        await db.classes.update_one({"id": class_id}, {"$addToSet": {"student_ids": student_user_id}})
+        if class_id:
+            class_update = await db.classes.update_one(
+                {"id": class_id, "status": "active"},
+                {"$addToSet": {"student_ids": student_user_id}},
+            )
+            if getattr(class_update, "matched_count", 1) == 0:
+                raise HTTPException(status_code=409, detail="Kelas aktif yang dipilih sudah tidak tersedia.")
+            linked_class = True
 
-    await db.pmb_applicants.update_one(
-        {"id": applicant_id},
-        {"$set": {
-            "is_converted_to_student": True,
-            "generated_nim": generated_nim,
-            "student_user_id": student_user_id,
-            "converted_at": now_iso(),
-            "status": "accepted_siakad",
-            "current_step": 9
-        }}
-    )
+        balances = compute_applicant_balances(applicant, settings)
+        finance_migration = await ensure_pmb_carryover_bill(
+            db,
+            student=student_doc,
+            applicant=applicant,
+            balances=balances,
+        )
+        finance_fields = finance_migration_fields(finance_migration)
+        applicant_update = await db.pmb_applicants.update_one(
+            {"id": applicant_id},
+            {"$set": {
+                "is_converted_to_student": True,
+                "generated_nim": generated_nim,
+                "student_user_id": student_user_id,
+                "converted_at": now_iso(),
+                "status": "accepted_siakad",
+                "current_step": 10,
+                "class_assignment_status": class_assignment_status,
+                "class_assignment_note": class_assignment_note,
+                "assigned_class_id": class_id,
+                "conversion_academic_year": class_context.get("academic_year", ""),
+                "conversion_semester": class_context.get("semester", ""),
+                "siakad_password_source": password_source,
+                **finance_fields,
+            }}
+        )
+        if getattr(applicant_update, "matched_count", 1) == 0:
+            raise HTTPException(status_code=409, detail="Camaba sudah diproses oleh admin lain.")
+        await db.users.update_one({"id": student_user_id, "role": "student"}, {"$set": finance_fields})
+    except HTTPException:
+        if linked_class:
+            await db.classes.update_one({"id": class_id}, {"$pull": {"student_ids": student_user_id}})
+        if inserted_student:
+            await db.users.delete_one({"id": student_user_id})
+        if finance_migration.get("created") and (finance_migration.get("bill") or {}).get("id"):
+            await db.tuition_bills.delete_one({"id": finance_migration["bill"]["id"]})
+        raise
+    except Exception as exc:
+        if linked_class:
+            await db.classes.update_one({"id": class_id}, {"$pull": {"student_ids": student_user_id}})
+        if inserted_student:
+            await db.users.delete_one({"id": student_user_id})
+        if finance_migration.get("created") and (finance_migration.get("bill") or {}).get("id"):
+            await db.tuition_bills.delete_one({"id": finance_migration["bill"]["id"]})
+        raise HTTPException(status_code=500, detail=f"Konversi ke SIAKAD gagal dan perubahan dibatalkan: {exc}")
 
     return {
         "ok": True,
-        "message": f"Calon Mahasiswa '{applicant.get('name')}' berhasil diaktifkan ke SIAKAD dengan NIM: {generated_nim}",
+        "message": (
+            f"Calon Mahasiswa '{applicant.get('name')}' berhasil diaktifkan ke SIAKAD dengan NIM: {generated_nim}"
+            + (" Kelas belum ditentukan dan perlu ditugaskan admin." if not class_id else "")
+        ),
         "nim": generated_nim,
-        "student_user_id": student_user_id
+        "student_user_id": student_user_id,
+        "class_id": class_id,
+        "class_assignment_status": class_assignment_status,
+        "class_assignment_note": class_assignment_note,
+        "finance_migration": {
+            "status": finance_migration.get("status"),
+            "created": finance_migration.get("created", False),
+            "bill_id": (finance_migration.get("bill") or {}).get("id", ""),
+            "amount": finance_migration.get("amount", 0.0),
+        },
     }
+
+
+@router.post("/student-session")
+async def create_converted_student_session(
+    request: Request,
+    applicant: Dict[str, Any] = Depends(get_current_applicant),
+):
+    """Issue a real SIAKAD session after a converted Camaba clicks through."""
+    db: PostgresDatabase = get_db(request)
+    if not applicant.get("is_converted_to_student"):
+        raise HTTPException(status_code=409, detail="Akun SIAKAD belum diaktifkan oleh admin.")
+
+    student_id = str(applicant.get("student_user_id") or "").strip()
+    student = await db.users.find_one(
+        {"id": student_id, "role": "student", "status": "active"},
+        {"_id": 0},
+    )
+    if not student:
+        raise HTTPException(status_code=409, detail="Data mahasiswa SIAKAD tidak ditemukan. Hubungi admin kampus.")
+
+    token = new_id() + new_id()
+    await db.sessions.insert_one(
+        {
+            "token": token,
+            "user_id": student["id"],
+            "auth_source": "pmb_conversion",
+            "created_at": now_iso(),
+        }
+    )
+    safe_student = {key: value for key, value in student.items() if key not in {"password_hash", "_id"}}
+    return {"ok": True, "token": token, "user": safe_student}
 
 
 @router.post("/admin/applicants/bulk-convert")
@@ -4635,6 +5866,7 @@ async def bulk_convert_applicants(request: Request, user: Dict[str, Any] = Depen
     db: PostgresDatabase = get_db(request)
     eligible = await db.pmb_applicants.find({
         "test_status": "passed",
+        "sk_approved": True,
         "reregistration_status": {"$in": ["partial", "completed"]},
         "is_converted_to_student": {"$ne": True}
     }, {"_id": 0}).to_list(500)
@@ -4664,6 +5896,7 @@ async def get_pmb_admin_stats(request: Request, user: Dict[str, Any] = Depends(r
     """Admin: Ringkasan statistik dasar PMB."""
     db: PostgresDatabase = get_db(request)
     settings = await get_or_init_settings(db)
+    await sync_imported_students_to_pmb(db)
     all_applicants = await db.pmb_applicants.find({}, {"_id": 0, "password_hash": 0}).to_list(2000)
 
     total_registered = len(all_applicants)
@@ -4729,6 +5962,7 @@ async def get_pmb_admin_stats(request: Request, user: Dict[str, Any] = Depends(r
 async def get_pmb_detailed_analytics(request: Request, user: Dict[str, Any] = Depends(require_admin)):
     """Admin: Modul Analisis Pendaftar Mendalam — Pengelompokan, Pemetaan Wilayah, Sekolah Asal, dan Drop-off Funnel."""
     db: PostgresDatabase = get_db(request)
+    await sync_imported_students_to_pmb(db)
     all_applicants = await db.pmb_applicants.find({}, {"_id": 0, "password_hash": 0}).to_list(3000)
     programs = await db.programs.find({}, {"_id": 0}).to_list(100)
 
@@ -5351,6 +6585,7 @@ async def save_admin_landing_config(request: Request, user: Dict[str, Any] = Dep
     updates = {}
     allowed_keys = [
         "landing_logo_url",
+        "landing_images",
         "landing_announcement", "landing_hero_badge", "landing_hero_title", "landing_hero_subtitle",
         "landing_cta_primary_label", "landing_cta_secondary_label", "landing_stat_accreditation",
         "landing_stat_career", "landing_stat_scholarship", "landing_stat_selection",
@@ -5361,6 +6596,21 @@ async def save_admin_landing_config(request: Request, user: Dict[str, Any] = Dep
     for key in allowed_keys:
         if key in body:
             updates[key] = body[key]
+
+    if "landing_images" in updates:
+        current_settings = await get_or_init_settings(db)
+        current_images = current_settings.get("landing_images")
+        merged_images = dict(current_images) if isinstance(current_images, dict) else {}
+        requested_images = updates["landing_images"]
+        if not isinstance(requested_images, dict):
+            raise HTTPException(status_code=400, detail="Format pengaturan foto landing PMB tidak valid")
+        for slot in ("hero", "entrance", "learning_center", "aerial"):
+            if slot in requested_images:
+                value = requested_images[slot]
+                if value is not None and not isinstance(value, str):
+                    raise HTTPException(status_code=400, detail=f"URL foto pada slot {slot} tidak valid")
+                merged_images[slot] = value or ""
+        updates["landing_images"] = merged_images
 
     updates["updated_at"] = now_iso()
     await db.pmb_settings.update_one({"id": "pmb_global_settings"}, {"$set": updates})
@@ -5420,5 +6670,81 @@ async def upload_pmb_landing_logo(
         "ok": True,
         "message": "Logo landing page PMB berhasil diunggah",
         "landing_logo_url": landing_logo_url,
+        "settings": updated,
+    }
+
+
+@router.post("/admin/upload-landing-image/{slot}")
+async def upload_pmb_landing_image(
+    slot: str,
+    request: Request,
+    file: UploadFile = File(...),
+    user: Dict[str, Any] = Depends(require_admin),
+):
+    """Admin: mengganti foto yang digunakan pada slot landing page PMB."""
+    allowed_slots = {
+        "hero": "Foto hero utama",
+        "entrance": "Foto area masuk kampus",
+        "learning_center": "Foto learning center",
+        "aerial": "Foto udara / sudut arsitektur kampus",
+    }
+    slot = (slot or "").strip().lower()
+    if slot not in allowed_slots:
+        raise HTTPException(status_code=400, detail="Slot foto landing PMB tidak dikenal")
+    if not file.filename:
+        raise HTTPException(status_code=400, detail=f"{allowed_slots[slot]} tidak valid")
+
+    allowed_exts = {".jpg", ".jpeg", ".png", ".webp"}
+    ext = Path(file.filename).suffix.lower()
+    if ext not in allowed_exts:
+        raise HTTPException(status_code=400, detail="Format foto harus berupa JPG, PNG, atau WEBP")
+    if file.content_type and not file.content_type.startswith("image/"):
+        raise HTTPException(status_code=400, detail="File yang diunggah harus berupa gambar")
+
+    content = await file.read()
+    if len(content) > 10 * 1024 * 1024:
+        raise HTTPException(status_code=400, detail="Ukuran foto landing PMB maksimal 10 MB")
+
+    db: PostgresDatabase = get_db(request)
+    settings = await get_or_init_settings(db)
+    file_token = secrets.token_hex(8)
+    safe_name = re.sub(r"[^A-Za-z0-9._-]+", "_", Path(file.filename).name).strip("._") or f"pmb_{slot}{ext}"
+    filename = f"landing_{slot}_{file_token[:8]}_{safe_name}"
+
+    PMB_BRANDING_DIR.mkdir(parents=True, exist_ok=True)
+    file_path = PMB_BRANDING_DIR / filename
+    file_path.write_bytes(content)
+
+    file_id = f"pmb-landing-image-{slot}-{file_token[:8]}"
+    file_doc = {
+        "id": file_id,
+        "record_type": "pmb_landing_image",
+        "slot": slot,
+        "owner_user_id": user["id"],
+        "file_name": safe_name,
+        "original_name": file.filename,
+        "mime_type": file.content_type or f"image/{ext.replace('.', '')}",
+        "size": len(content),
+        "local_path": str(file_path),
+        "created_at": now_iso(),
+    }
+    await db.stored_files.update_one({"id": file_id}, {"$set": file_doc}, upsert=True)
+
+    landing_image_url = f"/api/files/{file_id}/inline"
+    current_images = settings.get("landing_images")
+    landing_images = dict(current_images) if isinstance(current_images, dict) else {}
+    landing_images[slot] = landing_image_url
+    await db.pmb_settings.update_one(
+        {"id": "pmb_global_settings"},
+        {"$set": {"landing_images": landing_images, "updated_at": now_iso()}},
+        upsert=True,
+    )
+    updated = await db.pmb_settings.find_one({"id": "pmb_global_settings"}, {"_id": 0})
+    return {
+        "ok": True,
+        "message": f"{allowed_slots[slot]} berhasil diunggah",
+        "slot": slot,
+        "landing_image_url": landing_image_url,
+        "landing_images": landing_images,
         "settings": updated,
     }
