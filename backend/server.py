@@ -13761,14 +13761,15 @@ if _FRONTEND_BUILD.exists():
                 response.headers["Cache-Control"] = self.cache_control
             return response
 
-    app.mount(
-        "/static",
-        CachedStaticFiles(
-            directory=str(_FRONTEND_BUILD / "static"),
-            cache_control="public, max-age=31536000, immutable",
-        ),
-        name="static-assets",
-    )
+    if (_FRONTEND_BUILD / "static").exists():
+        app.mount(
+            "/static",
+            CachedStaticFiles(
+                directory=str(_FRONTEND_BUILD / "static"),
+                cache_control="public, max-age=31536000, immutable",
+            ),
+            name="static-assets",
+        )
     if (_FRONTEND_BUILD / "campus").exists():
         app.mount(
             "/campus",
