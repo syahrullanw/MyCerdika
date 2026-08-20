@@ -5,6 +5,7 @@
  */
 
 import React, { useState, useEffect, useCallback, useMemo } from "react";
+import { isKaprodiUser } from "@/accessControl";
 import {
   BookOpen,
   Plus,
@@ -126,18 +127,22 @@ export function KurikulumMasterPage({ user }) {
   const [activeKurikulum, setActiveKurikulum] = useState(null); // Detail view
   const [selectedRpsCourse, setSelectedRpsCourse] = useState(null); // Modal RPS Silabus
 
-  const isKaprodi = Boolean(
-    user &&
-    user.role !== "admin" &&
-    (user.is_kaprodi || user.kaprodi_prodi_id || (user.jabatan_akademik || "").toLowerCase().includes("kaprodi"))
-  );
+  const isKaprodi = Boolean(user && user.role !== "admin" && isKaprodiUser(user));
   const kaprodiProdiId = user?.kaprodi_prodi_id || user?.prodi_id;
+  const isOrdinaryLecturer = Boolean(
+    user
+    && ["lecturer", "dosen"].includes(String(user.role || "").toLowerCase())
+    && !isKaprodi
+    && (!Array.isArray(user.access_roles) || user.access_roles.length === 0),
+  );
+  const scopedProdiId = isKaprodi ? kaprodiProdiId : (isOrdinaryLecturer ? user?.prodi_id : "");
+  const prodiFilterLocked = Boolean(scopedProdiId && (isKaprodi || isOrdinaryLecturer));
 
   useEffect(() => {
-    if (isKaprodi && kaprodiProdiId && !selectedProdi) {
-      setSelectedProdi(kaprodiProdiId);
+    if (prodiFilterLocked && scopedProdiId && selectedProdi !== scopedProdiId) {
+      setSelectedProdi(scopedProdiId);
     }
-  }, [isKaprodi, kaprodiProdiId, selectedProdi]);
+  }, [prodiFilterLocked, scopedProdiId, selectedProdi]);
 
   // Form Kurikulum Master
   const [showKurForm, setShowKurForm] = useState(false);
@@ -261,29 +266,29 @@ export function KurikulumMasterPage({ user }) {
     setShowCourseForm(true);
   };
 
-  const kaprodiProdiObj = useMemo(() => {
-    if (!kaprodiProdiId) return null;
-    const target = String(kaprodiProdiId).toLowerCase();
+  const scopedProdiObj = useMemo(() => {
+    if (!scopedProdiId) return null;
+    const target = String(scopedProdiId).toLowerCase();
     return prodiList.find((p) => String(p.id).toLowerCase() === target || String(p.kode).toLowerCase() === target);
-  }, [prodiList, kaprodiProdiId]);
+  }, [prodiList, scopedProdiId]);
 
   const filteredKurikulum = useMemo(() => {
-    if (isKaprodi && kaprodiProdiId) {
-      const target = String(kaprodiProdiId).toLowerCase();
+    if (prodiFilterLocked && scopedProdiId) {
+      const target = String(scopedProdiId).toLowerCase();
       return kurikulumList.filter((k) =>
         String(k.prodi_id || "").toLowerCase() === target ||
         String(k.prodi_kode || "").toLowerCase() === target ||
-        String(k.prodi_nama || "").toLowerCase().includes(target)
+        String(k.prodi_nama || "").toLowerCase() === String(scopedProdiObj?.nama || scopedProdiObj?.name || "").toLowerCase()
       );
     }
     if (selectedProdi) {
       return kurikulumList.filter((k) => k.prodi_id === selectedProdi);
     }
     return kurikulumList;
-  }, [kurikulumList, isKaprodi, kaprodiProdiId, selectedProdi]);
+  }, [kurikulumList, prodiFilterLocked, scopedProdiId, scopedProdiObj, selectedProdi]);
 
-  const prodiOptions = isKaprodi && kaprodiProdiId
-    ? [[kaprodiProdiId, kaprodiProdiObj ? `${kaprodiProdiObj.nama} (${kaprodiProdiObj.kode})` : kaprodiProdiId]]
+  const prodiOptions = prodiFilterLocked && scopedProdiId
+    ? [[scopedProdiId, scopedProdiObj ? `${scopedProdiObj.nama} (${scopedProdiObj.kode})` : scopedProdiId]]
     : [
         ["", "-- Semua Program Studi --"],
         ...prodiList.map((p) => [p.id, `${p.nama} (${p.kode})`]),
@@ -331,7 +336,7 @@ export function KurikulumMasterPage({ user }) {
                 </p>
               </div>
             </div>
-            <Btn onClick={() => {
+            {!isOrdinaryLecturer && <Btn onClick={() => {
               setEditingCourseId(null);
               setCourseForm({
                 kode: "",
@@ -346,7 +351,7 @@ export function KurikulumMasterPage({ user }) {
               setShowCourseForm(true);
             }} className="w-full sm:w-auto">
               <Plus className="w-4 h-4" /> Tambah Mata Kuliah
-            </Btn>
+            </Btn>}
           </div>
 
           {/* Stats Cards Breakdown */}
@@ -542,12 +547,12 @@ export function KurikulumMasterPage({ user }) {
                           >
                             <BookOpen className="h-3.5 w-3.5" /> RPS
                           </Btn>
-                          <Btn size="sm" variant="ghost" onClick={() => editCourse(c)} className="w-full px-2">
-                            Edit
-                          </Btn>
-                          <Btn size="sm" variant="ghost" onClick={() => deleteCourse(c.id)} className="w-full px-2 text-red-600 hover:bg-red-50">
-                            Hapus
-                          </Btn>
+                          {!isOrdinaryLecturer && (
+                            <>
+                              <Btn size="sm" variant="ghost" onClick={() => editCourse(c)} className="w-full px-2">Edit</Btn>
+                              <Btn size="sm" variant="ghost" onClick={() => deleteCourse(c.id)} className="w-full px-2 text-red-600 hover:bg-red-50">Hapus</Btn>
+                            </>
+                          )}
                         </div>
                       </article>
                     );
@@ -611,10 +616,12 @@ export function KurikulumMasterPage({ user }) {
                                 >
                                   <BookOpen className="h-3.5 w-3.5" /> RPS
                                 </Btn>
-                                <Btn size="sm" variant="ghost" onClick={() => editCourse(c)}>Edit</Btn>
-                                <Btn size="sm" variant="ghost" onClick={() => deleteCourse(c.id)} className="text-red-600 hover:bg-red-50">
-                                  Hapus
-                                </Btn>
+                                {!isOrdinaryLecturer && (
+                                  <>
+                                    <Btn size="sm" variant="ghost" onClick={() => editCourse(c)}>Edit</Btn>
+                                    <Btn size="sm" variant="ghost" onClick={() => deleteCourse(c.id)} className="text-red-600 hover:bg-red-50">Hapus</Btn>
+                                  </>
+                                )}
                               </div>
                             </td>
                           </tr>
@@ -709,13 +716,13 @@ export function KurikulumMasterPage({ user }) {
                 <p className="mt-1 text-xs leading-5 text-slate-500 sm:text-sm">Kelola versi kurikulum, paket MK per semester, rincian SKS, dan penugasan Dosen</p>
               </div>
             </div>
-            <Btn onClick={() => {
+	            {!isOrdinaryLecturer && <Btn onClick={() => {
               setEditingKurId(null);
               setKurForm({ kode: "", nama: "", prodi_id: selectedProdi || "", tahun_mulai: "2024", total_sks_lulus: 144, deskripsi: "", status: "active" });
               setShowKurForm(true);
             }} className="w-full sm:w-auto">
               <Plus className="w-4 h-4" /> Buat Kurikulum Baru
-            </Btn>
+	            </Btn>}
           </div>
 
           {isKaprodi && (
@@ -737,10 +744,10 @@ export function KurikulumMasterPage({ user }) {
             <span className="text-sm font-medium text-slate-700">Filter Program Studi:</span>
             <div className="w-full min-w-0 sm:w-80">
               <FieldSelect
-                value={isKaprodi ? kaprodiProdiId : selectedProdi}
-                onChange={(v) => !isKaprodi && setSelectedProdi(v)}
-                options={prodiOptions}
-                disabled={isKaprodi}
+	                value={prodiFilterLocked ? scopedProdiId : selectedProdi}
+	                onChange={(v) => !prodiFilterLocked && setSelectedProdi(v)}
+	                options={prodiOptions}
+	                disabled={prodiFilterLocked}
               />
             </div>
           </div>
@@ -777,7 +784,7 @@ export function KurikulumMasterPage({ user }) {
           {/* List Kurikulum Cards */}
           <div className="space-y-4">
             {filteredKurikulum.length === 0 ? (
-              <Card><EmptyState Icon={BookOpen} title="Belum ada Kurikulum" desc="Klik 'Buat Kurikulum Baru' untuk menambahkan versi kurikulum baru." /></Card>
+	              <Card><EmptyState Icon={BookOpen} title="Belum ada Kurikulum" desc={isOrdinaryLecturer ? "Belum ada kurikulum pada prodi homebase Anda." : "Klik 'Buat Kurikulum Baru' untuk menambahkan versi kurikulum baru."} /></Card>
             ) : (
               filteredKurikulum.map((kur) => (
                 <Card key={kur.id} className="group p-4 transition hover:border-indigo-300 sm:p-5">
@@ -796,7 +803,7 @@ export function KurikulumMasterPage({ user }) {
                     </div>
 
                     <div className="grid shrink-0 grid-cols-2 gap-2 sm:flex sm:items-center">
-                      <Btn variant="secondary" onClick={() => {
+	                      {!isOrdinaryLecturer && <Btn variant="secondary" onClick={() => {
                         setEditingKurId(kur.id);
                         setKurForm({
                           kode: kur.kode || "",
@@ -810,9 +817,9 @@ export function KurikulumMasterPage({ user }) {
                         setShowKurForm(true);
                       }} className="w-full sm:w-auto">
                         <Pencil className="w-3.5 h-3.5" /> Edit
-                      </Btn>
-                      <Btn onClick={() => openDetail(kur)} className="w-full px-2 sm:w-auto sm:px-4">
-                        Kelola MK & SKS →
+	                      </Btn>}
+	                      <Btn onClick={() => openDetail(kur)} className="w-full px-2 sm:w-auto sm:px-4">
+	                        {isOrdinaryLecturer ? "Lihat MK & Dosen →" : "Kelola MK & SKS →"}
                       </Btn>
                     </div>
                   </div>

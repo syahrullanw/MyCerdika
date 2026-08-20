@@ -12,7 +12,17 @@ from fastapi.responses import HTMLResponse
 from pydantic import BaseModel, Field
 
 from postgres_database import PostgresDatabase
-from routers.user_access import rebuild_user_position_access, user_is_admin_or_access_role
+from program_scope import (
+    record_matches_program_scope,
+    resolve_program_identifiers,
+    split_program_identifiers,
+)
+from routers.user_access import (
+    normalize_base_role,
+    rebuild_user_position_access,
+    user_is_admin_or_access_role,
+    user_is_program_manager,
+)
 
 
 router = APIRouter(prefix="/api/v1/master", tags=["Master Data SIAKAD"])
@@ -45,21 +55,7 @@ async def get_current_user(request: Request) -> Dict[str, Any]:
 
 async def get_current_user_with_roles(request: Request) -> Dict[str, Any]:
     user = await get_current_user(request)
-    jabatan = str(user.get("jabatan_akademik") or user.get("jabatan") or user.get("tugas_tambahan") or "").lower()
-    derived_roles = user.get("access_roles")
-    # If the assignment synchronizer has run, its derived roles are the source
-    # of truth. The legacy text-field fallback is kept only for old accounts
-    # that have not been synchronized yet.
-    has_synced_roles = isinstance(derived_roles, list)
-    is_kaprodi = (
-        user.get("is_kaprodi") is True
-        or str(user.get("is_kaprodi")).lower() == "true"
-        or bool(user.get("kaprodi_prodi_id"))
-        or "kaprodi" in (derived_roles or [])
-        or "sekprodi" in (derived_roles or [])
-        or (not has_synced_roles and ("kaprodi" in jabatan or "ketua prodi" in jabatan))
-    )
-    user["is_kaprodi"] = is_kaprodi
+    user["is_kaprodi"] = user_is_program_manager(user)
     return user
 
 
@@ -83,6 +79,89 @@ def now_iso() -> str:
 
 def new_id() -> str:
     return str(uuid4())
+
+
+def _is_ordinary_lecturer(user: Optional[Dict[str, Any]]) -> bool:
+    return bool(
+        user
+        and normalize_base_role(user.get("role")) == "lecturer"
+        and not user_is_program_manager(user)
+        and not user_is_admin_or_access_role(user, "academic_operator")
+    )
+
+
+async def _lecturer_homebase_scope(
+    db: PostgresDatabase,
+    user: Dict[str, Any],
+) -> List[str]:
+    return await resolve_program_identifiers(
+        db,
+        user.get("prodi_id"),
+        user.get("program_id"),
+        user.get("homebase"),
+        user.get("prodi_name"),
+        user.get("program_name"),
+    )
+
+
+def _is_scoped_program_manager(user: Optional[Dict[str, Any]]) -> bool:
+    return bool(
+        user
+        and user_is_program_manager(user)
+        and not user_is_admin_or_access_role(user, "academic_operator")
+    )
+
+
+async def _program_manager_scope(
+    db: PostgresDatabase,
+    user: Dict[str, Any],
+) -> List[str]:
+    """Resolve only the active Prodi led by Kaprodi/Sekprodi."""
+    raw_scope: List[str] = []
+    assignments_collection = getattr(db, "jabatan_assignments", None)
+    if assignments_collection is not None:
+        assignments = await assignments_collection.find(
+            {
+                "user_id": user.get("id", ""),
+                "jabatan_kode": {"$in": ["KAPRODI", "SEKPRODI"]},
+                "status": {"$nin": ["inactive", "revoked"]},
+            },
+            {"_id": 0, "prodi_id": 1},
+        ).to_list(100)
+        raw_scope = split_program_identifiers(
+            [assignment.get("prodi_id") for assignment in assignments]
+        )
+    if not raw_scope:
+        raw_scope = split_program_identifiers(
+            user.get("access_scope_prodi_ids"),
+            user.get("kaprodi_prodi_id"),
+        )
+    if not raw_scope:
+        raw_scope = split_program_identifiers(user.get("prodi_id"))
+    return await resolve_program_identifiers(db, raw_scope)
+
+
+async def _require_program_manager_record_scope(
+    db: PostgresDatabase,
+    user: Dict[str, Any],
+    record: Dict[str, Any],
+    *,
+    detail: str = "Data berada di luar prodi yang Anda pimpin",
+) -> None:
+    if not _is_scoped_program_manager(user):
+        return
+    scope_values = await _program_manager_scope(db, user)
+    if not record_matches_program_scope(record, scope_values):
+        raise HTTPException(status_code=403, detail=detail)
+
+
+def _lecturer_identifiers(user: Optional[Dict[str, Any]]) -> set[str]:
+    if not user:
+        return set()
+    return {
+        str(user.get(field) or "").strip()
+        for field in ("id", "username", "nidn", "employee_id")
+    } - {""}
 
 
 def _clean_code(value: str) -> str:
@@ -516,6 +595,7 @@ async def list_dosen(
     is_wali: Optional[bool] = None,
     prodi_id: Optional[str] = None,
     db: PostgresDatabase = Depends(get_db),
+    user: Dict = Depends(get_current_user_with_roles),
 ):
     query: Dict = {}
     if is_wali is not None:
@@ -528,6 +608,21 @@ async def list_dosen(
         dosen_list = await db.users.find({**query, "role": {"$in": ["admin", "lecturer", "dosen"]}}, {"_id": 0, "password_hash": 0}).to_list(None)
     if not dosen_list:
         dosen_list = []
+
+    if _is_scoped_program_manager(user):
+        scope_values = await _program_manager_scope(db, user)
+        dosen_list = [
+            dosen
+            for dosen in dosen_list
+            if record_matches_program_scope(
+                dosen,
+                scope_values,
+                fields=(
+                    "prodi_id", "prodi_kode", "program_id", "program_code",
+                    "prodi_name", "program_name", "nama_prodi", "homebase",
+                ),
+            )
+        ]
 
     for d in (dosen_list or []):
         did = d.get("id")
@@ -590,16 +685,36 @@ async def assign_dosen_wali(
     body: Dict[str, Any],
     request: Request,
     db: PostgresDatabase = Depends(get_db),
-    _: Dict = Depends(require_admin_or_kaprodi),
+    user: Dict = Depends(require_admin_or_kaprodi),
 ):
     """Assign dosen wali ke satu atau banyak mahasiswa sekaligus."""
     dosen_id = body.get("dosen_id")
     mahasiswa_ids = body.get("mahasiswa_ids", [])
     if not dosen_id or not mahasiswa_ids:
         raise HTTPException(status_code=400, detail="dosen_id dan mahasiswa_ids diperlukan")
-    dosen = await db.users.find_one({"id": dosen_id}, {"_id": 0, "name": 1})
+    dosen = await db.users.find_one({"id": dosen_id}, {"_id": 0})
     if not dosen:
         raise HTTPException(status_code=404, detail="Dosen tidak ditemukan")
+    await _require_program_manager_record_scope(
+        db,
+        user,
+        dosen,
+        detail="Dosen wali harus memiliki homebase pada prodi yang Anda pimpin",
+    )
+    if _is_scoped_program_manager(user):
+        scope_values = await _program_manager_scope(db, user)
+        students = await db.users.find(
+            {"id": {"$in": mahasiswa_ids}, "role": "student"},
+            {"_id": 0},
+        ).to_list(None)
+        if len(students) != len(set(mahasiswa_ids)) or any(
+            not record_matches_program_scope(student, scope_values)
+            for student in students
+        ):
+            raise HTTPException(
+                status_code=403,
+                detail="Kaprodi hanya dapat menetapkan wali untuk mahasiswa pada prodi yang dipimpin",
+            )
     for mhs_id in mahasiswa_ids:
         await db.users.update_one(
             {"id": mhs_id, "role": "student"},
@@ -618,7 +733,7 @@ async def auto_assign_wali(
     body: Dict[str, Any],
     request: Request,
     db: PostgresDatabase = Depends(get_db),
-    _: Dict = Depends(require_admin_or_kaprodi),
+    user: Dict = Depends(require_admin_or_kaprodi),
 ):
     """Auto-assign mahasiswa secara merata ke Dosen Homebase."""
     mahasiswa_ids = body.get("mahasiswa_ids", [])
@@ -627,12 +742,45 @@ async def auto_assign_wali(
     if not mahasiswa_ids:
         raise HTTPException(status_code=400, detail="Daftar mahasiswa_ids diperlukan")
 
+    manager_scope: List[str] = []
+    if _is_scoped_program_manager(user):
+        manager_scope = await _program_manager_scope(db, user)
+        if prodi_id and str(prodi_id).casefold() not in {
+            str(value).casefold() for value in manager_scope
+        }:
+            raise HTTPException(status_code=403, detail="Prodi berada di luar kewenangan Anda")
+        students = await db.users.find(
+            {"id": {"$in": mahasiswa_ids}, "role": "student"},
+            {"_id": 0},
+        ).to_list(None)
+        if len(students) != len(set(mahasiswa_ids)) or any(
+            not record_matches_program_scope(student, manager_scope)
+            for student in students
+        ):
+            raise HTTPException(
+                status_code=403,
+                detail="Kaprodi hanya dapat membagi wali untuk mahasiswa pada prodi yang dipimpin",
+            )
+
     # Cari dosen yang relevan (homebase prodi atau semua dosen aktif)
     query: Dict = {"role": {"$in": ["admin", "lecturer"]}}
-    if prodi_id:
+    if prodi_id and not manager_scope:
         query["$or"] = [{"prodi_id": prodi_id}, {"prodi_id": None}, {"prodi_id": ""}]
 
-    dosen_list = await db.users.find(query, {"_id": 0, "id": 1, "name": 1}).to_list(None)
+    dosen_list = await db.users.find(query, {"_id": 0}).to_list(None)
+    if manager_scope:
+        dosen_list = [
+            dosen
+            for dosen in dosen_list
+            if record_matches_program_scope(
+                dosen,
+                manager_scope,
+                fields=(
+                    "prodi_id", "prodi_kode", "program_id", "program_code",
+                    "prodi_name", "program_name", "nama_prodi", "homebase",
+                ),
+            )
+        ]
     if not dosen_list:
         raise HTTPException(status_code=400, detail="Tidak ada dosen aktif yang tersedia untuk assign")
 
@@ -2182,7 +2330,7 @@ async def list_jadwal_mengajar(
     dosen_id: Optional[str] = None,
     hari: Optional[int] = None,
     db: PostgresDatabase = Depends(get_db),
-    _: Dict = Depends(get_current_user),
+    user: Dict = Depends(get_current_user_with_roles),
 ):
     return await _fetch_jadwal_mengajar(
         db,
@@ -2191,6 +2339,7 @@ async def list_jadwal_mengajar(
         prodi_id=prodi_id,
         dosen_id=dosen_id,
         hari=hari,
+        current_user=user,
     )
 
 
@@ -2202,7 +2351,9 @@ async def _fetch_jadwal_mengajar(
     prodi_id: Optional[str] = None,
     dosen_id: Optional[str] = None,
     hari: Optional[int] = None,
+    current_user: Optional[Dict[str, Any]] = None,
 ) -> List[Dict[str, Any]]:
+    is_program_manager = _is_scoped_program_manager(current_user)
     query: Dict[str, Any] = {"status": {"$ne": "deleted"}}
     if tahun_ajaran:
         prefix = tahun_ajaran.strip()
@@ -2213,13 +2364,33 @@ async def _fetch_jadwal_mengajar(
         query["academic_year"] = {"$in": matching}
     if semester:
         query["semester"] = semester
-    if prodi_id:
+    if prodi_id and not is_program_manager:
         query["program_id"] = prodi_id
     if dosen_id:
         query["lecturer_id"] = dosen_id
     if hari is not None:
         query["jadwal_hari"] = hari
     classes = await db.classes.find(query, {"_id": 0}).sort("created_at", -1).to_list(1000)
+    own_lecturer_ids = _lecturer_identifiers(current_user)
+    if is_program_manager:
+        program_scope = await _program_manager_scope(db, current_user or {})
+        classes = [
+            class_doc
+            for class_doc in classes
+            if record_matches_program_scope(class_doc, program_scope)
+        ]
+    elif _is_ordinary_lecturer(current_user):
+        homebase_scope = await _lecturer_homebase_scope(db, current_user or {})
+        classes = [
+            class_doc
+            for class_doc in classes
+            if str(class_doc.get("lecturer_id") or "").strip() in own_lecturer_ids
+            or str(class_doc.get("lecturer_nidn") or "").strip() in own_lecturer_ids
+            or (
+                class_doc.get("status") in JADWAL_ACTIVE_STATUSES
+                and record_matches_program_scope(class_doc, homebase_scope)
+            )
+        ]
     dosen_map: Dict[str, str] = {}
     ruangan_map: Dict[str, Dict[str, Any]] = {}
     sks_cache: Dict[str, Any] = {}
@@ -2262,6 +2433,7 @@ async def _fetch_jadwal_mengajar(
                 "status": c.get("status", ""),
                 "dosen_id": lid,
                 "dosen_name": dosen_map.get(lid, c.get("lecturer_name", "")),
+                "is_own_schedule": lid in own_lecturer_ids or str(c.get("lecturer_nidn") or "").strip() in own_lecturer_ids,
                 "jadwal_hari": c.get("jadwal_hari"),
                 "jam_mulai": c.get("jadwal_jam_mulai", ""),
                 "jam_selesai": c.get("jadwal_jam_selesai", ""),
@@ -2281,11 +2453,17 @@ async def update_jadwal_mengajar(
     body: JadwalMengajarInput,
     request: Request,
     db: PostgresDatabase = Depends(get_db),
-    _: Dict = Depends(require_admin),
+    user: Dict = Depends(require_admin_or_kaprodi),
 ):
     class_doc = await db.classes.find_one({"id": class_id, "status": {"$ne": "deleted"}}, {"_id": 0})
     if not class_doc:
         raise HTTPException(status_code=404, detail="Kelas tidak ditemukan")
+    await _require_program_manager_record_scope(
+        db,
+        user,
+        class_doc,
+        detail="Kaprodi hanya dapat mengatur jadwal kelas pada prodi yang dipimpin",
+    )
     if class_doc.get("status") not in ("active", "pending", ""):
         raise HTTPException(status_code=409, detail="Hanya kelas aktif yang dapat dijadwalkan.")
 
@@ -2549,7 +2727,7 @@ async def cetak_jadwal_mengajar(
     body: JadwalCetakInput,
     request: Request,
     db: PostgresDatabase = Depends(get_db),
-    _: Dict = Depends(require_admin_or_kaprodi),
+    user: Dict = Depends(require_admin_or_kaprodi),
 ):
     """Buat lembar cetak jadwal + token QR validasi."""
     rows = await _fetch_jadwal_mengajar(
@@ -2558,8 +2736,8 @@ async def cetak_jadwal_mengajar(
         semester=body.semester,
         prodi_id=body.prodi_id,
         dosen_id=body.dosen_id,
+        current_user=user,
     )
-    user = request.state.current_user
 
     settings = await db.app_settings.find_one({"id": "main"}, {"_id": 0}) or {}
     kop = {

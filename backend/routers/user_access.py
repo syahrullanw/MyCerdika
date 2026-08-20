@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import re
 from typing import Any, Dict, List, Optional
 from uuid import uuid4
 from datetime import datetime, timezone
@@ -304,6 +305,31 @@ def user_has_access_role(user: Dict[str, Any], access_role: str) -> bool:
     return access_role in (user.get("access_roles") or [])
 
 
+def user_is_program_manager(user: Dict[str, Any]) -> bool:
+    """Resolve Kaprodi/Sekprodi without reviving stale legacy position text."""
+    derived_roles = user.get("access_roles")
+    if isinstance(derived_roles, list):
+        normalized_roles = {
+            str(role or "").strip().lower() for role in derived_roles
+        }
+        return bool({"kaprodi", "sekprodi"}.intersection(normalized_roles))
+
+    designation = " ".join(
+        str(user.get(field) or "").strip().lower()
+        for field in ("jabatan_akademik", "tugas_tambahan", "jabatan")
+    )
+    return bool(
+        user.get("is_kaprodi") is True
+        or str(user.get("is_kaprodi") or "").lower() == "true"
+        or user.get("kaprodi_prodi_id")
+        or "kaprodi" in designation
+        or "ketua prodi" in designation
+        or "ketua program studi" in designation
+        or "sekprodi" in designation
+        or "sekretaris prodi" in designation
+    )
+
+
 def user_is_admin_or_access_role(user: Dict[str, Any], *access_roles: str) -> bool:
     return normalize_base_role(user.get("role")) == "admin" or any(
         user_has_access_role(user, access_role) for access_role in access_roles
@@ -436,26 +462,17 @@ def normalize_permission_matrix(
 # ─── SEED DEFAULT TEMPLATES ─────────────────────────────────────────────────
 
 KAPRODI_DEFAULT_MATRIX = _matrix_from_grants({
-    "dashboard": {"view", "export"},
-    "materials": set(ACTION_KEYS),
-    "assignments": set(ACTION_KEYS),
-    "rps": set(ACTION_KEYS),
-    "attendance": {"view", "create", "edit", "export"},
-    "grading": {"view", "create", "edit", "export"},
-    "rekap_nilai": {"view", "export"},
-    "krs_khs": {"view", "create", "edit", "export"},
-    "academic_calendar": {"view"},
-    "academic_structure": {"view"},
+    # Templat jabatan bersifat tambahan terhadap hak akses Dosen. Hindari
+    # menduplikasi seluruh workspace mengajar agar jabatan struktural tidak
+    # berubah menjadi akses admin terselubung.
+    "dashboard": {"export"},
     "curriculum_schedule": {"view", "create", "edit", "export"},
-    "sk_mengajar": {"view", "create", "edit", "export"},
-    "sk_jabatan": set(),
     "progres_nilai_prodi": {"view", "export"},
     "analisis_mahasiswa_prodi": {"view", "export"},
     "analisis_rps_prodi": {"view", "edit", "export"},
     "student_records": {"view", "export"},
     "lecturer_records": {"view", "export"},
     "academic_advising": {"view", "create", "edit", "export"},
-    "feeder": {"view"},
 })
 
 FINANCE_STAFF_DEFAULT_MATRIX = _matrix_from_grants({
@@ -471,17 +488,19 @@ FINANCE_STAFF_DEFAULT_MATRIX = _matrix_from_grants({
 ACADEMIC_OPERATOR_DEFAULT_MATRIX = _matrix_from_grants({
     "dashboard": {"view", "export"},
     "krs_khs": {"view", "create", "edit", "export"},
-    "academic_setup": {"view", "create", "edit", "export"},
-    "academic_calendar": {"view", "create", "edit", "export"},
+    # BAAK mengelola kalender institusi dengan kewenangan yang sama seperti
+    # Admin Kampus, termasuk mengarsipkan/menghapus agenda.
+    "academic_calendar": set(ACTION_KEYS),
     "academic_structure": {"view", "create", "edit", "export"},
     "curriculum_schedule": {"view", "create", "edit", "export"},
-    "facilities": {"view", "create", "edit", "export"},
+    "progres_nilai_prodi": {"view", "export"},
+    "analisis_mahasiswa_prodi": {"view", "export"},
+    "analisis_rps_prodi": {"view", "edit", "export"},
     "sk_mengajar": {"view", "create", "edit", "export"},
     "sk_jabatan": {"view", "create", "edit", "export"},
     "student_records": {"view", "create", "edit", "export"},
     "lecturer_records": {"view", "create", "edit", "export"},
     "academic_advising": {"view", "create", "edit", "export"},
-    "rekap_nilai": {"view", "export"},
 })
 
 PMB_STAFF_DEFAULT_MATRIX = _matrix_from_grants({
@@ -592,6 +611,10 @@ DEFAULT_TEMPLATE_MATRIX = {
     template["id"]: template["permissions"] for template in DEFAULT_TEMPLATES
 }
 
+BUILTIN_TEMPLATE_IDS = set(DEFAULT_TEMPLATE_MATRIX)
+BUILTIN_TEMPLATE_PERMISSION_VERSION = 5
+LEGACY_PERMISSION_KEYS = set(LEGACY_MODULE_EXPANSIONS)
+
 
 ROLE_DEFAULT_TEMPLATE_MAP = {
     "admin": "tpl_admin",
@@ -611,14 +634,36 @@ def default_template_permissions(template_id: Optional[str], role_target: str = 
 
 def normalize_template_permissions(template: Dict[str, Any]) -> Dict[str, Dict[str, bool]]:
     source = dict(template.get("permissions") or {})
+    template_id = template.get("id")
+    # Built-in templates from the old catalog used broad groups such as
+    # ``data_master`` and ``user_management``. Expanding those groups would
+    # grant unrelated modules (including system administration) to Kaprodi or
+    # operational staff. A template saved through the current editor contains
+    # only current module keys, so this branch is a safe legacy discriminator.
+    if template_id in BUILTIN_TEMPLATE_IDS and LEGACY_PERMISSION_KEYS.intersection(source):
+        source = default_template_permissions(template_id, template.get("role_target", "all"))
     # Legacy Kaprodi templates used one combined ``academic_documents`` key.
     # Keep its SK Mengajar access after the split, but never let it re-enable
     # SK Jabatan for a structural role that is not allowed to open that page.
-    if template.get("id") == "tpl_kaprodi":
+    if template_id == "tpl_kaprodi":
         source["sk_jabatan"] = _permission_actions(False)
+    if (
+        template_id == "tpl_akademik"
+        and int(template.get("permission_schema_version") or 0) < 5
+    ):
+        # Schema v5 mempertahankan fungsi operasional BAAK, tetapi mencabut
+        # laporan pengajaran, konfigurasi periode, dan sarana yang khusus Admin.
+        source = default_template_permissions(template_id, template.get("role_target", "all"))
+    if (
+        template_id == "tpl_tendik"
+        and int(template.get("permission_schema_version") or 0) < 4
+    ):
+        # Role dasar Tendik harus tetap least-privilege. Seluruh kewenangan
+        # operasional diturunkan dari jabatan aktif (BAAK, Keuangan, PMB, dst.).
+        source = default_template_permissions(template_id, template.get("role_target", "staff"))
     return normalize_permission_matrix(
         source,
-        default_template_permissions(template.get("id"), template.get("role_target", "all")),
+        default_template_permissions(template_id, template.get("role_target", "all")),
     )
 
 
@@ -817,18 +862,61 @@ async def build_effective_user_access(
 
 
 async def ensure_seed_templates(db: PostgresDatabase):
-    """Ensure every built-in template exists without overwriting admin customisation."""
+    """Ensure built-ins exist and safely migrate legacy permission groups."""
     for template in DEFAULT_TEMPLATES:
         existing = await db.access_templates.find_one({"id": template["id"]}, {"_id": 0})
         if not existing:
             doc = {**template, "created_at": now_iso(), "updated_at": now_iso()}
+            if template["id"] in BUILTIN_TEMPLATE_IDS:
+                doc["permission_schema_version"] = BUILTIN_TEMPLATE_PERMISSION_VERSION
             await db.access_templates.insert_one(doc)
-        elif template["id"] == "tpl_keuangan" and existing.get("role_target") == "admin":
+            continue
+
+        updates: Dict[str, Any] = {}
+        if template["id"] == "tpl_keuangan" and existing.get("role_target") == "admin":
             # Older installations seeded the finance template as admin-only.
             # Migrate only its target role; preserve any local permission edits.
+            updates["role_target"] = "staff"
+
+        if template["id"] in BUILTIN_TEMPLATE_IDS:
+            existing_permissions = existing.get("permissions") or {}
+            if LEGACY_PERMISSION_KEYS.intersection(existing_permissions):
+                # Old broad module groups cannot be translated safely without
+                # recreating the privilege escalation. Reset only legacy
+                # built-ins; templates saved by the current editor no longer
+                # contain these keys and remain fully customisable.
+                updates["permissions"] = template["permissions"]
+            elif (
+                template["id"] == "tpl_kaprodi"
+                and int(existing.get("permission_schema_version") or 0) < 3
+            ):
+                # Schema v3 memisahkan hak dasar Dosen dari privilese
+                # struktural Kaprodi. Reset hanya templat bawaan Kaprodi agar
+                # Fakultas/Prodi dan dokumen SK tidak tetap terbawa dari v2.
+                updates["permissions"] = template["permissions"]
+            elif (
+                template["id"] == "tpl_akademik"
+                and int(existing.get("permission_schema_version") or 0) < 5
+            ):
+                # Schema v5 menghapus laporan pengajaran, konfigurasi periode,
+                # dan sarana dari templat BAAK. Templat custom tidak disentuh.
+                updates["permissions"] = template["permissions"]
+            elif (
+                template["id"] == "tpl_tendik"
+                and int(existing.get("permission_schema_version") or 0) < 4
+            ):
+                # Hak dasar Tendik pernah menyerap izin operasional tambahan.
+                # Kembalikan ke dashboard + kalender baca; jabatan aktif tetap
+                # menambahkan kewenangan melalui templat posisinya masing-masing.
+                updates["permissions"] = template["permissions"]
+            if existing.get("permission_schema_version") != BUILTIN_TEMPLATE_PERMISSION_VERSION:
+                updates["permission_schema_version"] = BUILTIN_TEMPLATE_PERMISSION_VERSION
+
+        if updates:
+            updates["updated_at"] = now_iso()
             await db.access_templates.update_one(
                 {"id": template["id"]},
-                {"$set": {"role_target": "staff", "updated_at": now_iso()}},
+                {"$set": updates},
             )
 
 
@@ -1166,7 +1254,7 @@ async def delete_template(
 @router.get("/users")
 async def list_user_access(
     role: Optional[str] = Query(None, description="Filter role: admin, lecturer, student, staff"),
-    search: Optional[str] = Query(None, description="Cari nama, email, NIM, atau NIDN"),
+    search: Optional[str] = Query(None, description="Cari nama, username, email, NIM, atau NIDN"),
     page: int = 1,
     limit: int = 50,
     db: PostgresDatabase = Depends(get_db),
@@ -1186,11 +1274,17 @@ async def list_user_access(
 
     if search:
         s = search.strip()
+        # Escape input so the field behaves as a normal keyword search, not as
+        # a user-provided regular expression. The PostgreSQL document adapter
+        # translates this to a case-insensitive regex predicate.
+        pattern = re.escape(s)
         query["$or"] = [
-            {"name": {"$regex": s, "$options": "i"}},
-            {"email": {"$regex": s, "$options": "i"}},
-            {"nim": {"$regex": s, "$options": "i"}},
-            {"nidn": {"$regex": s, "$options": "i"}},
+            {"name": {"$regex": pattern, "$options": "i"}},
+            {"full_name": {"$regex": pattern, "$options": "i"}},
+            {"username": {"$regex": pattern, "$options": "i"}},
+            {"email": {"$regex": pattern, "$options": "i"}},
+            {"nim": {"$regex": pattern, "$options": "i"}},
+            {"nidn": {"$regex": pattern, "$options": "i"}},
         ]
 
     total = await db.users.count_documents(query)

@@ -55,6 +55,7 @@ try:
         student_identity_conflict_query,
         student_identity_values,
     )
+    from .program_scope import record_matches_program_scope, resolve_program_identifiers
     from .storage_policy import (
         DRIVE_LOCAL_RETENTION_DAYS,
         DRIVE_SYNC_MAX_ATTEMPTS_PER_DAY,
@@ -75,6 +76,7 @@ except ImportError:  # Supports `uvicorn server:app` from the backend directory.
         student_identity_conflict_query,
         student_identity_values,
     )
+    from program_scope import record_matches_program_scope, resolve_program_identifiers
     from storage_policy import (
         DRIVE_LOCAL_RETENTION_DAYS,
         DRIVE_SYNC_MAX_ATTEMPTS_PER_DAY,
@@ -117,11 +119,13 @@ from routers.master_data import (
 from routers.kurikulum import router as kurikulum_router
 from routers.feeder import router as feeder_router
 from routers.user_access import (
+    build_effective_user_access,
     normalize_base_role,
     rebuild_user_position_access,
     router as user_access_router,
     user_has_access_role,
     user_is_admin_or_access_role,
+    user_is_program_manager,
 )
 from routers.sk_mengajar import router as sk_mengajar_router
 from routers.sk_jabatan import router as sk_jabatan_router
@@ -1798,6 +1802,26 @@ async def require_admin_or_academic_operator(
     return user
 
 
+async def require_lecturer_or_academic_manager(
+    user: Dict[str, Any] = Depends(get_current_user),
+) -> Dict[str, Any]:
+    if user.get("role") == "lecturer" or user_is_admin_or_access_role(user, "academic_operator"):
+        return user
+    raise HTTPException(status_code=403, detail="Akses hanya untuk dosen, admin kampus, atau operator akademik")
+
+
+async def require_student_records_reader(
+    user: Dict[str, Any] = Depends(get_current_user),
+) -> Dict[str, Any]:
+    if user.get("role") == "lecturer" or user_is_admin_or_access_role(
+        user,
+        "academic_operator",
+        "finance_officer",
+    ):
+        return user
+    raise HTTPException(status_code=403, detail="Akses data mahasiswa tidak diizinkan")
+
+
 async def require_admin_or_operational_staff(
     user: Dict[str, Any] = Depends(get_current_user),
 ) -> Dict[str, Any]:
@@ -1860,23 +1884,7 @@ def can_manage_academic_calendar(user: Dict[str, Any]) -> bool:
 
 
 def is_kaprodi_user(user: Dict[str, Any]) -> bool:
-    access_roles = {
-        str(role or "").strip().lower()
-        for role in (user.get("access_roles") or [])
-    }
-    designation = " ".join(
-        str(user.get(field) or "").strip().lower()
-        for field in ("jabatan_akademik", "tugas_tambahan", "jabatan")
-    )
-    return bool(
-        user.get("is_kaprodi") is True
-        or str(user.get("is_kaprodi") or "").lower() == "true"
-        or user.get("kaprodi_prodi_id")
-        or "kaprodi" in access_roles
-        or "sekprodi" in access_roles
-        or "kaprodi" in designation
-        or "ketua prodi" in designation
-    )
+    return user_is_program_manager(user)
 
 
 def academic_deadline_visible_to_user(deadline_type: str, user: Dict[str, Any]) -> bool:
@@ -4936,6 +4944,37 @@ async def sso_callback(
         return RedirectResponse(oidc_frontend_redirect(sso_error="Login SCI-ID gagal diproses"), status_code=303)
 
 
+EFFECTIVE_ACCESS_RESPONSE_FIELDS = (
+    "access_mode",
+    "template_id",
+    "template_name",
+    "base_permissions",
+    "custom_permissions",
+    "effective_permissions",
+    "position_accesses",
+    "access_roles",
+    "access_scope_prodi_ids",
+)
+
+
+async def public_user_with_effective_access(user: Dict[str, Any]) -> Dict[str, Any]:
+    """Return a login-safe user payload with the same access data as /auth/me."""
+    response_user = public_doc(dict(user)) or {}
+    if normalize_base_role(response_user.get("role")) not in {"admin", "lecturer", "student", "staff"}:
+        return response_user
+    try:
+        effective_access = await build_effective_user_access(db, user)
+        for field in EFFECTIVE_ACCESS_RESPONSE_FIELDS:
+            if field in effective_access:
+                response_user[field] = effective_access[field]
+    except Exception:
+        # Authentication must remain available while malformed legacy access
+        # data is reported and repaired. The frontend fails closed when the
+        # effective matrix is absent.
+        logger.exception("Gagal memuat hak akses efektif untuk user %s", response_user.get("id"))
+    return response_user
+
+
 @api_router.post("/auth/sso/exchange")
 async def sso_exchange(payload: SsoExchangeInput):
     ticket = await db.oidc_login_tickets.find_one_and_delete(
@@ -4968,7 +5007,7 @@ async def sso_exchange(payload: SsoExchangeInput):
         200,
         action_override="login",
     )
-    response_user = public_doc(user)
+    response_user = await public_user_with_effective_access(user)
     response_user["show_physical_documents_reminder"] = show_physical_documents_reminder
     return {"token": token, "user": response_user}
 
@@ -5066,7 +5105,7 @@ async def login(payload: LoginInput):
         200,
         action_override="login",
     )
-    user = public_doc(user)
+    user = await public_user_with_effective_access(user)
     user["show_physical_documents_reminder"] = show_physical_documents_reminder
     return {"token": token, "user": user}
 
@@ -5347,7 +5386,7 @@ async def join_class(payload: JoinClassInput):
 
 @api_router.get("/auth/me")
 async def me(user: Dict[str, Any] = Depends(get_current_user)):
-    return public_doc(user)
+    return await public_user_with_effective_access(user)
 
 
 @api_router.get("/auth/physical-documents")
@@ -5631,7 +5670,7 @@ async def list_password_reset_requests(_: Dict[str, Any] = Depends(require_admin
 
 
 @api_router.get("/lecturers")
-async def list_lecturers():
+async def list_lecturers(user: Dict[str, Any] = Depends(get_current_user)):
     lecturers = await db.users.find(
         {"role": {"$in": ["lecturer", "admin", "dosen"]}, "status": {"$ne": "deleted"}},
         {"_id": 0, "password_hash": 0}
@@ -5641,6 +5680,23 @@ async def list_lecturers():
             {"role": {"$nin": ["student", "staff", "tendik", "staf", "pegawai"]}},
             {"_id": 0, "password_hash": 0}
         ).sort("name", 1).to_list(2000)
+    structural_scope = await active_program_manager_scope_values(user)
+    if user.get("role") != "admin" and (
+        user_is_program_manager(user) or structural_scope
+    ):
+        scope_values = await resolved_program_scope_values(user, structural_scope)
+        lecturers = [
+            lecturer
+            for lecturer in lecturers
+            if record_matches_program_scope(
+                lecturer,
+                scope_values,
+                fields=(
+                    "prodi_id", "prodi_kode", "program_id", "program_code",
+                    "prodi_name", "program_name", "nama_prodi", "homebase",
+                ),
+            )
+        ]
     counts = await db.classes.aggregate(
         [
             {"$match": {"status": {"$ne": "deleted"}, "lecturer_id": {"$ne": ""}}},
@@ -5675,6 +5731,33 @@ async def list_lecturers():
         lecturer["drive_synced_count"] = storage.get("drive_synced_count", 0)
         lecturer["drive_failed_count"] = storage.get("drive_failed_count", 0)
     return lecturers
+
+
+@api_router.get("/academic-position-candidates")
+async def list_academic_position_candidates(
+    _: Dict[str, Any] = Depends(require_admin_or_academic_operator),
+):
+    """Daftar dosen dan tendik yang dapat ditunjuk pada Jabatan Akademik.
+
+    Endpoint ini sengaja terpisah dari ``/lecturers`` agar Tendik tersedia di
+    halaman penugasan jabatan tanpa ikut muncul sebagai Dosen pada modul lain.
+    """
+    candidates = await db.users.find(
+        {
+            "role": {
+                "$in": [
+                    "admin", "lecturer", "dosen",
+                    "staff", "tendik", "staf", "pegawai",
+                ]
+            },
+            "status": {"$ne": "deleted"},
+        },
+        {"_id": 0, "password_hash": 0},
+    ).sort("name", 1).to_list(4000)
+    for item in candidates:
+        item["role"] = normalize_base_role(item.get("role"))
+        item["candidate_type"] = "tendik" if item["role"] == "staff" else "dosen"
+    return candidates
 
 
 @api_router.get("/staff")
@@ -8867,22 +8950,7 @@ async def resolved_program_scope_values(
         user,
         structural_scope_values,
     )
-    if not raw_values:
-        return []
-    lookup = {value.upper() for value in raw_values}
-    scope_values = set(raw_values)
-    programs = await db.programs.find(
-        {"status": {"$ne": "deleted"}},
-        {"_id": 0, "id": 1, "code": 1, "kode": 1, "name": 1, "nama": 1},
-    ).to_list(1000)
-    for program in programs:
-        aliases = [
-            str(program.get(key) or "").strip()
-            for key in ("id", "code", "kode", "name", "nama")
-        ]
-        if any(alias.upper() in lookup for alias in aliases if alias):
-            scope_values.update(alias for alias in aliases if alias)
-    return sorted(scope_values)
+    return await resolve_program_identifiers(db, raw_values)
 
 
 def _analysis_period_year(value: Any) -> str:
@@ -8949,24 +9017,26 @@ def _analysis_is_program_manager(
     user: Dict[str, Any],
     structural_scope: Optional[List[str]] = None,
 ) -> bool:
-    designation_text = " ".join(
-        str(user.get(field) or "").strip().lower()
-        for field in ("jabatan_akademik", "tugas_tambahan", "jabatan")
-    )
-    access_roles = {
-        str(role).strip().lower()
-        for role in (user.get("access_roles") or [])
-    }
     return (
-        user.get("role") == "admin"
-        or user.get("is_kaprodi") is True
-        or str(user.get("is_kaprodi")).lower() == "true"
-        or bool(user.get("kaprodi_prodi_id"))
+        user_is_admin_or_access_role(user, "academic_operator")
         or bool(structural_scope)
-        or "kaprodi" in access_roles
-        or "sekprodi" in access_roles
-        or "kaprodi" in designation_text
-        or "ketua prodi" in designation_text
+        or user_is_program_manager(user)
+    )
+
+
+def _analysis_has_global_program_scope(user: Dict[str, Any]) -> bool:
+    """Admin dan BAAK dapat memilih satu Prodi atau melihat seluruh Prodi."""
+    return user_is_admin_or_access_role(user, "academic_operator")
+
+
+async def require_program_analysis_user(
+    user: Dict[str, Any] = Depends(get_current_user),
+) -> Dict[str, Any]:
+    if _analysis_is_program_manager(user):
+        return user
+    raise HTTPException(
+        status_code=403,
+        detail="Halaman ini hanya tersedia untuk Kaprodi, operator akademik, atau Admin Kampus",
     )
 
 
@@ -8978,22 +9048,67 @@ async def _analysis_resolve_program_scope(
     if not _analysis_is_program_manager(user, structural_scope):
         raise HTTPException(
             status_code=403,
-            detail="Halaman ini hanya tersedia untuk Ketua Prodi atau Admin Kampus",
+            detail="Halaman ini hanya tersedia untuk Kaprodi, operator akademik, atau Admin Kampus",
         )
 
     own_scope_values = await resolved_program_scope_values(user, structural_scope)
+    has_global_scope = _analysis_has_global_program_scope(user)
     requested_value = str(requested_prodi or "").strip()
     if requested_value:
         own_lookup = {value.upper() for value in own_scope_values}
-        if user.get("role") != "admin" and requested_value.upper() not in own_lookup:
+        if not has_global_scope and requested_value.upper() not in own_lookup:
             raise HTTPException(status_code=403, detail="Prodi di luar kewenangan Anda")
         scope_values = await resolved_program_scope_values(
             {"prodi_id": requested_value},
             [requested_value],
         )
     else:
-        scope_values = own_scope_values if user.get("role") != "admin" else []
+        scope_values = [] if has_global_scope else own_scope_values
     return structural_scope, own_scope_values, scope_values
+
+
+async def _analysis_program_options() -> List[Dict[str, Any]]:
+    programs = await db.programs.find(
+        {},
+        {"_id": 0, "id": 1, "name": 1, "nama": 1, "code": 1, "kode": 1, "status": 1},
+    ).sort("name", 1).to_list(500)
+    return [item for item in programs if str(item.get("status") or "active").lower() != "deleted"]
+
+
+async def _analysis_program_label(
+    requested_prodi: str,
+    user: Dict[str, Any],
+    class_docs: Optional[List[Dict[str, Any]]] = None,
+) -> str:
+    requested_value = str(requested_prodi or "").strip()
+    if requested_value:
+        program = await db.programs.find_one(
+            {
+                "$or": [
+                    {"id": requested_value}, {"code": requested_value},
+                    {"kode": requested_value}, {"name": requested_value},
+                    {"nama": requested_value},
+                ]
+            },
+            {"_id": 0, "name": 1, "nama": 1},
+        )
+        if program:
+            return str(program.get("name") or program.get("nama") or requested_value)
+    if _analysis_has_global_program_scope(user):
+        return "Semua Program Studi"
+    return str(
+        user.get("prodi_nama")
+        or user.get("prodi_name")
+        or next(
+            (
+                item.get("program_name") or item.get("prodi_name")
+                for item in (class_docs or [])
+                if item.get("program_name") or item.get("prodi_name")
+            ),
+            "",
+        )
+        or "Program Studi"
+    )
 
 
 def _analysis_student_identifiers(student: Dict[str, Any]) -> set[str]:
@@ -9080,7 +9195,7 @@ def _analysis_risk(
 async def prodi_student_analysis(
     semester_id: str = "",
     prodi_id: str = "",
-    user: Dict[str, Any] = Depends(require_admin),
+    user: Dict[str, Any] = Depends(require_program_analysis_user),
 ):
     """Analisis akademik dan risiko seluruh mahasiswa dalam scope Prodi."""
     requested_prodi = str(prodi_id or "").strip()
@@ -9106,7 +9221,7 @@ async def prodi_student_analysis(
             item for item in class_docs
             if any(value.upper() in scope_lookup for value in _analysis_program_fields(item))
         ]
-    elif user.get("role") != "admin":
+    elif not _analysis_has_global_program_scope(user):
         # Fallback aman untuk akun struktural lama yang belum memiliki prodi_id.
         # Jangan membuka semua kelas hanya karena field scope belum termigrasi.
         assigned_class_ids = set(await lecturer_class_ids(user))
@@ -9334,13 +9449,17 @@ async def prodi_student_analysis(
     period_label = "Semua semester"
     if period_doc:
         period_label = period_doc.get("nama") or f"{period_doc.get('tahun', '')} {period_doc.get('semester', '')}".strip()
+    prodi_name = await _analysis_program_label(requested_prodi, user, class_docs)
     return {
         "ok": True,
         "scope": {
             "is_admin": user.get("role") == "admin",
+            "is_global": _analysis_has_global_program_scope(user),
+            "can_select_prodi": _analysis_has_global_program_scope(user),
             "prodi_id": requested_prodi or (own_scope_values[0] if own_scope_values else ""),
-            "prodi_name": user.get("prodi_nama") or user.get("prodi_name") or "Semua Program Studi",
+            "prodi_name": prodi_name,
         },
+        "prodi_list": await _analysis_program_options(),
         "period": {"id": raw_semester_id or "all", "label": period_label},
         "summary": {
             "total_students": len(student_results),
@@ -9362,21 +9481,12 @@ async def prodi_student_analysis(
 
 
 @api_router.get("/students")
-async def list_students(user: Dict[str, Any] = Depends(require_admin_or_operational_staff)):
+async def list_students(user: Dict[str, Any] = Depends(require_student_records_reader)):
     query: Dict[str, Any] = {"role": "student"}
     progress_class_ids: Optional[List[str]] = None
     structural_kaprodi_scope = await active_program_manager_scope_values(user)
 
-    is_kaprodi = (
-        user.get("is_kaprodi") is True
-        or str(user.get("is_kaprodi")).lower() == "true"
-        or bool(user.get("kaprodi_prodi_id"))
-        or "kaprodi" in (user.get("access_roles") or [])
-        or "sekprodi" in (user.get("access_roles") or [])
-        or "kaprodi" in str(user.get("jabatan_akademik") or "").lower()
-        or "ketua prodi" in str(user.get("jabatan_akademik") or "").lower()
-        or bool(structural_kaprodi_scope)
-    )
+    is_kaprodi = user_is_program_manager(user) or bool(structural_kaprodi_scope)
     kaprodi_scope_values = await resolved_program_scope_values(
         user,
         structural_kaprodi_scope,
@@ -9394,12 +9504,19 @@ async def list_students(user: Dict[str, Any] = Depends(require_admin_or_operatio
         # Finance staff need the student master for billing and verification,
         # but this does not grant them academic mutation or administrator UI.
         progress_class_ids = None
-    elif not is_campus_admin(user):
+    elif user.get("role") == "lecturer":
         class_ids = await lecturer_class_ids(user)
         progress_class_ids = class_ids
-        # Dosen non-Kaprodi hanya boleh melihat mahasiswa yang benar-benar
-        # terdaftar pada kelas yang ia ampu; jangan membuka seluruh akun aktif.
-        query["class_ids"] = {"$in": class_ids}
+        homebase_scope_values = await resolved_program_scope_values(user)
+        if not homebase_scope_values:
+            return []
+        query["$or"] = [
+            {"prodi_id": {"$in": homebase_scope_values}},
+            {"prodi_kode": {"$in": homebase_scope_values}},
+            {"program_id": {"$in": homebase_scope_values}},
+            {"prodi_name": {"$in": homebase_scope_values}},
+            {"program_name": {"$in": homebase_scope_values}},
+        ]
     students = await db.users.find(query, {"_id": 0, "password_hash": 0}).sort("name", 1).to_list(2000)
     progress_map = await calculate_student_progress_many(
         [s["id"] for s in students], progress_class_ids
@@ -11144,7 +11261,7 @@ async def progress(user: Dict[str, Any] = Depends(get_current_user)):
 
 
 @api_router.get("/grade-predicates")
-async def get_grade_predicates(class_id: str = "", user: Dict[str, Any] = Depends(require_admin_or_academic_operator)):
+async def get_grade_predicates(class_id: str = "", user: Dict[str, Any] = Depends(require_lecturer_or_academic_manager)):
     if class_id:
         await require_class_access(class_id, user)
     elif user.get("role") == "lecturer":
@@ -11654,7 +11771,7 @@ async def export_grades_pdf(class_id: Optional[str] = None, user: Dict[str, Any]
 
 
 @api_router.get("/reports/summary")
-async def report_summary(user: Dict[str, Any] = Depends(require_admin_or_academic_operator)):
+async def report_summary(user: Dict[str, Any] = Depends(require_lecturer_or_academic_manager)):
     class_ids = await lecturer_class_ids(user)
     class_docs = await db.classes.find({"id": {"$in": class_ids}}, {"_id": 0, "student_ids": 1}).to_list(5000)
     student_ids = list({student_id for item in class_docs for student_id in item.get("student_ids", [])})
@@ -11671,7 +11788,7 @@ async def report_summary(user: Dict[str, Any] = Depends(require_admin_or_academi
 
 
 @api_router.get("/reports/grade-recap")
-async def grade_recap(class_id: Optional[str] = None, user: Dict[str, Any] = Depends(require_admin_or_academic_operator)):
+async def grade_recap(class_id: Optional[str] = None, user: Dict[str, Any] = Depends(require_lecturer_or_academic_manager)):
     return await build_grade_recap(user, class_id)
 
 
@@ -12018,7 +12135,7 @@ def _rps_group_seed(document: Dict[str, Any]) -> Dict[str, Any]:
 async def prodi_rps_analysis(
     semester_id: str = "",
     prodi_id: str = "",
-    user: Dict[str, Any] = Depends(require_admin),
+    user: Dict[str, Any] = Depends(require_program_analysis_user),
 ):
     """Analisis kelengkapan dan status approval RPS seluruh mata kuliah Prodi."""
     requested_prodi = str(prodi_id or "").strip()
@@ -12044,7 +12161,7 @@ async def prodi_rps_analysis(
             item for item in class_docs
             if any(value.upper() in scope_lookup for value in _analysis_program_fields(item))
         ]
-    elif user.get("role") != "admin":
+    elif not _analysis_has_global_program_scope(user):
         assigned_class_ids = set(await lecturer_class_ids(user))
         class_docs = [item for item in class_docs if str(item.get("id")) in assigned_class_ids]
     if raw_semester_id and raw_semester_id != "all":
@@ -12143,21 +12260,19 @@ async def prodi_rps_analysis(
     period_label = "Semua semester"
     if period_doc:
         period_label = period_doc.get("nama") or f"{period_doc.get('tahun', '')} {period_doc.get('semester', '')}".strip()
-    prodi_name = (
-        user.get("prodi_nama")
-        or user.get("prodi_name")
-        or next((item.get("program_name") for item in class_results if item.get("program_name")), "")
-        or "Semua Program Studi"
-    )
+    prodi_name = await _analysis_program_label(requested_prodi, user, class_docs)
     return {
         "ok": True,
         "scope": {
             "is_admin": user.get("role") == "admin",
+            "is_global": _analysis_has_global_program_scope(user),
+            "can_select_prodi": _analysis_has_global_program_scope(user),
             "prodi_id": requested_prodi or (own_scope_values[0] if own_scope_values else ""),
             "prodi_name": prodi_name,
             "scope_values": scope_values,
             "structural_scope": structural_scope,
         },
+        "prodi_list": await _analysis_program_options(),
         "period": {"id": raw_semester_id or "all", "label": period_label},
         "summary": {
             "total_courses": len(course_results),
@@ -12184,7 +12299,7 @@ async def prodi_rps_analysis(
 async def approve_prodi_rps(
     class_id: str,
     payload: RPSApprovalInput,
-    user: Dict[str, Any] = Depends(require_admin),
+    user: Dict[str, Any] = Depends(require_program_analysis_user),
 ):
     """Approve atau reject RPS kelas oleh Ketua Prodi/Admin."""
     _, _, scope_values = await _analysis_resolve_program_scope(user)
@@ -12194,7 +12309,7 @@ async def approve_prodi_rps(
     )
     if not class_doc:
         raise HTTPException(status_code=404, detail="Kelas mata kuliah tidak ditemukan")
-    if user.get("role") != "admin":
+    if not _analysis_has_global_program_scope(user):
         scope_lookup = {str(value).upper() for value in scope_values}
         class_in_scope = any(value.upper() in scope_lookup for value in _analysis_program_fields(class_doc))
         if not class_in_scope and not scope_values:

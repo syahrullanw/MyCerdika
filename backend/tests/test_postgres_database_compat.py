@@ -32,6 +32,25 @@ def test_query_semantics_cover_nested_fields_and_arrays():
     )
 
 
+def test_query_semantics_cover_case_insensitive_regex_search():
+    assert matches(
+        {"name": "Eko Siswa Adi"},
+        {"name": {"$regex": "siswa adi", "$options": "i"}},
+    )
+    assert not matches(
+        {"name": "Eko Siswa Adi"},
+        {"name": {"$regex": "dosen", "$options": "i"}},
+    )
+
+
+def test_regex_query_compiles_to_case_insensitive_postgres_predicate():
+    compiler = _QueryCompiler()
+    sql = compiler.compile({"name": {"$regex": "siswa\\ adi", "$options": "i"}})
+
+    assert "~*" in sql
+    assert compiler.parameters == ["siswa\\ adi"]
+
+
 def test_update_semantics_cover_application_operators():
     document = {"id": "one", "tags": ["a"], "nested": {"old": True}}
     updated = _apply_update(

@@ -5,6 +5,7 @@
  */
 
 import React, { useState, useEffect, useCallback, useMemo, useRef } from "react";
+import { isKaprodiUser } from "@/accessControl";
 import {
   Settings,
   Building2,
@@ -1787,12 +1788,10 @@ export function DosenWaliPage({ user }) {
   const [autoLoading, setAutoLoading] = useState(false);
   const [result, setResult] = useState(null);
 
-  const isKaprodi = Boolean(
-    user &&
-    user.role !== "admin" &&
-    (user.is_kaprodi || user.kaprodi_prodi_id || (user.jabatan_akademik || "").toLowerCase().includes("kaprodi"))
-  );
-  const kaprodiProdiId = user?.kaprodi_prodi_id || user?.prodi_id;
+  const isKaprodi = Boolean(user && user.role !== "admin" && isKaprodiUser(user));
+  const kaprodiProdiId = (
+    Array.isArray(user?.access_scope_prodi_ids) && user.access_scope_prodi_ids[0]
+  ) || user?.kaprodi_prodi_id || user?.prodi_id;
 
   useEffect(() => {
     if (isKaprodi && kaprodiProdiId && !selectedProdi) {
@@ -2781,7 +2780,7 @@ const JADWAL_HARI = [
 
 const HARI_LABEL = { 1: "Senin", 2: "Selasa", 3: "Rabu", 4: "Kamis", 5: "Jumat", 6: "Sabtu", 7: "Minggu" };
 
-export function JadwalMengajarPage() {
+export function JadwalMengajarPage({ user, selectedSemester = "", tahunAjaran = [] }) {
   const [list, setList] = useState([]);
   const [tahunAjaranList, setTahunAjaranList] = useState([]);
   const [prodiList, setProdiList] = useState([]);
@@ -2804,13 +2803,24 @@ export function JadwalMengajarPage() {
   const [error, setError] = useState("");
   const [conflictInfo, setConflictInfo] = useState(null);
   const [loading, setLoading] = useState(false);
+  const isKaprodi = Boolean(
+    user
+    && ["lecturer", "dosen"].includes(String(user.role || "").toLowerCase())
+    && isKaprodiUser(user),
+  );
+  const isOrdinaryLecturer = Boolean(
+    user
+    && ["lecturer", "dosen"].includes(String(user.role || "").toLowerCase())
+    && !isKaprodiUser(user)
+    && (!Array.isArray(user.access_roles) || user.access_roles.length === 0),
+  );
 
   const loadMaster = useCallback(() => {
     API("/api/v1/master/tahun-ajaran").then((d) => {
       if (!Array.isArray(d)) return;
       setTahunAjaranList(d);
       const active = d.find((t) => t.is_active) || d[0];
-      if (active) {
+      if (active && !isKaprodi) {
         setFilterTa((prev) => prev || active.tahun || active.tahun_ajaran || "");
         setFilterSemester((prev) => prev || active.semester || "Ganjil");
       }
@@ -2819,9 +2829,28 @@ export function JadwalMengajarPage() {
     API("/api/lecturers").then((d) => Array.isArray(d) && setDosenList(d));
     API("/api/v1/master/ruangan").then((d) => Array.isArray(d) && setRuanganList(d));
     API("/api/v1/master/gedung").then((d) => Array.isArray(d) && setGedungList(d));
-  }, []);
+  }, [isKaprodi]);
 
   useEffect(() => { loadMaster(); }, [loadMaster]);
+
+  useEffect(() => {
+    if (!isKaprodi) return;
+    if (selectedSemester === "all") {
+      setFilterTa("");
+      setFilterSemester("");
+      return;
+    }
+    const periods = [
+      ...(Array.isArray(tahunAjaran) ? tahunAjaran : []),
+      ...tahunAjaranList,
+    ];
+    const selectedPeriod = periods.find(
+      (period) => String(period?.id || "") === String(selectedSemester || ""),
+    );
+    if (!selectedPeriod) return;
+    setFilterTa(selectedPeriod.tahun || selectedPeriod.tahun_ajaran || selectedPeriod.nama || "");
+    setFilterSemester(selectedPeriod.semester || "");
+  }, [isKaprodi, selectedSemester, tahunAjaran, tahunAjaranList]);
 
   const loadSeqRef = useRef(0);
 
@@ -2852,7 +2881,29 @@ export function JadwalMengajarPage() {
   const tahunOptions = tahunAjaranList.map((t) => [t.tahun || t.tahun_ajaran || t.id, `${t.tahun || t.tahun_ajaran || "?"} ${t.semester || ""}`]);
   const tahunValues = [...new Set(tahunOptions.map(([v]) => v))];
 
-  const prodiOptions = [["", "-- Semua Prodi --"], ...prodiList.map((p) => [p.id, p.nama])];
+  const homebaseProgram = useMemo(() => {
+    const managerScope = Array.isArray(user?.access_scope_prodi_ids)
+      ? user.access_scope_prodi_ids
+      : [user?.access_scope_prodi_ids];
+    const targets = [
+      ...(isKaprodi ? managerScope : []),
+      isKaprodi ? user?.kaprodi_prodi_id : null,
+      user?.prodi_id,
+      user?.program_id,
+      user?.homebase,
+    ]
+      .map((value) => String(value || "").trim().toLowerCase())
+      .filter(Boolean);
+    return prodiList.find((program) =>
+      [program.id, program.kode, program.code, program.nama, program.name]
+        .map((value) => String(value || "").trim().toLowerCase())
+        .some((value) => targets.includes(value)),
+    );
+  }, [isKaprodi, prodiList, user]);
+  const scopeProgramLabel = homebaseProgram?.nama || homebaseProgram?.name || user?.homebase || user?.kaprodi_prodi_id || user?.prodi_id || "Belum ditetapkan";
+  const prodiOptions = isOrdinaryLecturer || isKaprodi
+    ? [["", isKaprodi ? `Prodi dipimpin: ${scopeProgramLabel}` : `Homebase: ${scopeProgramLabel} + Jadwal Saya`]]
+    : [["", "-- Semua Prodi --"], ...prodiList.map((p) => [p.id, p.nama])];
   const dosenOptions = [["", "-- Semua Dosen --"], ...dosenList.map((d) => [d.id, d.nama])];
 
   const gedungOptions = [["", "-- Pilih Gedung --"], ...gedungList.filter((g) => g.status === "active").map((g) => [g.id, `${g.nama} (${g.kode})`])];
@@ -3104,40 +3155,53 @@ export function JadwalMengajarPage() {
           </div>
           <div>
             <h1 className="text-xl font-bold text-slate-900">Jadwal Mengajar</h1>
-            <p className="text-slate-500 text-sm">Atur hari, jam, dan ruangan untuk setiap kelas perkuliahan</p>
+            <p className="text-slate-500 text-sm">
+              {isOrdinaryLecturer
+                ? "Jadwal Anda serta kelas aktif pada prodi homebase di semester terpilih"
+                : isKaprodi
+                  ? "Atur jadwal kelas hanya untuk prodi yang Anda pimpin dan periode pada selector header"
+                  : "Atur hari, jam, dan ruangan untuk setiap kelas perkuliahan"}
+            </p>
           </div>
         </div>
         <div className="flex items-center gap-2">
-          <Btn size="sm" onClick={handleCetak} disabled={printing}>
-            <Printer className="w-3.5 h-3.5" />
-            {printing ? "Menyiapkan..." : "Cetak Jadwal"}
-          </Btn>
+          {!isOrdinaryLecturer && (
+            <Btn size="sm" onClick={handleCetak} disabled={printing}>
+              <Printer className="w-3.5 h-3.5" />
+              {printing ? "Menyiapkan..." : "Cetak Jadwal"}
+            </Btn>
+          )}
           <StatusBadge color="blue">{scheduledCount} Terjadwal / {list.length} Kelas</StatusBadge>
         </div>
       </div>
 
       <Card className="p-4 space-y-4">
         <div className="flex flex-col lg:flex-row gap-3">
-          <select
-            value={filterTa}
-            onChange={(e) => setFilterTa(e.target.value)}
-            className="border border-slate-300 rounded-lg px-3 py-2 text-sm bg-white focus:outline-none focus:ring-2 focus:ring-indigo-400"
-          >
-            <option value="">Semua Tahun Ajaran</option>
-            {tahunValues.map((t) => <option key={t} value={t}>{t}</option>)}
-          </select>
-          <select
-            value={filterSemester}
-            onChange={(e) => setFilterSemester(e.target.value)}
-            className="border border-slate-300 rounded-lg px-3 py-2 text-sm bg-white focus:outline-none focus:ring-2 focus:ring-indigo-400"
-          >
-            <option value="">Semua Semester</option>
-            <option value="Ganjil">Ganjil</option>
-            <option value="Genap">Genap</option>
-          </select>
+          {!isKaprodi && (
+            <>
+              <select
+                value={filterTa}
+                onChange={(e) => setFilterTa(e.target.value)}
+                className="border border-slate-300 rounded-lg px-3 py-2 text-sm bg-white focus:outline-none focus:ring-2 focus:ring-indigo-400"
+              >
+                <option value="">Semua Tahun Ajaran</option>
+                {tahunValues.map((t) => <option key={t} value={t}>{t}</option>)}
+              </select>
+              <select
+                value={filterSemester}
+                onChange={(e) => setFilterSemester(e.target.value)}
+                className="border border-slate-300 rounded-lg px-3 py-2 text-sm bg-white focus:outline-none focus:ring-2 focus:ring-indigo-400"
+              >
+                <option value="">Semua Semester</option>
+                <option value="Ganjil">Ganjil</option>
+                <option value="Genap">Genap</option>
+              </select>
+            </>
+          )}
           <select
             value={filterProdi}
             onChange={(e) => setFilterProdi(e.target.value)}
+            disabled={isOrdinaryLecturer || isKaprodi}
             className="border border-slate-300 rounded-lg px-3 py-2 text-sm bg-white focus:outline-none focus:ring-2 focus:ring-indigo-400"
           >
             {prodiOptions.map(([v, l]) => <option key={v} value={v}>{l}</option>)}
@@ -3161,7 +3225,10 @@ export function JadwalMengajarPage() {
 
       {filterTa && (
         <InfoBox variant="info">
-          Menampilkan jadwal kelas periode <strong>{filterSemester} {filterTa}</strong>.
+          Menampilkan jadwal kelas periode <strong>{filterSemester} {filterTa}</strong>
+          {isOrdinaryLecturer
+            ? " untuk jadwal Anda dan prodi homebase."
+            : isKaprodi ? ` untuk ${scopeProgramLabel}.` : "."}
         </InfoBox>
       )}
 
@@ -3204,8 +3271,10 @@ export function JadwalMengajarPage() {
                       {weekData.byDay[d].map((it) => (
                         <button
                           key={it.class_id}
-                          onClick={() => openEdit(it)}
-                          className={`w-full text-left rounded-lg px-3 py-2.5 text-white shadow-sm hover:opacity-90 hover:shadow transition ${colorFor(it.course_name)}`}
+                          type="button"
+                          onClick={() => !isOrdinaryLecturer && openEdit(it)}
+                          disabled={isOrdinaryLecturer}
+                          className={`w-full text-left rounded-lg px-3 py-2.5 text-white shadow-sm transition ${isOrdinaryLecturer ? "cursor-default" : "hover:opacity-90 hover:shadow"} ${colorFor(it.course_name)}`}
                         >
                           <div className="flex items-center justify-between gap-2">
                             <span className="text-[10px] font-bold uppercase tracking-wide opacity-90">{it.class_code}</span>
@@ -3216,6 +3285,7 @@ export function JadwalMengajarPage() {
                             <MapPin className="w-3 h-3" /> {it.ruangan_kode || "Ruang?"}
                           </div>
                           <div className="text-[10px] opacity-80 truncate">{it.dosen_name || ""} · {it.class_name}</div>
+                          {it.is_own_schedule && <div className="mt-1 text-[10px] font-bold">Jadwal Anda</div>}
                         </button>
                       ))}
                     </div>
@@ -3283,9 +3353,15 @@ export function JadwalMengajarPage() {
                       )}
                     </td>
                     <td className="px-4 py-3">
-                      <Btn size="sm" variant={item.jadwal_hari ? "secondary" : "primary"} onClick={() => openEdit(item)}>
-                        <Clock className="w-3.5 h-3.5" /> {item.jadwal_hari ? "Ubah" : "Atur"}
-                      </Btn>
+                      {isOrdinaryLecturer ? (
+                        <StatusBadge color={item.is_own_schedule ? "green" : "gray"}>
+                          {item.is_own_schedule ? "Jadwal Anda" : "Jadwal Prodi"}
+                        </StatusBadge>
+                      ) : (
+                        <Btn size="sm" variant={item.jadwal_hari ? "secondary" : "primary"} onClick={() => openEdit(item)}>
+                          <Clock className="w-3.5 h-3.5" /> {item.jadwal_hari ? "Ubah" : "Atur"}
+                        </Btn>
+                      )}
                     </td>
                   </tr>
                 ))}
@@ -3296,7 +3372,7 @@ export function JadwalMengajarPage() {
       </Card>
       )}
 
-      {editing && (
+      {editing && !isOrdinaryLecturer && (
         <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/50 p-4" onClick={() => setEditing(null)}>
           <div className="bg-white rounded-2xl w-full max-w-lg p-6 space-y-4 shadow-2xl" onClick={(e) => e.stopPropagation()}>
             <div className="flex items-center justify-between">

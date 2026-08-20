@@ -66,6 +66,52 @@ async def require_lecturer_or_admin(request: Request) -> Dict[str, Any]:
     return user
 
 
+async def _active_period_identifiers(db: PostgresDatabase) -> List[str]:
+    """Return every active-period alias used by KRS and semester setup."""
+    values = set()
+    active_periods = await db.academic_periods.find(
+        {"is_active": True},
+        {"_id": 0, "id": 1, "code": 1},
+    ).to_list(50)
+    for period in active_periods:
+        values.update(
+            str(period.get(field) or "").strip()
+            for field in ("id", "code")
+        )
+    active_tas = await db.tahun_ajaran.find(
+        {"is_active": True},
+        {"_id": 0, "id": 1},
+    ).to_list(50)
+    values.update(str(item.get("id") or "").strip() for item in active_tas)
+    return sorted(values - {""})
+
+
+def _student_identifiers(students: List[Dict[str, Any]]) -> List[str]:
+    return sorted({
+        str(student.get(field) or "").strip()
+        for student in students
+        for field in ("id", "nim", "username")
+    } - {""})
+
+
+async def _pa_students_for_user(
+    db: PostgresDatabase,
+    user: Dict[str, Any],
+) -> List[Dict[str, Any]]:
+    if user.get("role") == "admin":
+        query: Dict[str, Any] = {"role": "student"}
+    else:
+        lecturer_id = user["id"]
+        query = {
+            "role": "student",
+            "$or": [
+                {"dosen_wali_id": lecturer_id},
+                {"pa_dosen_id": lecturer_id},
+            ],
+        }
+    return await db.users.find(query, {"_id": 0}).to_list(1000)
+
+
 @router.get("/periods")
 async def list_academic_periods(
     request: Request,
@@ -125,9 +171,30 @@ async def create_or_update_academic_period(
     return {"ok": True, "period": result}
 
 
+@router.get("/students/pa/pending-count")
+async def pending_pa_submission_count(
+    request: Request,
+    user: Dict[str, Any] = Depends(require_lecturer_or_admin),
+):
+    """Jumlah pengajuan KRS aktif yang masih menunggu tindakan Dosen PA."""
+    db: PostgresDatabase = get_db(request)
+    students = await _pa_students_for_user(db, user)
+    student_ids = _student_identifiers(students)
+    period_ids = await _active_period_identifiers(db)
+    if not student_ids or not period_ids:
+        return {"ok": True, "pending_count": 0}
+    pending_count = await db.krs.count_documents({
+        "status": "submitted",
+        "student_id": {"$in": student_ids},
+        "academic_period_id": {"$in": period_ids},
+    })
+    return {"ok": True, "pending_count": pending_count}
+
+
 @router.get("/students/pa")
 async def list_pa_students(
     request: Request,
+    submitted_only: bool = False,
     user: Dict[str, Any] = Depends(require_lecturer_or_admin),
 ):
     """Daftar mahasiswa bimbingan Dosen PA beserta status KRS periode aktif.
@@ -137,17 +204,7 @@ async def list_pa_students(
     dokumen KRS periode akademik aktif agar dosen wali bisa langsung ACC.
     """
     db: PostgresDatabase = get_db(request)
-    lecturer_id = user["id"]
-
-    if user.get("role") == "admin":
-        query: Dict[str, Any] = {"role": "student"}
-    else:
-        query = {"role": "student", "$or": [
-            {"dosen_wali_id": lecturer_id},
-            {"pa_dosen_id": lecturer_id},
-        ]}
-
-    students = await db.users.find(query, {"_id": 0}).to_list(1000)
+    students = await _pa_students_for_user(db, user)
 
     # Profil mahasiswa
     profiles = await db.student_profiles.find({}, {"_id": 0}).to_list(2000)
@@ -155,13 +212,9 @@ async def list_pa_students(
 
     # KRS periode aktif: pakai academic_periods aktif + tahun_ajaran aktif (dua sumber,
     # karena alur KRS (krs_khs.py) membaca academic_periods sedangkan wizard semester menulis tahun_ajaran)
-    period_ids = set()
-    active_periods = await db.academic_periods.find({"is_active": True}, {"_id": 0}).to_list(50)
-    period_ids.update(p.get("id") for p in active_periods if p.get("id"))
-    active_tas = await db.tahun_ajaran.find({"is_active": True}, {"_id": 0}).to_list(50)
-    period_ids.update(t.get("id") for t in active_tas if t.get("id"))
+    period_ids = await _active_period_identifiers(db)
 
-    student_ids = [s.get("id") for s in students]
+    student_ids = _student_identifiers(students)
     krs_list = []
     if period_ids and student_ids:
         krs_list = await db.krs.find(
@@ -183,7 +236,14 @@ async def list_pa_students(
             "items": [],
         }
 
-    return {"ok": True, "students": students}
+    if submitted_only:
+        students = [student for student in students if student.get("krs", {}).get("status") == "submitted"]
+
+    return {
+        "ok": True,
+        "students": students,
+        "pending_count": len([student for student in students if student.get("krs", {}).get("status") == "submitted"]),
+    }
 
 
 @router.post("/students/assign-pa")

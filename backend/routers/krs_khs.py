@@ -18,6 +18,7 @@ from openpyxl.styles import Font, Alignment, PatternFill, Border, Side
 
 from postgres_database import PostgresDatabase
 from routers.keuangan import get_financial_clearance
+from routers.user_access import user_has_access_role, user_is_program_manager
 
 
 router = APIRouter(prefix="/api/v1/krs", tags=["SIAKAD KRS & KHS"])
@@ -565,7 +566,7 @@ async def get_my_transkrip(
 
 
 # ═══════════════════════════════════════════════════════════════
-#  PROGRES NILAI PRODI (KAPRODI & ADMIN)
+#  PROGRES NILAI PRODI (KAPRODI, BAAK & ADMIN)
 #  - Monitoring progres input nilai dosen per prodi
 #  - Eksport Excel (.xlsx) dengan metadata TTD Digital
 #  - Cetak Rekap Nilai + Tandatangan Digital Dosen Pengampu & QR Code
@@ -589,24 +590,18 @@ async def require_admin_or_kaprodi_krs(request: Request) -> Dict[str, Any]:
         if session:
             user = await db.users.find_one({"id": session["user_id"]}, {"_id": 0})
     if not user:
-        user = getattr(request.state, "current_user", None)
-    if not user:
-        user = await db.users.find_one({"role": "admin"}, {"_id": 0})
-    if not user:
-        user = {"id": "admin", "name": "Administrator", "role": "admin"}
+        raise HTTPException(status_code=401, detail="Sesi tidak valid atau sudah berakhir")
 
-    derived_roles = user.get("access_roles") or []
-    jabatan = str(user.get("jabatan_akademik") or user.get("jabatan") or user.get("tugas_tambahan") or "").lower()
-    is_kaprodi = (
-        user.get("role") in ("admin", "kaprodi", "sekprodi")
-        or user.get("is_kaprodi") is True
-        or str(user.get("is_kaprodi")).lower() == "true"
-        or bool(user.get("kaprodi_prodi_id"))
-        or "kaprodi" in derived_roles
-        or "sekprodi" in derived_roles
-        or "kaprodi" in jabatan
-        or "ketua prodi" in jabatan
+    is_global_academic_manager = (
+        user.get("role") == "admin"
+        or user_has_access_role(user, "academic_operator")
     )
+    is_kaprodi = is_global_academic_manager or user_is_program_manager(user)
+    if not is_kaprodi:
+        raise HTTPException(
+            status_code=403,
+            detail="Akses hanya untuk Kaprodi, operator akademik, atau Admin Kampus",
+        )
     user["is_kaprodi"] = is_kaprodi
     request.state.current_user = user
     return user
@@ -925,16 +920,17 @@ async def get_progres_nilai_prodi(
     search: Optional[str] = None,
     user: Dict[str, Any] = Depends(require_admin_or_kaprodi_krs),
 ):
-    """Melihat rekapitulasi progres input nilai dosen per prodi (Khusus Kaprodi & Admin)."""
+    """Melihat rekapitulasi progres nilai per Prodi untuk Kaprodi, BAAK, dan Admin."""
     db: PostgresDatabase = get_db(request)
 
     # Determine Kaprodi scope
     is_admin = user.get("role") == "admin"
+    has_global_scope = is_admin or user_has_access_role(user, "academic_operator")
     kaprodi_prodi_id = user.get("kaprodi_prodi_id") or user.get("prodi_id") or ""
     scope_prodi_ids = user.get("access_scope_prodi_ids") or ([] if not kaprodi_prodi_id else [kaprodi_prodi_id])
 
     target_prodi_id = prodi_id
-    if not is_admin:
+    if not has_global_scope:
         if not target_prodi_id or (target_prodi_id not in scope_prodi_ids and kaprodi_prodi_id):
             target_prodi_id = kaprodi_prodi_id or (scope_prodi_ids[0] if scope_prodi_ids else "")
 
@@ -981,7 +977,14 @@ async def get_progres_nilai_prodi(
 
     overall_progress = round((total_students_graded / total_students_enrolled * 100), 1) if total_students_enrolled > 0 else 0.0
 
-    prodi_list = await db.programs.find({}, {"_id": 0, "id": 1, "nama": 1, "name": 1, "kode": 1}).to_list(200)
+    prodi_list = await db.programs.find(
+        {},
+        {"_id": 0, "id": 1, "nama": 1, "name": 1, "kode": 1, "code": 1, "status": 1},
+    ).to_list(200)
+    prodi_list = [
+        item for item in prodi_list
+        if str(item.get("status") or "active").lower() != "deleted"
+    ]
     active_period = (
         selected_tahun_ajaran
         if selected_tahun_ajaran
@@ -997,6 +1000,7 @@ async def get_progres_nilai_prodi(
         target_prodi_doc = await db.programs.find_one({"$or": [{"id": target_prodi_id}, {"code": target_prodi_id}]}, {"_id": 0})
     prodi_name = (
         (target_prodi_doc.get("nama") or target_prodi_doc.get("name")) if target_prodi_doc
+        else "Semua Program Studi" if has_global_scope
         else (class_results[0]["prodi_name"] if class_results and class_results[0].get("prodi_name") else "")
         or user.get("prodi_nama") or user.get("prodi_name") or user.get("department")
     ) or "Program Studi Penugasan"
@@ -1005,6 +1009,8 @@ async def get_progres_nilai_prodi(
         "ok": True,
         "scope": {
             "is_admin": is_admin,
+            "is_global": has_global_scope,
+            "can_select_prodi": has_global_scope,
             "kaprodi_prodi_id": kaprodi_prodi_id,
             "target_prodi_id": target_prodi_id,
             "prodi_name": prodi_name,
@@ -1213,11 +1219,12 @@ async def export_progres_nilai_excel(
 
     # Determine scope
     is_admin = user.get("role") == "admin"
+    has_global_scope = is_admin or user_has_access_role(user, "academic_operator")
     kaprodi_prodi_id = user.get("kaprodi_prodi_id") or user.get("prodi_id") or ""
     scope_prodi_ids = user.get("access_scope_prodi_ids") or ([] if not kaprodi_prodi_id else [kaprodi_prodi_id])
 
     target_prodi_id = prodi_id
-    if not is_admin:
+    if not has_global_scope:
         if not target_prodi_id or (target_prodi_id not in scope_prodi_ids and kaprodi_prodi_id):
             target_prodi_id = kaprodi_prodi_id or (scope_prodi_ids[0] if scope_prodi_ids else "")
 

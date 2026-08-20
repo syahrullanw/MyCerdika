@@ -1,5 +1,7 @@
 from routers.user_access import (
+    ACADEMIC_OPERATOR_DEFAULT_MATRIX,
     BASE_ROLE_LABELS,
+    FINANCE_STAFF_DEFAULT_MATRIX,
     DEFAULT_TEMPLATES,
     SYSTEM_MODULES,
     merge_permission_matrices,
@@ -9,6 +11,7 @@ from routers.user_access import (
     position_accesses_from_assignments,
     role_default_permission_matrix,
     template_matches_user_role,
+    user_is_program_manager,
 )
 
 
@@ -71,6 +74,25 @@ def test_staff_is_a_base_role_and_unknown_roles_fail_closed():
     assert role_default_permission_matrix("role-yang-tidak-dikenal") == role_default_permission_matrix("staff")
 
 
+def test_synced_access_roles_override_stale_kaprodi_fields():
+    stale_lecturer = {
+        "role": "lecturer",
+        "access_roles": [],
+        "is_kaprodi": True,
+        "kaprodi_prodi_id": "OLD-PRODI",
+        "jabatan_akademik": "Ketua Program Studi (Kaprodi)",
+    }
+    active_kaprodi = {"role": "lecturer", "access_roles": ["kaprodi"]}
+    unsynchronized_legacy = {
+        "role": "lecturer",
+        "jabatan_akademik": "Ketua Program Studi",
+    }
+
+    assert user_is_program_manager(stale_lecturer) is False
+    assert user_is_program_manager(active_kaprodi) is True
+    assert user_is_program_manager(unsynchronized_legacy) is True
+
+
 def test_templates_can_only_be_applied_to_compatible_roles():
     finance_template = {"role_target": "admin"}
     staff_finance_template = {"role_target": "staff"}
@@ -101,6 +123,70 @@ def test_bendahara_maps_to_tendik_finance_access():
     assert accesses[0]["permissions"]["keuangan"]["edit"] is True
 
 
+def test_baak_maps_to_global_academic_quality_and_calendar_access():
+    templates = {template["id"]: template for template in DEFAULT_TEMPLATES}
+    assignments = [{
+        "id": "assign-akademik-inst",
+        "jabatan_id": "jablokal-aka",
+        "jabatan_kode": "AKADEMIK",
+        "jabatan_nama": "Kepala / Staf Bagian Akademik (BAAK)",
+        "prodi_id": "",
+    }]
+
+    accesses = position_accesses_from_assignments(assignments, templates)
+
+    assert len(accesses) == 1
+    assert accesses[0]["access_role"] == "academic_operator"
+    assert accesses[0]["permissions"] == ACADEMIC_OPERATOR_DEFAULT_MATRIX
+    assert all(accesses[0]["permissions"]["academic_calendar"].values())
+    assert accesses[0]["permissions"]["progres_nilai_prodi"]["view"] is True
+    assert accesses[0]["permissions"]["analisis_mahasiswa_prodi"]["view"] is True
+    assert accesses[0]["permissions"]["analisis_rps_prodi"]["edit"] is True
+    assert accesses[0]["permissions"]["academic_setup"]["view"] is False
+    assert accesses[0]["permissions"]["facilities"]["view"] is False
+    assert accesses[0]["permissions"]["rekap_nilai"]["view"] is False
+
+
+def test_legacy_academic_template_is_reset_to_admin_separated_schema():
+    permissions = normalize_template_permissions({
+        "id": "tpl_akademik",
+        "role_target": "all",
+        "permission_schema_version": 4,
+        "permissions": {
+            "dashboard": {"view": True},
+            "academic_setup": {"view": True, "edit": True},
+            "academic_calendar": {"view": True, "edit": True},
+            "facilities": {"view": True, "edit": True},
+            "rekap_nilai": {"view": True, "export": True},
+        },
+    })
+
+    assert permissions == ACADEMIC_OPERATOR_DEFAULT_MATRIX
+    assert permissions["academic_calendar"]["edit"] is True
+    assert permissions["academic_setup"]["view"] is False
+    assert permissions["facilities"]["view"] is False
+    assert permissions["rekap_nilai"]["view"] is False
+
+
+def test_legacy_tendik_template_is_reset_to_least_privilege():
+    permissions = normalize_template_permissions({
+        "id": "tpl_tendik",
+        "role_target": "staff",
+        "permission_schema_version": 3,
+        "permissions": {
+            "dashboard": {"view": True},
+            "keuangan": {"view": True, "edit": True},
+            "progres_nilai_prodi": {"view": True},
+        },
+    })
+
+    assert permissions == role_default_permission_matrix("staff")
+    assert permissions["dashboard"]["view"] is True
+    assert permissions["academic_calendar"]["view"] is True
+    assert permissions["keuangan"]["view"] is False
+    assert permissions["progres_nilai_prodi"]["view"] is False
+
+
 def test_structural_assignment_adds_role_template_and_program_scope():
     templates = {template["id"]: template for template in DEFAULT_TEMPLATES}
     assignments = [{
@@ -118,18 +204,21 @@ def test_structural_assignment_adds_role_template_and_program_scope():
     assert accesses[0]["template_id"] == "tpl_kaprodi"
     assert accesses[0]["access_role"] == "kaprodi"
     assert accesses[0]["prodi_id"] == "prodi-ti"
-    assert accesses[0]["permissions"]["academic_structure"]["view"] is True
+    assert accesses[0]["permissions"]["academic_structure"]["view"] is False
     assert accesses[0]["permissions"]["progres_nilai_prodi"]["view"] is True
     assert accesses[0]["permissions"]["analisis_mahasiswa_prodi"]["view"] is True
     assert accesses[0]["permissions"]["analisis_rps_prodi"]["edit"] is True
-    assert accesses[0]["permissions"]["sk_mengajar"]["view"] is True
+    assert accesses[0]["permissions"]["sk_mengajar"]["view"] is False
     assert accesses[0]["permissions"]["sk_jabatan"]["view"] is False
+    assert accesses[0]["permissions"]["lecturer_records"]["view"] is True
+    assert accesses[0]["permissions"]["academic_advising"]["edit"] is True
 
     effective = merge_permission_matrices([
         role_default_permission_matrix("lecturer"),
         accesses[0]["permissions"],
     ])
-    assert effective["academic_structure"]["view"] is True
+    assert effective["academic_structure"]["view"] is False
+    assert effective["curriculum_schedule"]["edit"] is True
     assert effective["sk_jabatan"]["view"] is False
 
 
@@ -144,9 +233,65 @@ def test_legacy_kaprodi_template_cannot_inherit_sk_jabatan_access():
         },
     })
 
-    assert permissions["sk_mengajar"]["view"] is True
+    assert permissions["sk_mengajar"]["view"] is False
     assert permissions["sk_jabatan"]["view"] is False
     assert permissions["sk_jabatan"]["export"] is False
+
+
+def test_legacy_kaprodi_template_is_reset_to_safe_structural_modules():
+    permissions = normalize_template_permissions({
+        "id": "tpl_kaprodi",
+        "role_target": "lecturer",
+        "permissions": {
+            "data_master": {action: True for action in ("view", "create", "edit", "delete", "export")},
+            "user_management": {action: True for action in ("view", "create", "edit", "delete", "export")},
+            "system_settings": {action: True for action in ("view", "create", "edit", "delete", "export")},
+            "keuangan": {"view": True},
+            "feeder": {"view": True},
+        },
+    })
+
+    assert permissions["curriculum_schedule"]["edit"] is True
+    assert permissions["progres_nilai_prodi"]["view"] is True
+    assert permissions["academic_structure"]["view"] is False
+    assert permissions["sk_mengajar"]["view"] is False
+    assert permissions["keuangan"]["view"] is False
+    assert permissions["access_control"]["view"] is False
+    assert permissions["feeder"]["view"] is False
+    assert permissions["facilities"]["view"] is False
+
+
+def test_legacy_finance_template_does_not_expand_to_unrelated_master_data():
+    permissions = normalize_template_permissions({
+        "id": "tpl_keuangan",
+        "role_target": "staff",
+        "permissions": {
+            "data_master": {"view": True},
+            "user_management": {"view": True, "export": True},
+            "keuangan": {"view": True, "create": True, "edit": True, "delete": True, "export": True},
+        },
+    })
+
+    assert permissions == FINANCE_STAFF_DEFAULT_MATRIX
+    assert permissions["academic_structure"]["view"] is True
+    assert permissions["facilities"]["view"] is False
+    assert permissions["lecturer_records"]["view"] is False
+
+
+def test_legacy_student_template_keeps_current_student_defaults():
+    permissions = normalize_template_permissions({
+        "id": "tpl_mahasiswa",
+        "role_target": "student",
+        "permissions": {
+            "assignments": {"view": True, "create": True},
+            "konfigurasi": {"view": False},
+            "system_settings": {"view": False},
+        },
+    })
+
+    assert permissions == role_default_permission_matrix("student")
+    assert permissions["academic_calendar"]["view"] is True
+    assert permissions["access_control"]["view"] is False
 
 
 def test_functional_rank_never_derives_system_access():

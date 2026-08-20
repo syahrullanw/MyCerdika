@@ -4,7 +4,7 @@
  * Mengikuti Sistem Desain UI Aplikasi (Clean White Cards, Indigo Accents, Crisp Typography)
  */
 
-import React, { useState, useEffect, useCallback } from "react";
+import React, { useState, useEffect, useCallback, useRef } from "react";
 import {
   ShieldCheck,
   Shield,
@@ -176,6 +176,7 @@ export function UserAccessPage() {
   const [searchQuery, setSearchQuery] = useState("");
   const [roleFilter, setRoleFilter] = useState("all");
   const [selectedUserIds, setSelectedUserIds] = useState([]);
+  const userLoadRequestId = useRef(0);
 
   // Toast Notification
   const [toastMessage, setToastMessage] = useState(null);
@@ -235,21 +236,26 @@ export function UserAccessPage() {
 
   // Fetch User Access List API
   const loadUsers = useCallback(async () => {
+    const requestId = ++userLoadRequestId.current;
     setLoading(true);
     try {
       const params = new URLSearchParams();
       if (roleFilter !== "all") params.append("role", roleFilter);
       if (searchQuery.trim()) params.append("search", searchQuery.trim());
 
-      const res = await API(`/api/v1/user-access/users?${params.toString()}`).catch(() => null);
-      if (res) {
-        setUsers(res.data || []);
-        setUserTotal(res.total || 0);
-      }
+      const res = await API(`/api/v1/user-access/users?${params.toString()}`);
+      if (requestId !== userLoadRequestId.current) return;
+      setUsers(res.data || []);
+      setUserTotal(res.total || 0);
     } catch (err) {
       console.warn("User list error", err);
+      if (requestId !== userLoadRequestId.current) return;
+      // Do not leave results from a previous keyword visible after a failed
+      // request; that makes the search appear not to follow the input.
+      setUsers([]);
+      setUserTotal(0);
     } finally {
-      setLoading(false);
+      if (requestId === userLoadRequestId.current) setLoading(false);
     }
   }, [roleFilter, searchQuery]);
 

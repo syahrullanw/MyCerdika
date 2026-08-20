@@ -4,6 +4,8 @@ from server import (
     AcademicDeadlineItemInput,
     AcademicDeadlineSettingsInput,
     AcademicCalendarEventInput,
+    _analysis_has_global_program_scope,
+    _analysis_is_program_manager,
     academic_deadline_event_payload,
     academic_deadline_visible_to_user,
     calendar_event_visible_to_user,
@@ -32,6 +34,16 @@ def test_academic_calendar_visibility_honors_audience_and_program_scope():
 def test_academic_operator_can_manage_calendar_without_changing_base_role():
     assert can_manage_academic_calendar({"role": "lecturer", "access_roles": ["academic_operator"]})
     assert not can_manage_academic_calendar({"role": "lecturer", "access_roles": []})
+
+
+def test_academic_operator_has_global_program_analysis_scope():
+    baak = {"role": "staff", "access_roles": ["academic_operator"]}
+    ordinary_staff = {"role": "staff", "access_roles": []}
+
+    assert _analysis_is_program_manager(baak) is True
+    assert _analysis_has_global_program_scope(baak) is True
+    assert _analysis_is_program_manager(ordinary_staff) is False
+    assert _analysis_has_global_program_scope(ordinary_staff) is False
 
 
 def test_academic_deadline_visibility_matches_kaprodi_and_lecturer_targets():

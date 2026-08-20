@@ -2,6 +2,59 @@
 
 Semua perubahan penting pada aplikasi ini dicatat di sini. Versi rilis utama disimpan di file [`VERSION`](./VERSION), sedangkan versi skema database yang sudah diterapkan dicatat oleh tabel `app_schema_migrations` di PostgreSQL.
 
+## [1.11.4] — 2026-08-20
+
+### Hak akses Tendik
+
+- Hak akses efektif dari role, templat, dan penugasan kini dikirim saat sesi user dimuat.
+- Menu Tendik sekarang membaca izin modul yang tersimpan, bukan hanya `access_roles`, sehingga menu seperti Keuangan, PMB, Akademik, dan modul lain langsung mengikuti checklist hak akses.
+
+### Pencarian Hak Akses User
+
+- Memperbaiki filter role dan pencarian pengguna agar hasil mengikuti kata kunci tanpa tertahan oleh hasil pencarian sebelumnya.
+- Pencarian kini mencakup nama, nama lengkap, username, email, NIM, dan NIDN dengan pencocokan yang tidak peka huruf besar/kecil.
+- Menambahkan dukungan query `$regex` dan `$options` pada adapter PostgreSQL serta mengamankan kata kunci menjadi pencarian literal.
+
+### Konsistensi role, jabatan, dan menu
+
+- Menjadikan `effective_permissions` dari halaman Hak Akses User sebagai sumber keputusan tunggal untuk menu Admin, Dosen, Tendik, dan Mahasiswa.
+- Menghapus pembukaan menu implisit hanya karena role Dosen atau atribut tambahan Kaprodi/Operator; jabatan tambahan sekarang mengatur scope dan menambah izin melalui templat, bukan melewati matriks modul.
+- Mengirim izin efektif langsung pada login lokal, login SSO, dan `/auth/me` untuk semua role agar sidebar sudah benar sejak render pertama.
+- Mengabaikan teks/flag jabatan lama apabila `access_roles` hasil sinkronisasi sudah tersedia, sehingga dosen biasa dengan data jabatan historis tidak lagi dianggap Kaprodi.
+- Memigrasikan templat bawaan lama yang masih memakai grup umum seperti `data_master`, `user_management`, dan `system_settings` ke katalog modul terperinci versi 2 tanpa membuka modul admin yang tidak berkaitan.
+- Membatasi pemuatan awal frontend pada data modul yang memang boleh dilihat dan mengalihkan navigasi/notifikasi dari halaman yang tidak memiliki izin.
+- Menambahkan regresi untuk Admin, Dosen biasa, Kaprodi, Tendik, Mahasiswa, template lama, serta field jabatan Kaprodi yang sudah tidak aktif.
+
+### Scope Dosen dan Kaprodi
+
+- Menjadikan Kaprodi sebagai Dosen Pengampu dengan privilese struktural tambahan, lalu mengelompokkan menu khususnya pada grup **Kaprodi** di sidebar.
+- Memigrasikan templat bawaan Kaprodi ke skema izin versi 3 dan menghapus akses default ke Fakultas, Program Studi, SK Mengajar, SK Jabatan Akademik, Jabatan Akademik Dosen, Wizard Prodi + Kelas, serta Penempatan Mahasiswa ke Prodi.
+- Membatasi Kurikulum, Jadwal Mengajar, Data Mahasiswa, Data Dosen, Dosen Wali, dan analisis Kaprodi pada Prodi aktif yang dipimpin; percobaan akses atau perubahan lintas Prodi ditolak oleh backend.
+- Halaman Jadwal Mengajar Kaprodi kini mengikuti selector semester di header, tanpa filter tahun ajaran dan semester ganda di dalam halaman.
+- Menjadikan Data Dosen bersifat baca-saja untuk Kaprodi dan hanya menampilkan dosen dengan homebase pada Prodi yang dipimpin.
+- Memastikan Laporan Ringkas Kaprodi tetap memakai scope kelas yang benar-benar dia ampu sebagai dosen, bukan seluruh kelas dalam Prodi.
+
+### Scope Tendik Akademik / BAAK
+
+- Menjadikan penugasan **Kepala / Staf Bagian Akademik (BAAK)** pada Jabatan Akademik sebagai sumber atribut `academic_operator`, tanpa mengubah role dasar Tendik menjadi Admin.
+- Menambahkan Tendik ke daftar kandidat penugasan Jabatan Akademik melalui endpoint khusus, sehingga daftar Data Dosen tetap hanya berisi dosen.
+- Mengembalikan templat role dasar Tendik ke akses minimum; kewenangan operasional kini berasal dari jabatan aktif seperti BAAK, Keuangan, atau PMB.
+- Menyamakan kewenangan pengelolaan Kalender Akademik BAAK dengan Admin Kampus, termasuk membuat, mengubah, menghapus/mengarsipkan, dan mengekspor agenda.
+- Menyembunyikan Perwalian KRS dari user akademik karena antrean persetujuan tersebut merupakan tanggung jawab Dosen PA.
+- Membuka Progres Nilai Prodi, Analisis Mahasiswa Prodi, serta Analisis & Approval RPS untuk Admin dan BAAK dengan selector seluruh/satu Program Studi.
+- Memperbaiki otorisasi endpoint analisis yang sebelumnya menolak Tendik BAAK dan menutup fallback sesi lama yang dapat memperlakukan permintaan tanpa sesi sebagai Admin.
+- Data Mahasiswa untuk BAAK menggunakan scope institusi sehingga seluruh mahasiswa lintas Prodi tampil seperti pada Admin.
+- Menetapkan akun `jijah@polteksci.ac.id` sebagai **Kepala / Staf Bagian Akademik (BAAK)** dan menyinkronkan ulang hak akses efektifnya.
+- Menyembunyikan Rekap Nilai, Predikat, Laporan Ringkas, serta Laporan BKD & Portofolio dari seluruh user Tendik karena halaman tersebut merupakan ruang kerja pengajaran Dosen.
+- Menetapkan Konfigurasi Akademik, Setup Semester Baru, Tahun Ajaran, Fakultas, Gedung, Ruangan, Data Tendik, Wizard Prodi + Kelas, dan Penempatan Mahasiswa ke Prodi sebagai halaman khusus Administrator Kampus.
+- Memigrasikan templat bawaan BAAK ke skema izin versi 5 agar izin lama untuk konfigurasi periode, sarana, dan laporan pengajaran dicabut tanpa mengurangi Kalender Akademik, monitoring mutu, kurikulum, jadwal, serta data sivitas.
+
+### Validasi rilis
+
+- Versi aplikasi dinaikkan dari `1.11.3` ke `1.11.4` pada `VERSION`, `frontend/package.json`, `frontend/package-lock.json`, dan `frontend-pmb/package.json`.
+- Templat hak akses bawaan BAAK dimigrasikan otomatis ke skema izin versi 5 saat backend dimulai.
+- Regression test hak akses, kalender akademik, dan scope Dosen/Kaprodi lulus; unit test frontend serta production build juga berhasil.
+
 ## [1.11.3] — 2026-08-20
 
 ### Jadwal mengajar

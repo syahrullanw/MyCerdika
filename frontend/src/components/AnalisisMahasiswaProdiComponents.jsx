@@ -87,13 +87,14 @@ function MetricCard({ icon: Icon, label, value, helper, tone = "indigo" }) {
   );
 }
 
-export function AnalisisMahasiswaProdiPage({ user, token, selectedSemester }) {
+export function AnalisisMahasiswaProdiPage({ user, token, selectedSemester, programs = [] }) {
   const [data, setData] = useState(null);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState("");
   const [search, setSearch] = useState("");
   const [riskFilter, setRiskFilter] = useState("all");
   const [selectedStudent, setSelectedStudent] = useState(null);
+  const [selectedProdi, setSelectedProdi] = useState("");
 
   const fetchData = useCallback(async () => {
     setLoading(true);
@@ -101,6 +102,7 @@ export function AnalisisMahasiswaProdiPage({ user, token, selectedSemester }) {
     try {
       const params = new URLSearchParams();
       if (selectedSemester && selectedSemester !== "all") params.set("semester_id", selectedSemester);
+      if (selectedProdi) params.set("prodi_id", selectedProdi);
       const response = await fetch(`${BACKEND_URL}/api/prodi/analisis-mahasiswa${params.toString() ? `?${params}` : ""}`, {
         headers: {
           "Content-Type": "application/json",
@@ -115,7 +117,7 @@ export function AnalisisMahasiswaProdiPage({ user, token, selectedSemester }) {
     } finally {
       setLoading(false);
     }
-  }, [selectedSemester, token]);
+  }, [selectedProdi, selectedSemester, token]);
 
   useEffect(() => {
     fetchData();
@@ -141,6 +143,13 @@ export function AnalisisMahasiswaProdiPage({ user, token, selectedSemester }) {
   const summary = data?.summary || {};
   const riskDistribution = data?.risk_distribution || {};
   const attendanceBuckets = data?.attendance_buckets || {};
+  const canSelectProdi = user?.role === "admin"
+    || (user?.access_roles || []).includes("academic_operator")
+    || Boolean(data?.scope?.can_select_prodi);
+  const programOptions = useMemo(() => {
+    const source = Array.isArray(programs) && programs.length ? programs : (data?.prodi_list || []);
+    return source.filter((item) => item?.id || item?.code || item?.kode);
+  }, [data?.prodi_list, programs]);
 
   return (
     <div className="space-y-6 pb-12" data-testid="analisis-mahasiswa-prodi-page">
@@ -159,19 +168,38 @@ export function AnalisisMahasiswaProdiPage({ user, token, selectedSemester }) {
             </div>
             <h1 className="text-2xl font-extrabold tracking-tight md:text-3xl">Analisis Mahasiswa Prodi</h1>
             <p className="mt-2 max-w-2xl text-sm text-indigo-100/85">
-              Pantau kehadiran, capaian nilai, progres tugas, aktivitas, dan risiko akademik seluruh mahasiswa dalam kewenangan {user?.prodi_nama || user?.prodi_name || "prodi"}.
+              Pantau kehadiran, capaian nilai, progres tugas, aktivitas, dan risiko akademik mahasiswa pada {data?.scope?.prodi_name || user?.prodi_nama || user?.prodi_name || "Program Studi"}.
             </p>
           </div>
-          <Button
-            type="button"
-            variant="secondary"
-            onClick={fetchData}
-            className="self-start border-0 bg-indigo-600 text-white shadow-md hover:bg-indigo-500 md:self-center"
-            data-testid="analisis-mahasiswa-refresh-button"
-          >
-            <RefreshCw className={`mr-2 h-4 w-4 ${loading ? "animate-spin" : ""}`} />
-            Refresh Analisis
-          </Button>
+          <div className="flex w-full flex-col gap-2 self-start md:w-auto md:self-center">
+            {canSelectProdi && (
+              <select
+                value={selectedProdi}
+                onChange={(event) => {
+                  setSelectedProdi(event.target.value);
+                  setSelectedStudent(null);
+                }}
+                className="h-10 min-w-64 rounded-md border border-white/25 bg-slate-900/80 px-3 text-sm font-semibold text-white"
+                data-testid="analisis-mahasiswa-prodi-selector"
+              >
+                <option value="">Semua Program Studi</option>
+                {programOptions.map((program) => {
+                  const id = program.id || program.code || program.kode;
+                  return <option key={id} value={id}>{program.name || program.nama || program.code || program.kode}</option>;
+                })}
+              </select>
+            )}
+            <Button
+              type="button"
+              variant="secondary"
+              onClick={fetchData}
+              className="border-0 bg-indigo-600 text-white shadow-md hover:bg-indigo-500"
+              data-testid="analisis-mahasiswa-refresh-button"
+            >
+              <RefreshCw className={`mr-2 h-4 w-4 ${loading ? "animate-spin" : ""}`} />
+              Refresh Analisis
+            </Button>
+          </div>
         </div>
       </section>
 

@@ -231,11 +231,29 @@ def _matches_field(actual: Any, condition: Any) -> bool:
             return False
         if operator == "$exists" and ((actual is not _MISSING) != bool(expected)):
             return False
+        if operator == "$regex":
+            if actual is _MISSING or actual is None:
+                return False
+            options = str(condition.get("$options") or "")
+            if any(option not in {"i"} for option in options):
+                raise ValueError(f"Opsi regex tidak didukung: {options!r}")
+            flags = re.IGNORECASE if "i" in options else 0
+            values = actual if isinstance(actual, list) else [actual]
+            try:
+                if not any(re.search(str(expected), str(value), flags) for value in values):
+                    return False
+            except re.error as exc:
+                raise ValueError(f"Pola regex tidak valid: {expected!r}") from exc
+        if operator == "$options":
+            if "$regex" not in condition:
+                raise ValueError("Operator $options hanya dapat digunakan bersama $regex")
+            if not isinstance(expected, str):
+                raise ValueError("Nilai $options harus berupa string")
         if operator in {"$lt", "$lte", "$gt", "$gte"} and not _compare(actual, expected, operator):
             return False
         if operator == "$size" and (not isinstance(actual, list) or len(actual) != int(expected)):
             return False
-        if operator not in {"$eq", "$ne", "$in", "$nin", "$exists", "$lt", "$lte", "$gt", "$gte", "$size"}:
+        if operator not in {"$eq", "$ne", "$in", "$nin", "$exists", "$regex", "$options", "$lt", "$lte", "$gt", "$gte", "$size"}:
             raise ValueError(f"Operator query tidak didukung: {operator}")
     return True
 
@@ -264,6 +282,10 @@ class _QueryCompiler:
     def _parameter(self, value: Any) -> str:
         self.parameters.append(_json_dump(value))
         return f"${self.first_parameter + len(self.parameters) - 1}::jsonb"
+
+    def _text_parameter(self, value: Any) -> str:
+        self.parameters.append(str(value))
+        return f"${self.first_parameter + len(self.parameters) - 1}::text"
 
     def _equals(self, field: str, node: str, value: Any) -> str:
         if field == "id" and isinstance(value, str):
@@ -297,6 +319,20 @@ class _QueryCompiler:
                 parts.append(combined if operator == "$in" else f"({node} IS NULL OR NOT {combined})")
             elif operator == "$exists":
                 parts.append(f"({node} IS {'NOT ' if expected else ''}NULL)")
+            elif operator == "$regex":
+                options = str(condition.get("$options") or "")
+                if not isinstance(expected, str):
+                    raise ValueError("Nilai $regex harus berupa string")
+                if any(option not in {"i"} for option in options):
+                    raise ValueError(f"Opsi regex tidak didukung: {options!r}")
+                regex_operator = "~*" if "i" in options else "~"
+                pattern = self._text_parameter(expected)
+                parts.append(f"(({node} #>> '{{}}') {regex_operator} {pattern})")
+            elif operator == "$options":
+                if "$regex" not in condition:
+                    raise ValueError("Operator $options hanya dapat digunakan bersama $regex")
+                if not isinstance(expected, str):
+                    raise ValueError("Nilai $options harus berupa string")
             elif operator in {"$lt", "$lte", "$gt", "$gte"}:
                 sql_operator = {"$lt": "<", "$lte": "<=", "$gt": ">", "$gte": ">="}[operator]
                 parts.append(f"({node} IS NOT NULL AND {node} {sql_operator} {self._parameter(expected)})")

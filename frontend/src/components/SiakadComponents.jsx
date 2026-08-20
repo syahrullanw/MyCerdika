@@ -978,7 +978,7 @@ export function KeuanganPage({ user, token }) {
   );
 }
 
-export function PerwalianKRSPage({ token }) {
+export function PerwalianKRSPage({ token, pendingOnly = false, onPendingCountChange }) {
   const [students, setStudents] = useState([]);
   const [loading, setLoading] = useState(true);
   const [processing, setProcessing] = useState("");
@@ -988,10 +988,16 @@ export function PerwalianKRSPage({ token }) {
   const fetchStudents = async () => {
     try {
       setLoading(true);
-      const res = await api.get("/api/v1/akademik/students/pa", {
+      const res = await api.get(
+        `/api/v1/akademik/students/pa${pendingOnly ? "?submitted_only=true" : ""}`,
+        {
         headers: { Authorization: `Bearer ${token}` }
-      });
-      if (res.data.ok) setStudents(res.data.students || []);
+        },
+      );
+      if (res.data.ok) {
+        setStudents(res.data.students || []);
+        onPendingCountChange?.(Number(res.data.pending_count || 0));
+      }
     } catch (err) {
       console.error(err);
       toast.error("Gagal memuat daftar mahasiswa bimbingan PA");
@@ -1104,7 +1110,11 @@ export function PerwalianKRSPage({ token }) {
           {loading ? (
             <p className="text-center py-8 text-slate-400">Memuat data...</p>
           ) : students.length === 0 ? (
-            <p className="text-center py-8 text-slate-400">Belum ada mahasiswa yang ditugaskan ke Dosen PA Anda.</p>
+            <p className="text-center py-8 text-slate-400">
+              {pendingOnly
+                ? "Tidak ada pengajuan KRS yang menunggu persetujuan Anda."
+                : "Belum ada mahasiswa yang ditugaskan ke Dosen PA Anda."}
+            </p>
           ) : (
             <Table>
               <TableHeader>

@@ -58,13 +58,14 @@ const getToken = (propToken) => {
   return "";
 };
 
-export function ProgresNilaiProdiPage({ user, token, selectedSemester: globalSelectedSemester }) {
+export function ProgresNilaiProdiPage({ user, token, selectedSemester: globalSelectedSemester, programs = [] }) {
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState(null);
   const [data, setData] = useState(null);
 
   // Filters
   const [searchKeyword, setSearchKeyword] = useState("");
+  const [selectedProdi, setSelectedProdi] = useState("");
   const [statusFilter, setStatusFilter] = useState("all"); // 'all' | 'in_progress' | 'finalized' | 'incomplete'
   const [viewMode, setViewMode] = useState("grid"); // 'grid' | 'table'
 
@@ -85,6 +86,7 @@ export function ProgresNilaiProdiPage({ user, token, selectedSemester: globalSel
         params.append("semester_id", globalSelectedSemester);
       }
       if (searchKeyword) params.append("search", searchKeyword);
+      if (selectedProdi) params.append("prodi_id", selectedProdi);
 
       const url = `${BACKEND_URL}/api/v1/krs/progres-nilai${params.toString() ? `?${params.toString()}` : ""}`;
 
@@ -108,21 +110,41 @@ export function ProgresNilaiProdiPage({ user, token, selectedSemester: globalSel
     } finally {
       setLoading(false);
     }
-  }, [globalSelectedSemester, searchKeyword, token]);
+  }, [globalSelectedSemester, searchKeyword, selectedProdi, token]);
 
   useEffect(() => {
     fetchData();
   }, [fetchData]);
 
   // Handle Export Excel
-  const handleExportExcel = (classId = "") => {
+  const handleExportExcel = async (classId = "") => {
     const params = new URLSearchParams();
     if (classId) params.append("class_id", classId);
     if (globalSelectedSemester && globalSelectedSemester !== "all") {
       params.append("semester_id", globalSelectedSemester);
     }
+    if (selectedProdi) params.append("prodi_id", selectedProdi);
     const url = `${BACKEND_URL}/api/v1/krs/progres-nilai/export.xlsx?${params.toString()}`;
-    window.open(url, "_blank");
+    try {
+      const authToken = getToken(token);
+      const response = await fetch(url, {
+        headers: authToken ? { Authorization: `Bearer ${authToken}` } : {},
+      });
+      if (!response.ok) {
+        const payload = await response.json().catch(() => ({}));
+        throw new Error(payload.detail || "Ekspor progres nilai gagal");
+      }
+      const blobUrl = URL.createObjectURL(await response.blob());
+      const link = document.createElement("a");
+      link.href = blobUrl;
+      link.download = classId ? `progres-nilai-${classId}.xlsx` : "rekap-progres-nilai-prodi.xlsx";
+      document.body.appendChild(link);
+      link.click();
+      link.remove();
+      URL.revokeObjectURL(blobUrl);
+    } catch (exportError) {
+      alert(exportError.message || "Ekspor progres nilai gagal");
+    }
   };
 
   // Handle Cetak & TTD Digital
@@ -165,6 +187,14 @@ export function ProgresNilaiProdiPage({ user, token, selectedSemester: globalSel
       return true;
     });
   }, [data?.classes, statusFilter]);
+
+  const canSelectProdi = user?.role === "admin"
+    || (user?.access_roles || []).includes("academic_operator")
+    || Boolean(data?.scope?.can_select_prodi);
+  const programOptions = useMemo(() => {
+    const source = Array.isArray(programs) && programs.length ? programs : (data?.prodi_list || []);
+    return source.filter((item) => item?.id || item?.code || item?.kode);
+  }, [data?.prodi_list, programs]);
 
   const activeProdiName = useMemo(() => {
     if (data?.prodi_name) return data.prodi_name;
@@ -319,16 +349,34 @@ export function ProgresNilaiProdiPage({ user, token, selectedSemester: globalSel
       <Card className="border border-slate-200/80 shadow-sm bg-white">
         <CardContent className="p-4 sm:p-6 space-y-4">
           <div className="flex flex-col sm:flex-row items-stretch sm:items-center justify-between gap-4">
-            {/* Search input */}
-            <div className="w-full sm:w-80">
-              <div className="relative">
-                <Search className="w-4 h-4 absolute left-3 top-3 text-slate-400" />
-                <Input
-                  placeholder="Cari Mata Kuliah, Kode, Dosen..."
-                  value={searchKeyword}
-                  onChange={(e) => setSearchKeyword(e.target.value)}
-                  className="pl-9 bg-slate-50 border-slate-300 text-sm h-10"
-                />
+            <div className="flex w-full flex-col gap-3 sm:flex-row sm:items-center">
+              {canSelectProdi && (
+                <select
+                  value={selectedProdi}
+                  onChange={(event) => {
+                    setSelectedProdi(event.target.value);
+                    setSelectedClassDetail(null);
+                  }}
+                  className="h-10 w-full rounded-md border border-slate-300 bg-white px-3 text-sm text-slate-700 sm:w-72"
+                  data-testid="progres-nilai-prodi-selector"
+                >
+                  <option value="">Semua Program Studi</option>
+                  {programOptions.map((program) => {
+                    const id = program.id || program.code || program.kode;
+                    return <option key={id} value={id}>{program.name || program.nama || program.code || program.kode}</option>;
+                  })}
+                </select>
+              )}
+              <div className="w-full sm:w-80">
+                <div className="relative">
+                  <Search className="w-4 h-4 absolute left-3 top-3 text-slate-400" />
+                  <Input
+                    placeholder="Cari Mata Kuliah, Kode, Dosen..."
+                    value={searchKeyword}
+                    onChange={(e) => setSearchKeyword(e.target.value)}
+                    className="pl-9 bg-slate-50 border-slate-300 text-sm h-10"
+                  />
+                </div>
               </div>
             </div>
 

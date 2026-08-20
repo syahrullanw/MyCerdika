@@ -13,6 +13,13 @@ import {
 import axios from "axios";
 import "@/App.css";
 import { apiErrorMessage } from "@/lib/utils";
+import {
+  canAccessAdminPage,
+  canAccessStudentPage,
+  isKaprodiUser,
+  normalizeUserRole,
+  userHasModuleAction,
+} from "@/accessControl";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
@@ -521,7 +528,7 @@ function dashboardRoleDetails(user = {}, programs = []) {
   // penugasan struktural. Setelah sinkronisasi, access_roles tetap sumber data.
   if (!syncedRoles) {
     const positionText = `${user.jabatan_akademik || ""} ${user.tugas_tambahan || ""} ${user.jabatan || ""}`.toLowerCase();
-    if (positionText.includes("kaprodi") || positionText.includes("ketua prodi")) activeCodes.add("kaprodi");
+    if (positionText.includes("kaprodi") || positionText.includes("ketua prodi") || positionText.includes("ketua program studi")) activeCodes.add("kaprodi");
     if (positionText.includes("sekprodi") || positionText.includes("sekretaris prodi")) activeCodes.add("sekprodi");
     if (positionText.includes("wadil 1") || positionText.includes("wadir 1") || positionText.includes("akademik")) activeCodes.add("academic_operator");
     if (positionText.includes("bendahara") || positionText.includes("keuangan")) activeCodes.add("finance_officer");
@@ -529,14 +536,14 @@ function dashboardRoleDetails(user = {}, programs = []) {
     if (positionText.includes("direktur")) activeCodes.add("campus_leader");
     if (positionText.includes("dekan")) activeCodes.add("faculty_leader");
   }
-  if (user.is_kaprodi || user.kaprodi_prodi_id) activeCodes.add("kaprodi");
+  if (isKaprodiUser(user)) activeCodes.add("kaprodi");
 
   const additional = Object.keys(ADDITIONAL_ACCESS_ROLE_LABELS)
     .filter((code) => activeCodes.has(code))
     .map((code) => ({ code, label: ADDITIONAL_ACCESS_ROLE_LABELS[code] }));
   const scopeIds = Array.from(new Set([
     ...(user.access_scope_prodi_ids || []),
-    user.kaprodi_prodi_id,
+    ...(isKaprodiUser(user) ? [user.kaprodi_prodi_id] : []),
   ].filter(Boolean).map(String)));
   const programNames = scopeIds.map((id) => {
     const program = (programs || []).find((item) => String(item.id) === id);
@@ -4367,21 +4374,19 @@ function AdminApp({
   const isCampusAdmin = user.role === "admin";
   const isDosen = user.role === "lecturer" || user.role === "dosen";
   const isStaff = user.role === "staff";
-  const derivedAccessRoles = Array.isArray(user?.access_roles) ? user.access_roles : [];
-  const canManageFinance = isCampusAdmin || derivedAccessRoles.includes("finance_officer");
-  const canManagePmb = isCampusAdmin || derivedAccessRoles.includes("pmb_officer");
-  const canManageAcademicCalendar = isCampusAdmin || derivedAccessRoles.includes("academic_operator");
-  const isAcademicOperator = isCampusAdmin || derivedAccessRoles.includes("academic_operator");
-  const canViewStudentRecords = isCampusAdmin || isAcademicOperator || canManageFinance;
-  const canUseTeachingWorkspace = isCampusAdmin || isDosen;
-  const isKaprodi = Boolean(
-    user?.is_kaprodi ||
-    user?.kaprodi_prodi_id ||
-    derivedAccessRoles.includes("kaprodi") ||
-    derivedAccessRoles.includes("sekprodi") ||
-    (user?.jabatan_akademik || user?.tugas_tambahan || user?.jabatan || "").toLowerCase().includes("kaprodi") ||
-    (user?.jabatan_akademik || user?.tugas_tambahan || user?.jabatan || "").toLowerCase().includes("ketua prodi")
+  const isKaprodi = isDosen && isKaprodiUser(user);
+  const isOrdinaryLecturer = isDosen
+    && !isKaprodi
+    && (!Array.isArray(user.access_roles) || user.access_roles.length === 0);
+  const canOpenAdminPage = useCallback(
+    (targetPage) => canAccessAdminPage(user, targetPage),
+    [user],
   );
+  const hasModuleView = (moduleKey) => userHasModuleAction(user, moduleKey, "view");
+  const canManageAcademicCalendar = isCampusAdmin || ["create", "edit", "delete"]
+    .some((action) => userHasModuleAction(user, "academic_calendar", action));
+  const canViewStudentRecords = hasModuleView("student_records");
+  const canViewReports = hasModuleView("rekap_nilai");
 
   const emptyLecturerForm = {
     employee_id: "",
@@ -4701,8 +4706,28 @@ function AdminApp({
   const loadedPageDataRef = useRef(new Set());
   const pageDataPromisesRef = useRef(new Map());
   const [loadingDataPages, setLoadingDataPages] = useState(() => new Set());
+  const [pendingPerwalianCount, setPendingPerwalianCount] = useState(null);
+
+  useEffect(() => {
+    let cancelled = false;
+    if (!isOrdinaryLecturer || !canOpenAdminPage("perwalian")) {
+      setPendingPerwalianCount(null);
+      return () => { cancelled = true; };
+    }
+    axios.get(`${API}/v1/akademik/students/pa/pending-count`, auth)
+      .then((response) => {
+        if (!cancelled) {
+          setPendingPerwalianCount(Number(response.data?.pending_count || 0));
+        }
+      })
+      .catch(() => {
+        if (!cancelled) setPendingPerwalianCount(0);
+      });
+    return () => { cancelled = true; };
+  }, [auth, canOpenAdminPage, isOrdinaryLecturer]);
 
   async function loadPageData(targetPage, { force = false } = {}) {
+    if (!canOpenAdminPage(targetPage)) return;
     const pageDataKeys = {
       dashboard: ["programs", "courses", "calendar", "enrollments", "reminders", "userActivity"],
       pmb: ["programs"],
@@ -4730,8 +4755,8 @@ function AdminApp({
       return pageDataPromisesRef.current.get(targetPage);
     }
 
-    const campusGet = (path, fallback) =>
-      isCampusAdmin
+    const authorizedGet = (pageKey, path, fallback) =>
+      canOpenAdminPage(pageKey)
         ? axios.get(`${API}${path}`, auth)
         : Promise.resolve({ data: fallback });
     const loaders = {
@@ -4743,25 +4768,25 @@ function AdminApp({
       materials: () => axios.get(`${API}/materials`, auth),
       reminders: () => axios.get(`${API}/reminders`, auth),
       calendar: () => axios.get(`${API}/calendar`, auth),
-      report: () => isAcademicOperator
+      report: () => canViewReports
         ? axios.get(`${API}/reports/summary`, auth)
         : Promise.resolve({ data: null }),
       enrollments: () => axios.get(`${API}/enrollment-requests`, auth),
-      settings: () => axios.get(`${API}/settings`, auth),
-      whatsappSettings: () => campusGet("/whatsapp/settings", defaultWhatsAppForm),
-      whatsappMessages: () => campusGet("/whatsapp/messages", []),
-      gradePredicates: () => isAcademicOperator
+      settings: () => authorizedGet("settings", "/settings", {}),
+      whatsappSettings: () => authorizedGet("whatsapp", "/whatsapp/settings", defaultWhatsAppForm),
+      whatsappMessages: () => authorizedGet("whatsapp", "/whatsapp/messages", []),
+      gradePredicates: () => canViewReports
         ? axios.get(`${API}/grade-predicates`, auth)
         : Promise.resolve({ data: { predicates: [] } }),
-      driveSettings: () => campusGet("/drive/settings", defaultDriveForm),
-      cleanData: () => campusGet("/clean-data/summary", []),
-      emailSettings: () => campusGet("/email/settings", defaultEmailForm),
-      ssoSettings: () => campusGet("/sso/settings", defaultSsoForm),
-      gradeRecap: () => isAcademicOperator
+      driveSettings: () => authorizedGet("drive", "/drive/settings", defaultDriveForm),
+      cleanData: () => authorizedGet("clean", "/clean-data/summary", []),
+      emailSettings: () => authorizedGet("email", "/email/settings", defaultEmailForm),
+      ssoSettings: () => authorizedGet("sso", "/sso/settings", defaultSsoForm),
+      gradeRecap: () => canViewReports
         ? axios.get(`${API}/reports/grade-recap`, auth)
         : Promise.resolve({ data: [] }),
-      lecturers: () => campusGet("/lecturers", []),
-      staff: () => campusGet("/staff", []),
+      lecturers: () => authorizedGet("lecturers", "/lecturers", []),
+      staff: () => authorizedGet("staff", "/staff", []),
       jabatanOptions: () => axios.get(`${API}/v1/master/jabatan-akademik`, auth),
       unitOrganisasiOptions: () => axios.get(`${API}/v1/master/unit-organisasi`, auth),
       userActivity: () => isCampusAdmin
@@ -4914,12 +4939,23 @@ function AdminApp({
       // Only data needed to paint the authenticated dashboard is fetched in
       // the critical path. Large management tables and integration settings
       // load after the shell is already usable.
+      const canLoadClasses = isCampusAdmin || [
+        "materials", "assignments", "rps", "attendance", "grading",
+        "rekap", "lecturer_reports", "perwalian",
+      ].some(canOpenAdminPage);
+      const canLoadAssignments = isCampusAdmin || [
+        "assignments", "grading", "rekap", "reports", "lecturer_reports",
+      ].some(canOpenAdminPage);
+      const canLoadSubmissions = isCampusAdmin || [
+        "grading", "rekap", "reports", "lecturer_reports",
+      ].some(canOpenAdminPage);
+      const canLoadProgress = isCampusAdmin || isDosen;
       const [classes, assignments, submissions, studentProgress, tahunAjaranRes] =
         await Promise.all([
-          axios.get(`${API}/classes`, auth),
-          axios.get(`${API}/assignments`, auth),
-          axios.get(`${API}/submissions`, auth),
-          axios.get(`${API}/progress`, auth),
+          canLoadClasses ? axios.get(`${API}/classes`, auth) : Promise.resolve({ data: [] }),
+          canLoadAssignments ? axios.get(`${API}/assignments`, auth) : Promise.resolve({ data: [] }),
+          canLoadSubmissions ? axios.get(`${API}/submissions`, auth) : Promise.resolve({ data: [] }),
+          canLoadProgress ? axios.get(`${API}/progress`, auth) : Promise.resolve({ data: [] }),
           axios.get(`${API}/v1/master/tahun-ajaran`, auth),
         ]);
       const classesData = classes.data || [];
@@ -4930,13 +4966,15 @@ function AdminApp({
       const dashboardSemesterId = selectedSemester && selectedSemester !== "all"
         ? selectedSemester
         : activeTa?.id || "";
-      const dashboard = await axios.get(`${API}/dashboard`, {
-        ...auth,
-        params: {
-          include_activity: false,
-          semester_id: dashboardSemesterId || undefined,
-        },
-      });
+      const dashboard = canOpenAdminPage("dashboard")
+        ? await axios.get(`${API}/dashboard`, {
+            ...auth,
+            params: {
+              include_activity: false,
+              semester_id: dashboardSemesterId || undefined,
+            },
+          })
+        : { data: {} };
       dashboardSemesterLoadedRef.current = dashboardSemesterId || "all";
       if (activeTa?.id) {
         setSelectedSemester((prev) => (prev === "" || prev === "all" ? activeTa.id : prev));
@@ -5003,6 +5041,7 @@ function AdminApp({
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [page]);
   useEffect(() => {
+    if (!canOpenAdminPage("dashboard")) return undefined;
     if (!(data.tahunAjaran || []).length) return undefined;
     const dashboardSemesterId = selectedSemester && selectedSemester !== "all"
       ? selectedSemester
@@ -5027,7 +5066,7 @@ function AdminApp({
       if (!cancelled) console.warn("Gagal menyelaraskan dashboard semester", error);
     });
     return () => { cancelled = true; };
-  }, [auth, data.tahunAjaran?.length, selectedSemester]);
+  }, [auth, canOpenAdminPage, data.tahunAjaran?.length, selectedSemester]);
   async function postJson(path, payload, success) {
     const operation = progress.begin(
       success,
@@ -6116,11 +6155,18 @@ function AdminApp({
       { dashboard: 0 },
     );
   function openAdminPage(targetPage) {
+    if (!canOpenAdminPage(targetPage)) {
+      toast.error("Anda tidak memiliki hak akses ke modul tersebut");
+      return;
+    }
     loadPageData(targetPage);
     setPage(targetPage);
   }
   function openAdminNotification(notification) {
-    const targetPage = notification.target?.page || "dashboard";
+    const requestedPage = notification.target?.page || "dashboard";
+    const targetPage = canOpenAdminPage(requestedPage)
+      ? requestedPage
+      : (canOpenAdminPage("dashboard") ? "dashboard" : "profile");
     setNotificationFocus(notification);
     loadPageData(targetPage);
     setPage(targetPage);
@@ -6140,104 +6186,115 @@ function AdminApp({
     {
       label: "Ringkasan",
       items: [
-        ["dashboard", LayoutDashboard, "Dashboard"],
+        ["dashboard", LayoutDashboard, "Dashboard", canOpenAdminPage("dashboard")],
       ],
     },
     {
       label: "Pembelajaran",
       items: [
-        ["materials", MessageSquare, "Materi & Diskusi", canUseTeachingWorkspace],
-        ["assignments", ClipboardList, "Tugas", canUseTeachingWorkspace],
-        ["rps", FileText, "RPS (16 Sesi)", canUseTeachingWorkspace],
-        ["attendance", CheckCircle2, "Presensi Kehadiran", canUseTeachingWorkspace],
+        ["materials", MessageSquare, "Materi & Diskusi", canOpenAdminPage("materials")],
+        ["assignments", ClipboardList, "Tugas", canOpenAdminPage("assignments")],
+        ["rps", FileText, "RPS (16 Sesi)", canOpenAdminPage("rps")],
+        ["attendance", CheckCircle2, "Presensi Kehadiran", canOpenAdminPage("attendance")],
       ],
     },
     {
       label: "Penilaian & Laporan",
       items: [
-        ["grading", CheckCircle2, "Penilaian", canUseTeachingWorkspace],
-        ["weights", BarChart3, "Bobot Nilai", canUseTeachingWorkspace],
-        ["rekap", BarChart3, "Rekap Nilai", canUseTeachingWorkspace || isAcademicOperator],
-        ["predicates", CheckCircle2, "Predikat", canUseTeachingWorkspace || isAcademicOperator],
-        ["reports", FileSpreadsheet, "Laporan Ringkas", canUseTeachingWorkspace || isAcademicOperator],
-        ["lecturer_reports", FileSpreadsheet, "Laporan BKD & Portofolio", canUseTeachingWorkspace],
+        ["grading", CheckCircle2, "Penilaian", canOpenAdminPage("grading")],
+        ["weights", BarChart3, "Bobot Nilai", canOpenAdminPage("weights")],
+        ["rekap", BarChart3, "Rekap Nilai", canOpenAdminPage("rekap")],
+        ["predicates", CheckCircle2, "Predikat", canOpenAdminPage("predicates")],
+        ["reports", FileSpreadsheet, "Laporan Ringkas", canOpenAdminPage("reports")],
+        ["lecturer_reports", FileSpreadsheet, "Laporan BKD & Portofolio", canOpenAdminPage("lecturer_reports")],
       ],
     },
     {
       label: "Layanan Akademik",
       items: [
-        ["calendar", CalendarDays, "Kalender Akademik"],
-        ["perwalian", ShieldCheck, "Perwalian KRS", canUseTeachingWorkspace || isAcademicOperator],
-        ["keuangan_admin", FileText, "Keuangan Kampus", canManageFinance],
-        ["pmb", GraduationCap, "PMB (Penerimaan Mhs)", canManagePmb],
+        ["calendar", CalendarDays, "Kalender Akademik", canOpenAdminPage("calendar")],
+        [
+          "perwalian",
+          ShieldCheck,
+          "Perwalian KRS",
+          canOpenAdminPage("perwalian") && (!isOrdinaryLecturer || pendingPerwalianCount > 0),
+        ],
+        ["keuangan_admin", FileText, "Keuangan Kampus", canOpenAdminPage("keuangan_admin")],
+        ["pmb", GraduationCap, "PMB (Penerimaan Mhs)", canOpenAdminPage("pmb")],
       ],
     },
     {
       label: "Struktur, Periode & Sarana",
       items: [
-        ["master_config", Settings, "Konfigurasi Akademik", isAcademicOperator],
-        ["wizard_semester", Wand2, "Setup Semester Baru", isAcademicOperator],
-        ["master_tahun_ajaran", CalendarDays, "Tahun Ajaran", isAcademicOperator],
-        ["master_fakultas", BookOpen, "Fakultas", isAcademicOperator],
-        ["master_prodi", BookOpen, "Program Studi (Prodi)", isAcademicOperator],
-        ["master_gedung", Building2, "Gedung", isAcademicOperator],
-        ["master_ruangan", Building2, "Ruangan", isAcademicOperator],
+        ["master_config", Settings, "Konfigurasi Akademik", canOpenAdminPage("master_config")],
+        ["wizard_semester", Wand2, "Setup Semester Baru", canOpenAdminPage("wizard_semester")],
+        ["master_tahun_ajaran", CalendarDays, "Tahun Ajaran", canOpenAdminPage("master_tahun_ajaran")],
+        ["master_fakultas", BookOpen, "Fakultas", canOpenAdminPage("master_fakultas")],
+        ["master_prodi", BookOpen, "Program Studi (Prodi)", canOpenAdminPage("master_prodi")],
+        ["master_gedung", Building2, "Gedung", canOpenAdminPage("master_gedung")],
+        ["master_ruangan", Building2, "Ruangan", canOpenAdminPage("master_ruangan")],
       ],
     },
     {
       label: "Kurikulum & Penugasan",
       items: [
-        ["master_kurikulum", BookOpen, "Kurikulum & Dosen MK", isAcademicOperator || isKaprodi],
-        ["progres_nilai_prodi", Award, "Progres Nilai Prodi", isAcademicOperator || isKaprodi],
-        ["analisis_rps_prodi", ClipboardCheck, "Analisis & Approval RPS", isAcademicOperator || isKaprodi],
-        ["master_jadwal_mengajar", CalendarClock, "Jadwal Mengajar", isAcademicOperator || isKaprodi],
-        ["sk_mengajar", FileText, "SK Mengajar Dosen", isAcademicOperator || isKaprodi],
-        ["sk_jabatan", BadgeCheck, "SK Jabatan Akademik Dosen", isCampusAdmin],
+        ["master_kurikulum", BookOpen, "Kurikulum & Dosen MK", canOpenAdminPage("master_kurikulum")],
+        ["progres_nilai_prodi", Award, "Progres Nilai Prodi", !isKaprodi && canOpenAdminPage("progres_nilai_prodi")],
+        ["analisis_rps_prodi", ClipboardCheck, "Analisis & Approval RPS", !isKaprodi && canOpenAdminPage("analisis_rps_prodi")],
+        ["master_jadwal_mengajar", CalendarClock, "Jadwal Mengajar", canOpenAdminPage("master_jadwal_mengajar")],
+        ["sk_mengajar", FileText, "SK Mengajar Dosen", canOpenAdminPage("sk_mengajar")],
+        ["sk_jabatan", BadgeCheck, "SK Jabatan Akademik Dosen", canOpenAdminPage("sk_jabatan")],
       ],
     },
+    ...(isKaprodi ? [{
+      label: "Kaprodi",
+      items: [
+        ["progres_nilai_prodi", Award, "Progres Nilai Prodi", canOpenAdminPage("progres_nilai_prodi")],
+        ["analisis_mahasiswa_prodi", BarChart3, "Analisis Mahasiswa Prodi", canOpenAdminPage("analisis_mahasiswa_prodi")],
+        ["analisis_rps_prodi", ClipboardCheck, "Analisis & Approval RPS", canOpenAdminPage("analisis_rps_prodi")],
+        ["lecturers", Users, "Data Dosen Prodi", canOpenAdminPage("lecturers")],
+        ["master_dosen_wali", Users, "Assign Dosen Wali", canOpenAdminPage("master_dosen_wali")],
+      ],
+    }] : []),
     {
       label: "Sivitas & Perwalian",
       items: [
-        ["analisis_mahasiswa_prodi", BarChart3, "Analisis Mahasiswa Prodi", isAcademicOperator || isKaprodi],
-        ["students", Users, "Data Mahasiswa", canViewStudentRecords],
-        ["lecturers", Users, "Data Dosen", isCampusAdmin],
-        ["staff", Briefcase, "Data Tendik", isCampusAdmin],
-        ["master_jabatan_akademik", ShieldCheck, "Jabatan Akademik Dosen", isCampusAdmin],
-        ["enroll_wizard", Wand2, "Wizard Prodi + Kelas", isCampusAdmin],
-        ["master_assign_prodi", UserCheck, "Penempatan Mhs > Prodi", isCampusAdmin],
-        ["master_dosen_wali", Users, "Assign Dosen Wali", isCampusAdmin || isKaprodi],
+        ["analisis_mahasiswa_prodi", BarChart3, "Analisis Mahasiswa Prodi", !isKaprodi && canOpenAdminPage("analisis_mahasiswa_prodi")],
+        ["students", Users, "Data Mahasiswa", canOpenAdminPage("students")],
+        ["lecturers", Users, "Data Dosen", !isKaprodi && canOpenAdminPage("lecturers")],
+        ["staff", Briefcase, "Data Tendik", canOpenAdminPage("staff")],
+        ["master_jabatan_akademik", ShieldCheck, "Jabatan Akademik Dosen", canOpenAdminPage("master_jabatan_akademik")],
+        ["enroll_wizard", Wand2, "Wizard Prodi + Kelas", canOpenAdminPage("enroll_wizard")],
+        ["master_assign_prodi", UserCheck, "Penempatan Mhs > Prodi", canOpenAdminPage("master_assign_prodi")],
+        ["master_dosen_wali", Users, "Assign Dosen Wali", !isKaprodi && canOpenAdminPage("master_dosen_wali")],
       ],
     },
-    ...(isCampusAdmin
-      ? [
-          {
-            label: "Administrasi Sistem",
-            items: [
-              ["settings", Settings, "Pengaturan Kampus"],
-              ["user_access", ShieldCheck, "Hak Akses User"],
-              ["sso", ShieldCheck, "Login SSO"],
-            ],
-          },
-          {
-            label: "Integrasi & Notifikasi",
-            items: [
-              ["integrasi", Plug, "Integrasi API"],
-              ["feeder", Database, "PDDikti Feeder"],
-              ["drive", Upload, "Google Drive"],
-              ["whatsapp", Bell, "WhatsApp"],
-              ["email", Mail, "Email"],
-            ],
-          },
-          {
-            label: "Pemeliharaan Data",
-            items: [
-              ["migration_old_siap", Wand2, "Migrasi OLD-SIAP"],
-              ["backups", Database, "Backup Database"],
-              ["clean", Trash2, "Bersihkan Data"],
-            ],
-          },
-        ]
-      : []),
+    {
+      label: "Administrasi Sistem",
+      items: [
+        ["settings", Settings, "Pengaturan Kampus", canOpenAdminPage("settings")],
+        ["user_access", ShieldCheck, "Hak Akses User", canOpenAdminPage("user_access")],
+        ["sso", ShieldCheck, "Login SSO", canOpenAdminPage("sso")],
+      ],
+    },
+    {
+      label: "Integrasi & Notifikasi",
+      items: [
+        ["integrasi", Plug, "Integrasi API", canOpenAdminPage("integrasi")],
+        ["feeder", Database, "PDDikti Feeder", canOpenAdminPage("feeder")],
+        ["drive", Upload, "Google Drive", canOpenAdminPage("drive")],
+        ["whatsapp", Bell, "WhatsApp", canOpenAdminPage("whatsapp")],
+        ["email", Mail, "Email", canOpenAdminPage("email")],
+      ],
+    },
+    {
+      label: "Pemeliharaan Data",
+      items: [
+        ["migration_old_siap", Wand2, "Migrasi OLD-SIAP", canOpenAdminPage("migration_old_siap")],
+        ["backups", Database, "Backup Database", canOpenAdminPage("backups")],
+        ["clean", Trash2, "Bersihkan Data", canOpenAdminPage("clean")],
+      ],
+    },
     {
       label: "Akun Saya",
       items: [
@@ -6255,6 +6312,10 @@ function AdminApp({
     }))
     .filter((g) => g.items.length > 0);
   const nav = filteredNavGroups.flatMap((group) => group.items);
+  const firstAuthorizedPage = nav[0]?.[0] || "profile";
+  useEffect(() => {
+    if (!canOpenAdminPage(page)) setPage(firstAuthorizedPage);
+  }, [canOpenAdminPage, firstAuthorizedPage, page]);
   const toggleNavGroup = (label) => {
     setCollapsedNavGroups((current) => {
       const next = new Set(current);
@@ -6504,23 +6565,35 @@ function AdminApp({
             </div>
           )}
           <Suspense fallback={<PageModuleFallback />}>
-          {page === "perwalian" && <PerwalianKRSPage token={token} />}
+          {page === "perwalian" && (
+            <PerwalianKRSPage
+              token={token}
+              pendingOnly={isOrdinaryLecturer}
+              onPendingCountChange={setPendingPerwalianCount}
+            />
+          )}
           {page === "keuangan_admin" && <KeuanganPage user={user} token={token} />}
           {page === "pmb" && <AdminPmbHub token={token} user={user} programs={data.programs || []} />}
           {/* ── Data Master SIAKAD ── */}
           {page === "wizard_semester" && <WizardSemesterBaru onDone={() => setPage("dashboard")} />}
           {page === "master_tahun_ajaran" && <TahunAjaranPage />}
           {page === "master_kurikulum" && <KurikulumMasterPage user={user} />}
-          {page === "progres_nilai_prodi" && <ProgresNilaiProdiPage user={user} token={token} selectedSemester={selectedSemester} />}
-          {page === "analisis_mahasiswa_prodi" && <AnalisisMahasiswaProdiPage user={user} token={token} selectedSemester={selectedSemester} />}
-          {page === "analisis_rps_prodi" && <AnalisisRpsProdiPage user={user} token={token} selectedSemester={selectedSemester} />}
+          {page === "progres_nilai_prodi" && <ProgresNilaiProdiPage user={user} token={token} selectedSemester={selectedSemester} programs={data.programs || []} />}
+          {page === "analisis_mahasiswa_prodi" && <AnalisisMahasiswaProdiPage user={user} token={token} selectedSemester={selectedSemester} programs={data.programs || []} />}
+          {page === "analisis_rps_prodi" && <AnalisisRpsProdiPage user={user} token={token} selectedSemester={selectedSemester} programs={data.programs || []} />}
           {page === "master_fakultas" && <FakultasPage />}
           {page === "master_prodi" && <ProdiMasterPage />}
           {page === "master_gedung" && <GedungPage />}
           {page === "master_ruangan" && <RuanganPage />}
-          {page === "master_jadwal_mengajar" && <JadwalMengajarPage />}
+          {page === "master_jadwal_mengajar" && (
+            <JadwalMengajarPage
+              user={user}
+              selectedSemester={displayedSemester}
+              tahunAjaran={data.tahunAjaran}
+            />
+          )}
           {page === "sk_mengajar" && <SkMengajarPage />}
-          {page === "sk_jabatan" && isCampusAdmin && <SkJabatanPage />}
+          {page === "sk_jabatan" && <SkJabatanPage />}
           {page === "master_assign_prodi" && <MahasiswaProdiPage />}
           {page === "enroll_wizard" && <EnrollWizardPage />}
           {page === "master_dosen_wali" && <DosenWaliPage user={user} />}
@@ -6536,8 +6609,9 @@ function AdminApp({
               onNavigate={openAdminPage}
             />
           )}
-          {page === "lecturers" && isCampusAdmin && (
+          {page === "lecturers" && (
             <LecturersPage
+              user={user}
               lecturers={filteredData.lecturers}
               programs={filteredData.programs}
               forms={forms}
@@ -6696,7 +6770,7 @@ function AdminApp({
           {page === "guide" && (
             <GuidePage role={isCampusAdmin ? "admin" : isStaff ? "staff" : "lecturer"} user={user} classes={data.classes} onNavigate={openAdminPage} />
           )}
-          {page === "settings" && isCampusAdmin && (
+          {page === "settings" && (
             <SettingsPage
               forms={forms}
               setForms={setForms}
@@ -6707,9 +6781,9 @@ function AdminApp({
               onBrandingUpdate={onBrandingUpdate}
             />
           )}
-          {page === "integrasi" && isCampusAdmin && <IntegrationSettingsPage token={token} />}
-          {page === "feeder" && isCampusAdmin && <FeederPage token={token} />}
-          {page === "sso" && isCampusAdmin && (
+          {page === "integrasi" && <IntegrationSettingsPage token={token} />}
+          {page === "feeder" && <FeederPage token={token} />}
+          {page === "sso" && (
             <SsoSettingsPage
               forms={forms}
               setForms={setForms}
@@ -6718,7 +6792,7 @@ function AdminApp({
               settings={data.ssoSettings}
             />
           )}
-          {page === "drive" && isCampusAdmin && (
+          {page === "drive" && (
             <DrivePage
               forms={forms}
               setForms={setForms}
@@ -6730,7 +6804,7 @@ function AdminApp({
               refreshDriveStatus={refreshDriveStatus}
             />
           )}
-          {page === "whatsapp" && isCampusAdmin && (
+          {page === "whatsapp" && (
             <WhatsAppPage
               forms={forms}
               setForms={setForms}
@@ -6739,7 +6813,7 @@ function AdminApp({
               retryMessage={retryWhatsAppMessage}
             />
           )}
-          {page === "email" && isCampusAdmin && (
+          {page === "email" && (
             <EmailPage
               forms={forms}
               setForms={setForms}
@@ -6756,10 +6830,10 @@ function AdminApp({
               saveGradePredicates={saveGradePredicates}
             />
           )}
-          {page === "migration_old_siap" && isCampusAdmin && (
+          {page === "migration_old_siap" && (
             <MigrationPage />
           )}
-          {page === "clean" && isCampusAdmin && (
+          {page === "clean" && (
             <CleanDataPage
               modules={data.cleanData}
               cleanDataModule={cleanDataModule}
@@ -6768,7 +6842,7 @@ function AdminApp({
               cleanDataSemester={cleanDataSemester}
             />
           )}
-          {page === "backups" && isCampusAdmin && (
+          {page === "backups" && (
             <DatabaseBackupPage token={token} />
           )}
           </Suspense>
@@ -6779,6 +6853,7 @@ function AdminApp({
 }
 
 function LecturersPage({
+  user,
   lecturers = [],
   programs = [],
   forms,
@@ -6792,6 +6867,8 @@ function LecturersPage({
   const [lecturerListPage, setLecturerListPage] = useState(1);
   const lecturer = forms.lecturer;
   const editing = Boolean(lecturer.id);
+  const canManage = normalizeUserRole(user?.role) === "admin";
+  const isKaprodi = isKaprodiUser(user);
 
   function edit(item) {
     setForms({
@@ -6953,12 +7030,16 @@ function LecturersPage({
             <Users className="w-6 h-6 text-indigo-600" /> Data Dosen Kampus
           </h1>
           <p className="text-slate-500 text-sm mt-0.5">
-            Kelola data fungsional, NIP/NIDN, NIK, Homebase Prodi, dan kredensial login dosen.
+            {canManage
+              ? "Kelola data fungsional, NIP/NIDN, NIK, Homebase Prodi, dan kredensial login dosen."
+              : "Menampilkan dosen yang memiliki homebase pada prodi yang Anda pimpin."}
           </p>
         </div>
-        <Button onClick={handleOpenAddModal} size="lg" className="bg-indigo-600 hover:bg-indigo-700 text-white font-medium shrink-0">
-          <Plus className="w-4 h-4 mr-1.5" /> Tambah Dosen Baru
-        </Button>
+        {canManage && (
+          <Button onClick={handleOpenAddModal} size="lg" className="bg-indigo-600 hover:bg-indigo-700 text-white font-medium shrink-0">
+            <Plus className="w-4 h-4 mr-1.5" /> Tambah Dosen Baru
+          </Button>
+        )}
       </div>
 
       {/* Ringkasan Stat Cards */}
@@ -6967,7 +7048,7 @@ function LecturersPage({
           icon={Users}
           label="Total dosen"
           value={lecturers.length}
-          hint="Akun dosen terdaftar"
+          hint={isKaprodi ? "Homebase pada prodi yang dipimpin" : "Akun dosen terdaftar"}
           testid="lecturer-total"
         />
         <StatCard
@@ -7024,7 +7105,7 @@ function LecturersPage({
                   <TableHead className="font-semibold text-slate-700">Homebase & Jabatan</TableHead>
                   <TableHead className="font-semibold text-slate-700">Dosen Wali</TableHead>
                   <TableHead className="font-semibold text-slate-700">Status</TableHead>
-                  <TableHead className="font-semibold text-slate-700 text-right">Aksi</TableHead>
+                  {canManage && <TableHead className="font-semibold text-slate-700 text-right">Aksi</TableHead>}
                 </TableRow>
               </TableHeader>
               <TableBody className="divide-y divide-slate-100">
@@ -7094,7 +7175,7 @@ function LecturersPage({
                         {item.status === "active" ? "Aktif" : "Nonaktif"}
                       </Badge>
                     </TableCell>
-                    <TableCell className="text-right">
+                    {canManage && <TableCell className="text-right">
                       <div className="flex items-center justify-end gap-1.5">
                         <Button
                           size="sm"
@@ -7121,7 +7202,7 @@ function LecturersPage({
                           <Trash2 className="w-3.5 h-3.5" />
                         </Button>
                       </div>
-                    </TableCell>
+                    </TableCell>}
                   </TableRow>
                 ))}
               </TableBody>
@@ -9889,11 +9970,14 @@ function StudentsPage({
   const [studentStatusFilter, setStudentStatusFilter] = useState("");
   const [studentListPage, setStudentListPage] = useState(1);
 
-  const isKaprodi = Boolean(
-    user &&
-    user.role !== "admin" &&
-    (user.is_kaprodi || user.kaprodi_prodi_id || (user.access_roles || []).includes("kaprodi") || (user.access_roles || []).includes("sekprodi") || (user.jabatan_akademik || "").toLowerCase().includes("kaprodi") || (user.tugas_tambahan || "").toLowerCase().includes("kaprodi"))
+  const isKaprodi = Boolean(user && user.role !== "admin" && isKaprodiUser(user));
+  const isOrdinaryLecturer = Boolean(
+    user
+    && ["lecturer", "dosen"].includes(String(user.role || "").toLowerCase())
+    && !isKaprodi
+    && (!Array.isArray(user.access_roles) || user.access_roles.length === 0),
   );
+  const hasProgramScopeLock = isKaprodi || isOrdinaryLecturer;
   const kaprodiScopeValues = useMemo(() => {
     const derivedScope = normalizeProgramScopeTokens([
       user?.access_scope_prodi_ids || [],
@@ -10038,7 +10122,7 @@ function StudentsPage({
       s.prodi_name,
       s.program_name,
     ]);
-    const targetProdiValues = isKaprodi
+    const targetProdiValues = hasProgramScopeLock
       ? kaprodiScopeValues
       : normalizeProgramScopeTokens(studentProdiFilter);
     const matchProdi = targetProdiValues.size === 0 || [...studentProdiValues].some((value) => targetProdiValues.has(value));
@@ -10050,7 +10134,7 @@ function StudentsPage({
     return matchQuery && matchProdi && matchStatus;
   }), [
     data.students,
-    isKaprodi,
+    hasProgramScopeLock,
     kaprodiScopeValues,
     studentProdiFilter,
     studentSearch,
@@ -10078,7 +10162,7 @@ function StudentsPage({
           <div>
             <h1 className="text-xl font-bold text-slate-900">Data Mahasiswa</h1>
             <p className="text-xs text-slate-500 mt-0.5">
-              Total: <strong className="text-indigo-600 font-bold">{filteredStudentsList.length} Mahasiswa Terdaftar{isKaprodi ? ` (${kaprodiScopeLabel})` : ""}</strong>
+              Total: <strong className="text-indigo-600 font-bold">{filteredStudentsList.length} Mahasiswa Terdaftar{hasProgramScopeLock ? ` (${kaprodiScopeLabel})` : ""}</strong>
             </p>
           </div>
         </div>
@@ -10189,6 +10273,16 @@ function StudentsPage({
         </div>
       )}
 
+      {isOrdinaryLecturer && (
+        <div className="flex items-center gap-3 rounded-xl border border-blue-200 bg-blue-50/80 p-4 text-blue-900 shadow-sm">
+          <BookOpen className="h-5 w-5 shrink-0 text-blue-700" />
+          <div>
+            <p className="text-sm font-bold">Data mahasiswa prodi homebase</p>
+            <p className="mt-0.5 text-xs text-blue-700">Daftar ini dibatasi pada {kaprodiScopeNames.join(", ") || user?.homebase || user?.prodi_id || "prodi homebase Anda"}.</p>
+          </div>
+        </div>
+      )}
+
       {/* Toolbar Filter & Pencarian Cepat */}
       <div className="grid grid-cols-1 sm:grid-cols-2 md:grid-cols-4 gap-3 bg-white p-4 rounded-xl border border-slate-200 shadow-2xs">
         <div className="md:col-span-2 relative">
@@ -10205,11 +10299,11 @@ function StudentsPage({
         <div>
           <select
             className="w-full px-3 py-1.5 border border-slate-300 rounded-lg text-xs font-medium focus:ring-2 focus:ring-indigo-500 focus:border-indigo-500 bg-white"
-            value={isKaprodi ? "" : studentProdiFilter}
-            onChange={(e) => !isKaprodi && setStudentProdiFilter(e.target.value)}
-            disabled={isKaprodi}
+            value={hasProgramScopeLock ? "" : studentProdiFilter}
+            onChange={(e) => !hasProgramScopeLock && setStudentProdiFilter(e.target.value)}
+            disabled={hasProgramScopeLock}
           >
-            {isKaprodi ? (
+            {hasProgramScopeLock ? (
               <option value="">
                 {kaprodiScopeLabel}
               </option>
@@ -17253,9 +17347,9 @@ const GUIDE_AUTHORITY_PROFILES = {
   academic_operator: {
     title: "Operator Akademik / BAAK",
     scope: "Institusi sesuai penugasan",
-    allowed: ["Menangani administrasi periode akademik, KRS/KHS, struktur akademik, dan data sivitas sesuai templat akses.", "Menyusun, menyimpan draft, serta menerbitkan kalender akademik institusi.", "Membantu verifikasi proses akademik dan dokumentasi operasional kampus."],
-    limits: ["Tidak mengelola pengaturan keamanan, SSO, atau hak akses kecuali diberi wewenang tambahan.", "Perubahan akademik harus mengikuti kalender dan kebijakan yang ditetapkan kampus."],
-    actions: [["calendar", "Kalender Akademik"], ["perwalian", "Perwalian KRS"]],
+    allowed: ["Menangani KRS/KHS, kurikulum, jadwal, data program studi, dan data sivitas sesuai templat akses.", "Menyusun, menyimpan draft, serta menerbitkan kalender akademik institusi.", "Memantau progres nilai serta analisis mutu akademik seluruh prodi."],
+    limits: ["Konfigurasi semester, tahun ajaran, fakultas, sarana, dan utilitas penempatan mahasiswa tetap khusus Administrator Kampus.", "Tidak mengelola laporan pengajaran, pengaturan keamanan, SSO, atau hak akses."],
+    actions: [["calendar", "Kalender Akademik"], ["progres_nilai_prodi", "Progres Nilai Prodi"]],
   },
   finance_officer: {
     title: "Petugas Keuangan",
@@ -17307,7 +17401,7 @@ function GuidePage({ role = "student", user = {}, classes = [], onNavigate }) {
         : "Pahami layanan yang dapat Anda gunakan, batas wewenang, dan langkah belajar per semester.";
   const activeRoleCodes = Array.from(new Set([
     ...(Array.isArray(user?.access_roles) ? user.access_roles : []),
-    ...((user?.is_kaprodi || user?.kaprodi_prodi_id) ? ["kaprodi"] : []),
+    ...(isKaprodiUser(user) ? ["kaprodi"] : []),
   ])).filter((code) => GUIDE_AUTHORITY_PROFILES[code]);
   const authorityProfiles = [
     GUIDE_AUTHORITY_PROFILES[role] || GUIDE_AUTHORITY_PROFILES.student,
@@ -20233,6 +20327,10 @@ function StudentApp({
   showPhysicalDocumentsReminder = false,
   onDismissPhysicalDocumentsReminder,
 }) {
+  const canOpenStudentPage = useCallback(
+    (targetPage) => canAccessStudentPage(user, targetPage),
+    [user],
+  );
   const [selectedSemester, setSelectedSemester] = useState("");
   const [data, setData] = useState({
     assignments: [],
@@ -20268,12 +20366,15 @@ function StudentApp({
   async function loadStudent() {
     // The home page only needs learning content and progress. Calendar,
     // reminders and academic administration are hydrated in the background.
+    const canLoadAssignments = canOpenStudentPage("assignments") || canOpenStudentPage("grades");
+    const canLoadMaterials = canOpenStudentPage("courses");
+    const canLoadProgress = canOpenStudentPage("home") || canOpenStudentPage("grades");
     const [assignments, materials, submissions, studentProgress, tahunAjaranRes] =
       await Promise.all([
-        axios.get(`${API}/assignments`, auth),
-        axios.get(`${API}/materials`, auth),
-        axios.get(`${API}/submissions`, auth),
-        axios.get(`${API}/progress`, auth),
+        canLoadAssignments ? axios.get(`${API}/assignments`, auth) : Promise.resolve({ data: [] }),
+        canLoadMaterials ? axios.get(`${API}/materials`, auth) : Promise.resolve({ data: [] }),
+        canLoadAssignments ? axios.get(`${API}/submissions`, auth) : Promise.resolve({ data: [] }),
+        canLoadProgress ? axios.get(`${API}/progress`, auth) : Promise.resolve({ data: null }),
         axios.get(`${API}/v1/master/tahun-ajaran`, auth),
       ]);
     const listTa = Array.isArray(tahunAjaranRes?.data)
@@ -20291,12 +20392,16 @@ function StudentApp({
       progress: studentProgress.data,
       tahunAjaran: listTa,
     }));
+    const canLoadClasses = canOpenStudentPage("home") || [
+      "courses", "assignments", "rps", "attendance",
+    ].some(canOpenStudentPage);
+    const canLoadKrs = canOpenStudentPage("krs") || canOpenStudentPage("khs");
     const [calendar, reminders, enrollments, classesRes, myKrsRes] = await Promise.all([
-      axios.get(`${API}/calendar`, auth),
-      axios.get(`${API}/reminders`, auth),
+      canOpenStudentPage("calendar") ? axios.get(`${API}/calendar`, auth) : Promise.resolve({ data: [] }),
+      canLoadAssignments ? axios.get(`${API}/reminders`, auth) : Promise.resolve({ data: [] }),
       axios.get(`${API}/enrollment-requests`, auth),
-      axios.get(`${API}/classes`, auth).catch(() => ({ data: [] })),
-      axios.get(`${API}/v1/krs/all-my-krs`, auth).catch(() => ({ data: { krs_list: [] } })),
+      canLoadClasses ? axios.get(`${API}/classes`, auth).catch(() => ({ data: [] })) : Promise.resolve({ data: [] }),
+      canLoadKrs ? axios.get(`${API}/v1/krs/all-my-krs`, auth).catch(() => ({ data: { krs_list: [] } })) : Promise.resolve({ data: { krs_list: [] } }),
     ]);
     setData((current) => ({
       ...current,
@@ -20728,25 +20833,26 @@ function StudentApp({
     {
       label: "Utama",
       items: [
-        ["home",        LayoutDashboard,  "Beranda"],
-        ["calendar",    CalendarDays,     "Kalender Akademik"],
+        ["home",        LayoutDashboard,  "Beranda", canOpenStudentPage("home")],
+        ["calendar",    CalendarDays,     "Kalender Akademik", canOpenStudentPage("calendar")],
       ],
     },
     {
       label: "Akademik & SIAKAD",
       items: [
-        ["krs",         GraduationCap,    "KRS Online"],
-        ["khs",         FileSpreadsheet,  "KHS & IPK"],
-        ["keuangan",    FileText,         "Tagihan UKT"],
+        ["krs",         GraduationCap,    "KRS Online", canOpenStudentPage("krs")],
+        ["khs",         FileSpreadsheet,  "KHS & IPK", canOpenStudentPage("khs")],
+        ["keuangan",    FileText,         "Tagihan UKT", canOpenStudentPage("keuangan")],
       ],
     },
     {
       label: "Pembelajaran LMS",
       items: [
-        ["courses",     BookOpen,         "Materi"],
-        ["assignments", ClipboardList,    "Tugas"],
-        ["attendance",  CheckCircle2,     "Presensi Kehadiran"],
-        ["grades",      BarChart3,        "Nilai LMS"],
+        ["courses",     BookOpen,         "Materi", canOpenStudentPage("courses")],
+        ["assignments", ClipboardList,    "Tugas", canOpenStudentPage("assignments")],
+        ["rps",         FileText,         "RPS Mata Kuliah", canOpenStudentPage("rps")],
+        ["attendance",  CheckCircle2,     "Presensi Kehadiran", canOpenStudentPage("attendance")],
+        ["grades",      BarChart3,        "Nilai LMS", canOpenStudentPage("grades")],
       ],
     },
     {
@@ -20757,7 +20863,17 @@ function StudentApp({
       ],
     },
   ];
-  const nav = studentNavGroups.flatMap((g) => g.items);
+  const filteredStudentNavGroups = studentNavGroups
+    .map((group) => ({
+      ...group,
+      items: group.items.filter((item) => item[3] !== false),
+    }))
+    .filter((group) => group.items.length > 0);
+  const nav = filteredStudentNavGroups.flatMap((g) => g.items);
+  const firstAuthorizedStudentPage = nav[0]?.[0] || "profile";
+  useEffect(() => {
+    if (!canOpenStudentPage(studentPage)) setStudentPage(firstAuthorizedStudentPage);
+  }, [canOpenStudentPage, firstAuthorizedStudentPage, studentPage]);
   const pageTitle =
     nav.find(([key]) => key === studentPage)?.[2] || "Beranda";
   const pageDescriptions = {
@@ -20767,28 +20883,41 @@ function StudentApp({
     keuangan: "Status kelunasan tagihan UKT dan pembayaran registrasi.",
     courses: "Materi kuliah tersusun berdasarkan mata kuliah.",
     assignments: "Kerjakan dan kumpulkan tugas pada satu tempat.",
+    rps: "Lihat rencana pembelajaran dan agenda pertemuan mata kuliah.",
     grades: "Lihat hasil penilaian dan umpan balik dosen.",
     calendar: "Pantau agenda serta deadline terdekat.",
     profile: "Kelola informasi dan keamanan akun Anda.",
     guide: "Pahami alur kelas, approval, tugas, nilai, dan pergantian semester.",
   };
+  function openStudentPage(targetPage) {
+    if (!canOpenStudentPage(targetPage)) {
+      toast.error("Anda tidak memiliki hak akses ke modul tersebut");
+      return false;
+    }
+    setStudentPage(targetPage);
+    return true;
+  }
   function openStudentAssignment(assignmentId) {
+    if (!canOpenStudentPage("assignments")) return;
     setAssignmentFocusId(assignmentId);
-    setStudentPage("assignments");
+    openStudentPage("assignments");
   }
   function openStudentNotification(notification) {
     const target = notification.target || {};
     setNotificationFocus(notification);
-    if (target.page === "courses") {
-      setStudentPage("courses");
+    if (target.page === "courses" && canOpenStudentPage("courses")) {
+      openStudentPage("courses");
       return;
     }
-    if (target.assignment_id) {
+    if (target.assignment_id && canOpenStudentPage("assignments")) {
       setAssignmentFocusId(target.assignment_id);
-      setStudentPage("assignments");
+      openStudentPage("assignments");
       return;
     }
-    setStudentPage(target.page || "home");
+    const requestedPage = target.page || "home";
+    openStudentPage(
+      canOpenStudentPage(requestedPage) ? requestedPage : firstAuthorizedStudentPage,
+    );
   }
   async function finishStudentNotification(notificationId) {
     const saved = await markNotificationRead(notificationId);
@@ -21093,7 +21222,7 @@ function StudentApp({
         </div>
         <div className="admin-sidebar-nav space-y-4">
           <nav data-testid="student-desktop-navigation" className="space-y-4">
-            {studentNavGroups.map((group) => (
+            {filteredStudentNavGroups.map((group) => (
               <div key={group.label} className="space-y-1">
                 <p className="admin-nav-group-label">{group.label}</p>
                 {group.items.map(([key, Icon, label]) => {
@@ -21106,7 +21235,7 @@ function StudentApp({
                       data-active={isActive}
                       aria-current={isActive ? "page" : undefined}
                       data-testid={`student-nav-${key}-button`}
-                      onClick={() => setStudentPage(key)}
+                      onClick={() => openStudentPage(key)}
                     >
                       <Icon className="admin-nav-icon" />
                       <span className="truncate">{label}</span>
@@ -21222,9 +21351,9 @@ function StudentApp({
               <UserProfileDropdown
                 user={user}
                 token={token}
-                onNavigateProfile={() => setStudentPage("profile")}
-                onNavigatePassword={() => setStudentPage("profile")}
-                onNavigateGuide={() => setStudentPage("guide")}
+                onNavigateProfile={() => openStudentPage("profile")}
+                onNavigatePassword={() => openStudentPage("profile")}
+                onNavigateGuide={() => openStudentPage("guide")}
                 onLogout={onLogout}
                 testidPrefix="student"
                 selectedSemester={displayedSemester}
@@ -21274,12 +21403,16 @@ function StudentApp({
                     <div><strong>{assignmentCompletion}%</strong><span>tugas terkumpul</span></div>
                   </div>
                   <div className="student-quick-actions">
-                    <Button onClick={() => setStudentPage("assignments")}>
-                      <ClipboardList /> Lihat tugas
-                    </Button>
-                    <Button variant="outline" onClick={() => setStudentPage("courses")}>
-                      <BookOpen /> Buka materi
-                    </Button>
+                    {canOpenStudentPage("assignments") && (
+                      <Button onClick={() => openStudentPage("assignments")}>
+                        <ClipboardList /> Lihat tugas
+                      </Button>
+                    )}
+                    {canOpenStudentPage("courses") && (
+                      <Button variant="outline" onClick={() => openStudentPage("courses")}>
+                        <BookOpen /> Buka materi
+                      </Button>
+                    )}
                   </div>
                 </div>
               </section>
@@ -21390,7 +21523,7 @@ function StudentApp({
                       <Button
                         variant="ghost"
                         className="student-focus-see-all"
-                        onClick={() => setStudentPage("assignments")}
+                        onClick={() => openStudentPage("assignments")}
                       >
                         Lihat {studentActionCount - 3} tugas lainnya
                       </Button>
@@ -21499,7 +21632,7 @@ function StudentApp({
                             <div className="flex items-center justify-end gap-2 pt-2 border-t border-slate-100 text-xs font-semibold">
                               <button
                                 type="button"
-                                onClick={() => setStudentPage("courses")}
+                                onClick={() => openStudentPage("courses")}
                                 className="text-indigo-600 hover:text-indigo-800 hover:underline flex items-center gap-1"
                               >
                                 Lihat Materi →
@@ -21507,7 +21640,7 @@ function StudentApp({
                               <span className="text-slate-300">•</span>
                               <button
                                 type="button"
-                                onClick={() => setStudentPage("assignments")}
+                                onClick={() => openStudentPage("assignments")}
                                 className="text-slate-600 hover:text-slate-900 hover:underline flex items-center gap-1"
                               >
                                 Lihat Tugas →
@@ -21561,7 +21694,9 @@ function StudentApp({
                 <Card className="student-dashboard-detail-card rounded-md shadow-none" data-testid="student-calendar-card">
                   <CardHeader className="student-dashboard-detail-header">
                     <div><p>Jadwal belajar</p><CardTitle>Deadline terdekat</CardTitle></div>
-                    <Button type="button" variant="ghost" size="sm" onClick={() => setStudentPage("calendar")}>Kalender</Button>
+                    {canOpenStudentPage("calendar") && (
+                      <Button type="button" variant="ghost" size="sm" onClick={() => openStudentPage("calendar")}>Kalender</Button>
+                    )}
                   </CardHeader>
                   <CardContent className="student-dashboard-agenda-list">
                     {studentUpcomingEvents.length === 0 ? (
@@ -21579,7 +21714,9 @@ function StudentApp({
                 <Card className="student-dashboard-detail-card rounded-md shadow-none" data-testid="student-latest-grades-card">
                   <CardHeader className="student-dashboard-detail-header">
                     <div><p>Hasil terbaru</p><CardTitle>Nilai dan feedback</CardTitle></div>
-                    <Button type="button" variant="ghost" size="sm" onClick={() => setStudentPage("grades")}>Semua nilai</Button>
+                    {canOpenStudentPage("grades") && (
+                      <Button type="button" variant="ghost" size="sm" onClick={() => openStudentPage("grades")}>Semua nilai</Button>
+                    )}
                   </CardHeader>
                   <CardContent className="student-latest-grade-list">
                     {studentRecentGrades.length === 0 ? (
@@ -21676,7 +21813,7 @@ function StudentApp({
               type="button"
               className={studentPage === key ? "active" : ""}
               data-testid={`student-mobile-nav-${key}-button`}
-              onClick={() => setStudentPage(key)}
+              onClick={() => openStudentPage(key)}
             >
               <Icon />
               <span>{label}</span>
@@ -21689,7 +21826,7 @@ function StudentApp({
           onDismiss={onDismissPhysicalDocumentsReminder}
           onOpenProfile={() => {
             onDismissPhysicalDocumentsReminder?.();
-            setStudentPage("profile");
+            openStudentPage("profile");
           }}
         />
       )}
@@ -22810,7 +22947,12 @@ export function JabatanAkademikPage({ token, lecturers = [] }) {
       };
 
       const fetchDosenSafe = async () => {
-        let res = await fetchSafe(`${API}/lecturers`);
+        // Kandidat jabatan mencakup Dosen dan Tendik. Endpoint khusus menjaga
+        // Tendik tidak tercampur ke daftar Dosen pada modul lain.
+        let res = await fetchSafe(`${API}/academic-position-candidates`);
+        if (!Array.isArray(res) || res.length === 0) {
+          res = await fetchSafe(`${API}/lecturers`);
+        }
         if (!Array.isArray(res) || res.length === 0) {
           res = await fetchSafe(`${API}/v1/master/dosen`);
         }
@@ -22878,7 +23020,7 @@ export function JabatanAkademikPage({ token, lecturers = [] }) {
     const selectedUserId = explicitUserId || selectedUsers[assignKey];
 
     if (!selectedUserId) {
-      toast.error("Silakan pilih Dosen / Pejabat terlebih dahulu");
+      toast.error("Silakan pilih Dosen / Tendik / Pejabat terlebih dahulu");
       return;
     }
 
@@ -23245,14 +23387,15 @@ export function JabatanAkademikPage({ token, lecturers = [] }) {
                                     }
                                     className="text-xs bg-slate-50 border border-slate-200 rounded-lg px-2.5 py-1.5 w-full focus:outline-none font-medium text-slate-800 truncate"
                                   >
-                                    <option value="">-- Pilih Dosen / Pejabat -- ({dosenList.length})</option>
+                                    <option value="">-- Pilih Dosen / Tendik / Pejabat -- ({dosenList.length})</option>
                                     {dosenList.map((dosen, idx) => {
                                       const dId = dosen.id || dosen.user_id || dosen._id || dosen.username || `dosen-${idx}`;
-                                      const dName = dosen.name || dosen.nama || dosen.full_name || dosen.username || "Dosen";
+                                      const dName = dosen.name || dosen.nama || dosen.full_name || dosen.username || "Pengguna";
                                       const dNip = dosen.nip || dosen.nidn || dosen.employee_id || dosen.email || "";
+                                      const dRole = dosen.role === "staff" ? "Tendik" : "Dosen";
                                       return (
                                         <option key={dId} value={dId}>
-                                          {dName} {dNip ? `(${dNip})` : ""}
+                                          {dName} · {dRole} {dNip ? `(${dNip})` : ""}
                                         </option>
                                       );
                                     })}
@@ -23328,14 +23471,15 @@ export function JabatanAkademikPage({ token, lecturers = [] }) {
                                   }
                                   className="text-xs bg-white border border-slate-200 rounded-lg px-3 py-1.5 max-w-[240px] focus:outline-none font-medium text-slate-800 truncate shadow-2xs"
                                 >
-                                  <option value="">-- Pilih Dosen / Staf Pejabat -- ({dosenList.length})</option>
+                                  <option value="">-- Pilih Dosen / Tendik / Pejabat -- ({dosenList.length})</option>
                                   {dosenList.map((dosen, idx) => {
                                     const dId = dosen.id || dosen.user_id || dosen._id || dosen.username || `dosen-${idx}`;
-                                    const dName = dosen.name || dosen.nama || dosen.full_name || dosen.username || "Dosen";
+                                    const dName = dosen.name || dosen.nama || dosen.full_name || dosen.username || "Pengguna";
                                     const dNip = dosen.nip || dosen.nidn || dosen.employee_id || dosen.email || "";
+                                    const dRole = dosen.role === "staff" ? "Tendik" : "Dosen";
                                     return (
                                       <option key={dId} value={dId}>
-                                        {dName} {dNip ? `(${dNip})` : ""}
+                                        {dName} · {dRole} {dNip ? `(${dNip})` : ""}
                                       </option>
                                     );
                                   })}
