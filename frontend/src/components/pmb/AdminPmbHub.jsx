@@ -115,6 +115,12 @@ export function AdminPmbHub({ token: propToken, user, programs: initialPrograms 
   const [importedPaymentStatus, setImportedPaymentStatus] = useState("paid");
   const [importedPaymentOutstanding, setImportedPaymentOutstanding] = useState("");
   const [importedPaymentNotes, setImportedPaymentNotes] = useState("");
+  const [adminPaymentProofModal, setAdminPaymentProofModal] = useState(null);
+  const [adminPaymentProofKind, setAdminPaymentProofKind] = useState("registration");
+  const [adminPaymentProofId, setAdminPaymentProofId] = useState("");
+  const [adminPaymentProofFile, setAdminPaymentProofFile] = useState(null);
+  const [adminPaymentProofNotes, setAdminPaymentProofNotes] = useState("");
+  const [adminPaymentProofUploading, setAdminPaymentProofUploading] = useState(false);
 
   // Prodi & jalur kelas PMB
   const [placementModal, setPlacementModal] = useState(null);
@@ -223,6 +229,53 @@ export function AdminPmbHub({ token: propToken, user, programs: initialPrograms 
       }
     } catch (err) {
       toast.error(err.response?.data?.detail || "Gagal memverifikasi pembayaran formulir");
+    }
+  };
+
+  const openAdminPaymentProofModal = (applicant, kind = "registration", paymentId = "") => {
+    setAdminPaymentProofModal(applicant);
+    setAdminPaymentProofKind(kind);
+    setAdminPaymentProofId(paymentId);
+    setAdminPaymentProofFile(null);
+    setAdminPaymentProofNotes("");
+  };
+
+  const handleAdminPaymentProofUpload = async () => {
+    if (!adminPaymentProofModal || !adminPaymentProofFile) {
+      toast.error("Pilih file bukti transfer terlebih dahulu");
+      return;
+    }
+    if (adminPaymentProofFile.size > 5 * 1024 * 1024) {
+      toast.error("Ukuran file maksimal 5 MB");
+      return;
+    }
+
+    const formData = new FormData();
+    formData.append("file", adminPaymentProofFile);
+    formData.append("kind", adminPaymentProofKind);
+    if (adminPaymentProofId) formData.append("payment_id", adminPaymentProofId);
+    if (adminPaymentProofNotes.trim()) formData.append("notes", adminPaymentProofNotes.trim());
+
+    setAdminPaymentProofUploading(true);
+    try {
+      const res = await api.post(
+        `/api/v1/pmb/admin/applicants/${adminPaymentProofModal.id}/payment-proof`,
+        formData,
+        { headers: { Authorization: `Bearer ${token}` } },
+      );
+      if (res.data?.ok) {
+        toast.success(res.data.message || "Bukti transfer berhasil diunggah");
+        setAdminPaymentProofModal(null);
+        setAdminPaymentProofFile(null);
+        if (selectedApplicant?.id === adminPaymentProofModal.id && res.data.applicant) {
+          setSelectedApplicant(res.data.applicant);
+        }
+        fetchData();
+      }
+    } catch (err) {
+      toast.error(apiErrorMessage(err, "Gagal mengunggah bukti transfer"));
+    } finally {
+      setAdminPaymentProofUploading(false);
     }
   };
 
@@ -926,6 +979,15 @@ export function AdminPmbHub({ token: propToken, user, programs: initialPrograms 
                               >
                                 <Pencil className="w-3 h-3 mr-1" /> Input Status
                               </Button>
+                              <Button
+                                type="button"
+                                size="sm"
+                                variant="outline"
+                                onClick={() => openAdminPaymentProofModal(a)}
+                                className="text-[10px] text-sky-800 font-extrabold h-6 px-2 border-sky-300 hover:bg-sky-100 bg-sky-50 rounded-md"
+                              >
+                                <FileUp className="w-3 h-3 mr-1" /> Upload Bukti
+                              </Button>
                             </div>
                           ) : a.reg_payment_status === "verified" ? (
                             <div className="space-y-1 flex flex-col items-center">
@@ -956,6 +1018,15 @@ export function AdminPmbHub({ token: propToken, user, programs: initialPrograms 
                                   <Eye className="w-3 h-3" /> Bukti Transfer
                                 </button>
                               )}
+                              <Button
+                                type="button"
+                                size="sm"
+                                variant="outline"
+                                onClick={() => openAdminPaymentProofModal(a)}
+                                className="text-[10px] text-sky-800 font-extrabold h-6 px-2 border-sky-300 hover:bg-sky-100 bg-sky-50 rounded-md"
+                              >
+                                <FileUp className="w-3 h-3 mr-1" /> Upload Bukti
+                              </Button>
                               <div className="flex items-center justify-center gap-1.5 pt-0.5">
                                 <Button
                                   type="button"
@@ -2578,6 +2649,109 @@ export function AdminPmbHub({ token: propToken, user, programs: initialPrograms 
         </div>
       )}
 
+      {/* Admin Payment Proof Upload Modal */}
+      {adminPaymentProofModal && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-slate-900/60 p-4 backdrop-blur-sm">
+          <div className="w-full max-w-md bg-white rounded-2xl shadow-2xl border border-slate-200 overflow-hidden animate-fade-in">
+            <div className="bg-gradient-to-r from-sky-700 to-indigo-700 p-4 text-white flex justify-between items-center">
+              <div>
+                <h4 className="font-bold text-sm flex items-center gap-2"><FileUp className="w-4 h-4" /> Upload Bukti Transfer Admin</h4>
+                <p className="text-[10px] text-sky-100 mt-0.5">Untuk pembayaran yang belum terdeteksi sistem</p>
+              </div>
+              <button
+                type="button"
+                onClick={() => setAdminPaymentProofModal(null)}
+                className="w-7 h-7 rounded-full bg-white/10 hover:bg-white/20 flex items-center justify-center text-white"
+              >
+                <X className="w-4 h-4" />
+              </button>
+            </div>
+            <div className="p-5 space-y-3 text-xs">
+              <div className="p-3 bg-sky-50 border border-sky-200 rounded-xl">
+                <p className="font-bold text-slate-900">{adminPaymentProofModal.name}</p>
+                <p className="text-slate-600 font-mono mt-0.5">No. Registrasi: {adminPaymentProofModal.registration_number || "-"}</p>
+              </div>
+
+              <div className="rounded-lg border border-amber-200 bg-amber-50 p-3 text-[10px] leading-relaxed text-amber-900">
+                File akan disimpan sebagai transaksi <strong>Menunggu Verifikasi</strong>. Upload ini tidak otomatis menandai pembayaran lunas.
+              </div>
+
+              <div>
+                <Label className="text-xs font-bold">Jenis Pembayaran *</Label>
+                <select
+                  value={adminPaymentProofKind}
+                  onChange={(event) => {
+                    setAdminPaymentProofKind(event.target.value);
+                    setAdminPaymentProofId("");
+                  }}
+                  className="mt-1 h-10 w-full rounded-md border border-slate-300 bg-white px-3 text-xs font-semibold text-slate-700"
+                >
+                  <option value="registration">Formulir Pendaftaran</option>
+                  <option value="pra_studi">Uang Pra-Studi / Daftar Ulang</option>
+                </select>
+              </div>
+
+              {(adminPaymentProofModal.payment_history || []).filter((item) => item.category === adminPaymentProofKind && item.status !== "verified").length > 0 && (
+                <div>
+                  <Label className="text-xs font-bold">Transaksi yang dikaitkan</Label>
+                  <select
+                    value={adminPaymentProofId}
+                    onChange={(event) => setAdminPaymentProofId(event.target.value)}
+                    className="mt-1 h-10 w-full rounded-md border border-slate-300 bg-white px-3 text-xs font-semibold text-slate-700"
+                  >
+                    <option value="">Buat / gunakan transaksi pending terbaru</option>
+                    {(adminPaymentProofModal.payment_history || [])
+                      .filter((item) => item.category === adminPaymentProofKind && item.status !== "verified")
+                      .map((item) => (
+                        <option key={item.id} value={item.id}>
+                          {item.id} · {formatRupiah(item.custom_amount || item.billed_amount)} · {item.status || "pending"}
+                        </option>
+                      ))}
+                  </select>
+                </div>
+              )}
+
+              <div>
+                <Label className="text-xs font-bold">File Bukti Transfer *</Label>
+                <Input
+                  type="file"
+                  accept=".png,.jpg,.jpeg,.pdf"
+                  onChange={(event) => setAdminPaymentProofFile(event.target.files?.[0] || null)}
+                  className="mt-1 text-xs file:mr-2 file:rounded-md file:border-0 file:bg-sky-100 file:px-2 file:py-1 file:text-[10px] file:font-bold file:text-sky-800"
+                />
+                <p className="text-[10px] text-slate-500 mt-1">Format PNG/JPG/PDF, maksimal 5 MB.</p>
+              </div>
+
+              <div>
+                <Label className="text-xs font-bold">Catatan Admin</Label>
+                <Input
+                  value={adminPaymentProofNotes}
+                  onChange={(event) => setAdminPaymentProofNotes(event.target.value)}
+                  placeholder="Contoh: Transfer ditemukan pada mutasi rekening tanggal 20 Agustus"
+                  className="mt-1 text-xs"
+                />
+              </div>
+
+              <div className="flex justify-end gap-2 pt-2 border-t">
+                <Button type="button" variant="outline" size="sm" onClick={() => setAdminPaymentProofModal(null)}>
+                  Batal
+                </Button>
+                <Button
+                  type="button"
+                  size="sm"
+                  onClick={handleAdminPaymentProofUpload}
+                  disabled={adminPaymentProofUploading || !adminPaymentProofFile}
+                  className="bg-sky-600 hover:bg-sky-700 text-white font-bold"
+                >
+                  {adminPaymentProofUploading ? <RefreshCw className="w-3.5 h-3.5 mr-1 animate-spin" /> : <FileUp className="w-3.5 h-3.5 mr-1" />}
+                  {adminPaymentProofUploading ? "Mengunggah..." : "Upload & Simpan"}
+                </Button>
+              </div>
+            </div>
+          </div>
+        </div>
+      )}
+
       {/* Manual Payment Status Modal for Excel-imported students */}
       {importedPaymentModal && (
         <div className="fixed inset-0 z-50 flex items-center justify-center bg-slate-900/60 p-4 backdrop-blur-sm">
@@ -3049,6 +3223,17 @@ export function AdminPmbHub({ token: propToken, user, programs: initialPrograms 
                       <Badge className={selectedApplicant.reg_payment_status === "verified" ? "bg-emerald-100 text-emerald-800 border border-emerald-300 font-extrabold text-[10px]" : "bg-amber-500 text-white font-bold text-[10px]"}>
                         {selectedApplicant.reg_payment_status === "verified" ? "Lunas & Terverifikasi" : "Menunggu Verifikasi Admin"}
                       </Badge>
+                      {selectedApplicant.reg_payment_status !== "verified" && (
+                        <Button
+                          type="button"
+                          size="sm"
+                          variant="outline"
+                          onClick={() => openAdminPaymentProofModal(selectedApplicant)}
+                          className="mt-2 text-[10px] text-sky-800 font-extrabold h-7 px-2 border-sky-300 hover:bg-sky-100 bg-sky-50 rounded-md"
+                        >
+                          <FileUp className="w-3 h-3 mr-1" /> Upload Bukti dari Admin
+                        </Button>
+                      )}
                     </div>
                   </div>
                   <div className="p-3 bg-slate-50 rounded-xl border space-y-1">
@@ -3203,6 +3388,15 @@ export function AdminPmbHub({ token: propToken, user, programs: initialPrograms 
                                     className="text-[9px] h-5 px-2 font-bold"
                                   >
                                     Tolak
+                                  </Button>
+                                  <Button
+                                    type="button"
+                                    size="sm"
+                                    variant="outline"
+                                    onClick={() => openAdminPaymentProofModal(paymentHistoryModal.applicant, tx.category, tx.id)}
+                                    className="text-[9px] h-5 px-2 font-bold text-sky-800 border-sky-300 hover:bg-sky-50"
+                                  >
+                                    <FileUp className="w-3 h-3 mr-1" /> Upload
                                   </Button>
                                 </div>
                               ) : (

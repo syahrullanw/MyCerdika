@@ -4702,13 +4702,7 @@ _PMB_PROOF_ALLOWED = {"png", "jpg", "jpeg", "pdf"}
 _PMB_PROOF_MAX_BYTES = 5 * 1024 * 1024
 
 
-@router.post("/upload-payment-proof")
-async def upload_pmb_payment_proof(
-    file: UploadFile = File(...),
-    kind: str = Form("registration"),
-    applicant: Dict[str, Any] = Depends(get_current_applicant),
-):
-    """Camaba upload bukti transfer pembayaran (Alur 3 & 8.1)."""
+async def _store_pmb_payment_proof(file: UploadFile) -> Dict[str, str]:
     if not file or not file.filename:
         raise HTTPException(status_code=400, detail="File bukti transfer tidak ditemukan")
 
@@ -4725,12 +4719,163 @@ async def upload_pmb_payment_proof(
     out = PMB_PROOF_DIR / file_id
     out.parent.mkdir(parents=True, exist_ok=True)
     out.write_bytes(content)
+    return {"file_id": file_id, "url": f"/api/v1/pmb/proof/{file_id}"}
+
+
+@router.post("/upload-payment-proof")
+async def upload_pmb_payment_proof(
+    file: UploadFile = File(...),
+    kind: str = Form("registration"),
+    applicant: Dict[str, Any] = Depends(get_current_applicant),
+):
+    """Camaba upload bukti transfer pembayaran (Alur 3 & 8.1)."""
+    stored = await _store_pmb_payment_proof(file)
 
     return {
         "ok": True,
-        "file_id": file_id,
-        "url": f"/api/v1/pmb/proof/{file_id}",
+        "file_id": stored["file_id"],
+        "url": stored["url"],
         "kind": kind,
+    }
+
+
+@router.post("/admin/applicants/{applicant_id}/payment-proof")
+async def admin_upload_pmb_payment_proof(
+    applicant_id: str,
+    request: Request,
+    file: UploadFile = File(...),
+    kind: str = Form("registration"),
+    payment_id: str = Form(""),
+    notes: str = Form(""),
+    user: Dict[str, Any] = Depends(require_admin),
+):
+    """Admin PMB mengunggah bukti untuk pembayaran yang belum terdeteksi."""
+    db: PostgresDatabase = get_db(request)
+    applicant = await db.pmb_applicants.find_one({"id": applicant_id}, {"_id": 0})
+    if not applicant:
+        raise HTTPException(status_code=404, detail="Pendaftar tidak ditemukan")
+
+    payment_kind = str(kind or "registration").strip().lower()
+    if payment_kind in {"reg", "form", "formulir"}:
+        payment_kind = "registration"
+    elif payment_kind in {"pra", "pra-studi", "reregistration", "daftar_ulang"}:
+        payment_kind = "pra_studi"
+    if payment_kind not in {"registration", "pra_studi"}:
+        raise HTTPException(status_code=400, detail="Jenis pembayaran harus registration atau pra_studi")
+
+    uploaded_at = now_iso()
+    history = list(applicant.get("payment_history") or [])
+    requested_payment_id = str(payment_id or "").strip()
+    target_entry = None
+
+    if requested_payment_id:
+        target_entry = next((entry for entry in history if entry.get("id") == requested_payment_id), None)
+        if not target_entry:
+            raise HTTPException(status_code=404, detail="Transaksi pembayaran tidak ditemukan")
+        if target_entry.get("category") != payment_kind:
+            raise HTTPException(status_code=400, detail="Jenis transaksi tidak sesuai dengan jenis bukti pembayaran")
+        if target_entry.get("status") == "verified":
+            raise HTTPException(status_code=409, detail="Transaksi yang sudah terverifikasi tidak dapat diganti buktinya")
+    else:
+        target_entry = next(
+            (
+                entry
+                for entry in reversed(history)
+                if entry.get("category") == payment_kind and entry.get("status") != "verified"
+            ),
+            None,
+        )
+
+    stored = await _store_pmb_payment_proof(file)
+    proof_url = stored["url"]
+    settings = await get_or_init_settings(db)
+    if target_entry is None:
+        if payment_kind == "registration":
+            base_amount = float(applicant.get("reg_payment_fee") or settings.get("registration_fee") or 250000)
+            billed_amount = float(applicant.get("reg_payment_amount") or base_amount)
+            unique_code = str(applicant.get("reg_payment_code") or payment_unique_code(f"{applicant_id}:reg:admin"))
+            entry_id = f"pay_reg_admin_{uuid4().hex[:10]}"
+            note_default = "Bukti transfer diunggah oleh Admin PMB karena pembayaran belum terdeteksi"
+        else:
+            base_amount = float(applicant.get("pra_studi_fee") or settings.get("pra_studi_total_fee") or 3500000)
+            billed_amount = float(applicant.get("pra_studi_payment_amount") or base_amount)
+            unique_code = str(applicant.get("pra_studi_payment_code") or payment_unique_code(f"{applicant_id}:pra:admin"))
+            entry_id = f"pay_pra_admin_{uuid4().hex[:10]}"
+            note_default = "Bukti transfer diunggah oleh Admin PMB karena pembayaran belum terdeteksi"
+        target_entry = {
+            "id": entry_id,
+            "category": payment_kind,
+            "scheme": "full",
+            "term": None,
+            "custom_amount": base_amount,
+            "unique_code": unique_code,
+            "billed_amount": billed_amount,
+            "payment_method": "MANUAL_ADMIN",
+            "payment_proof": proof_url,
+            "status": "pending_verification",
+            "notes": str(notes or note_default).strip(),
+            "created_at": uploaded_at,
+            "verified_at": "",
+            "verified_by": "",
+            "proof_uploaded_by": user.get("name") or user.get("username") or user.get("id") or "Admin PMB",
+            "proof_uploaded_at": uploaded_at,
+        }
+        history.append(target_entry)
+    else:
+        target_entry["payment_proof"] = proof_url
+        target_entry["payment_method"] = target_entry.get("payment_method") or "MANUAL_ADMIN"
+        target_entry["status"] = "pending_verification"
+        target_entry["proof_uploaded_by"] = user.get("name") or user.get("username") or user.get("id") or "Admin PMB"
+        target_entry["proof_uploaded_at"] = uploaded_at
+        if notes.strip():
+            target_entry["notes"] = notes.strip()
+
+    approver_name = user.get("name") or user.get("username") or user.get("id") or "Admin PMB"
+    updates = {
+        "payment_history": history,
+        "admin_payment_proof_uploaded_at": uploaded_at,
+        "admin_payment_proof_uploaded_by": approver_name,
+        "updated_at": uploaded_at,
+    }
+    if payment_kind == "registration":
+        updates.update(
+            {
+                "reg_payment_status": "pending_verification",
+                "reg_payment_method": target_entry.get("payment_method") or "MANUAL_ADMIN",
+                "reg_payment_proof": proof_url,
+                "reg_payment_code": target_entry.get("unique_code", ""),
+                "reg_payment_amount": target_entry.get("billed_amount", 0),
+                "reg_paid_at": uploaded_at,
+                "current_step": max(applicant.get("current_step", 1), 3),
+                "status": "pending_payment_verification",
+            }
+        )
+    else:
+        updates.update(
+            {
+                "pra_studi_payment_status": "pending_verification",
+                "pra_studi_payment_method": target_entry.get("payment_method") or "MANUAL_ADMIN",
+                "pra_studi_payment_proof": proof_url,
+                "pra_studi_payment_code": target_entry.get("unique_code", ""),
+                "pra_studi_payment_amount": target_entry.get("billed_amount", 0),
+                "pra_studi_submitted_at": uploaded_at,
+                "reregistration_status": "pending_verification",
+                "current_step": max(applicant.get("current_step", 1), 9),
+            }
+        )
+
+    await db.pmb_applicants.update_one({"id": applicant_id}, {"$set": updates})
+    updated = await db.pmb_applicants.find_one({"id": applicant_id}, {"_id": 0, "password_hash": 0})
+    balances = compute_applicant_balances(updated or {**applicant, **updates}, settings)
+    return {
+        "ok": True,
+        "message": "Bukti transfer berhasil diunggah dan menunggu verifikasi admin.",
+        "file_id": stored["file_id"],
+        "url": proof_url,
+        "kind": payment_kind,
+        "payment_id": target_entry.get("id", ""),
+        "applicant": updated,
+        "balances": balances,
     }
 
 

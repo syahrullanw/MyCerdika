@@ -2042,14 +2042,119 @@ async def delete_ruangan(
 # ═══════════════════════════════════════════════════════════════
 
 JADWAL_HARI_LABEL = {1: "Senin", 2: "Selasa", 3: "Rabu", 4: "Kamis", 5: "Jumat", 6: "Sabtu", 7: "Minggu"}
+JADWAL_ACTIVE_STATUSES = ["active", "pending", "", None]
+JADWAL_SUGGESTION_LIMIT = 5
+JADWAL_SLOT_START_MINUTE = 7 * 60
+JADWAL_SLOT_END_MINUTE = 22 * 60
+JADWAL_SLOT_STEP_MINUTE = 30
 
 
 def _parse_jam(value: Any) -> int:
-    try:
-        parts = str(value).strip().split(":")
-        return int(parts[0]) * 60 + int(parts[1])
-    except (ValueError, IndexError):
+    text = str(value or "").strip()
+    if not re.fullmatch(r"(?:[01]\d|2[0-3]):[0-5]\d", text):
         return -1
+    hour, minute = text.split(":")
+    return int(hour) * 60 + int(minute)
+
+
+def _format_jam(minutes: int) -> str:
+    return f"{minutes // 60:02d}:{minutes % 60:02d}"
+
+
+def _times_overlap(start: int, end: int, other_start: int, other_end: int) -> bool:
+    return start < other_end and other_start < end
+
+
+def _conflict_kind(other: Dict[str, Any], lecturer_id: Any, room_id: Any) -> str:
+    kinds = []
+    if lecturer_id and other.get("lecturer_id") == lecturer_id:
+        kinds.append("Dosen")
+    if room_id and other.get("ruangan_id") == room_id:
+        kinds.append("Ruangan")
+    return " & ".join(kinds)
+
+
+def _schedule_conflict_payload(other: Dict[str, Any], jenis: str) -> Dict[str, Any]:
+    return {
+        "class_id": other.get("id", ""),
+        "class_name": other.get("name", ""),
+        "course_name": other.get("course_name", ""),
+        "jam_mulai": other.get("jadwal_jam_mulai", ""),
+        "jam_selesai": other.get("jadwal_jam_selesai", ""),
+        "jenis": jenis,
+    }
+
+
+def _schedule_suggestions(
+    *,
+    class_doc: Dict[str, Any],
+    hari: int,
+    mulai: int,
+    selesai: int,
+    ruangan_id: Optional[str],
+    scheduled_classes: List[Dict[str, Any]],
+    rooms: List[Dict[str, Any]],
+) -> List[Dict[str, Any]]:
+    """Return nearby free slots for the same class duration and semester."""
+    duration = selesai - mulai
+    if duration <= 0:
+        return []
+
+    room_by_id = {str(room.get("id")): room for room in rooms if room.get("id")}
+    if ruangan_id:
+        room_ids = [ruangan_id] + [rid for rid in room_by_id if rid != ruangan_id]
+    else:
+        room_ids = [""]
+
+    start_candidates = [
+        minute
+        for minute in range(JADWAL_SLOT_START_MINUTE, JADWAL_SLOT_END_MINUTE, JADWAL_SLOT_STEP_MINUTE)
+        if minute + duration <= JADWAL_SLOT_END_MINUTE
+    ]
+    start_candidates.sort(key=lambda minute: (abs(minute - mulai), minute))
+    day_candidates = [((hari - 1 + offset) % 7) + 1 for offset in range(7)]
+    suggestions = []
+
+    for candidate_day in day_candidates:
+        for candidate_start in start_candidates:
+            candidate_end = candidate_start + duration
+            for candidate_room_id in room_ids:
+                if candidate_day == hari and candidate_start == mulai and candidate_room_id == (ruangan_id or ""):
+                    continue
+
+                blocked = False
+                for other in scheduled_classes:
+                    other_start = _parse_jam(other.get("jadwal_jam_mulai", ""))
+                    other_end = _parse_jam(other.get("jadwal_jam_selesai", ""))
+                    if other_start < 0 or other_end <= other_start:
+                        continue
+                    if not _times_overlap(candidate_start, candidate_end, other_start, other_end):
+                        continue
+                    if other.get("jadwal_hari") != candidate_day:
+                        continue
+                    if _conflict_kind(other, class_doc.get("lecturer_id"), candidate_room_id):
+                        blocked = True
+                        break
+                if blocked:
+                    continue
+
+                room = room_by_id.get(candidate_room_id, {})
+                suggestions.append(
+                    {
+                        "hari": candidate_day,
+                        "hari_label": JADWAL_HARI_LABEL[candidate_day],
+                        "jam_mulai": _format_jam(candidate_start),
+                        "jam_selesai": _format_jam(candidate_end),
+                        "ruangan_id": candidate_room_id,
+                        "ruangan_kode": room.get("kode", ""),
+                        "ruangan_nama": room.get("nama", ""),
+                        "gedung_id": room.get("gedung_id", ""),
+                    }
+                )
+                if len(suggestions) >= JADWAL_SUGGESTION_LIMIT:
+                    return suggestions
+
+    return suggestions
 
 
 def _build_schedule_label(hari: Optional[int], jam_mulai: Any, jam_selesai: Any, ruangan_kode: str = "") -> str:
@@ -2199,40 +2304,54 @@ async def update_jadwal_mengajar(
         ruangan_kode = ruang.get("kode", "")
 
     period_query: Dict[str, Any] = {
-        "status": {"$ne": "deleted"},
+        "status": {"$in": JADWAL_ACTIVE_STATUSES},
         "id": {"$ne": class_id},
         "academic_year": class_doc.get("academic_year", ""),
         "semester": class_doc.get("semester", ""),
         "jadwal_hari": body.hari,
     }
     conflicts = []
-    for other in await db.classes.find(period_query, {"_id": 0}).to_list(1000):
+    scheduled_classes = await db.classes.find(period_query, {"_id": 0}).to_list(1000)
+    for other in scheduled_classes:
         other_mulai = _parse_jam(other.get("jadwal_jam_mulai", ""))
         other_selesai = _parse_jam(other.get("jadwal_jam_selesai", ""))
-        if other_mulai < 0:
+        if other_mulai < 0 or other_selesai <= other_mulai:
             continue
-        overlap = mulai < other_selesai and other_mulai < selesai
+        overlap = _times_overlap(mulai, selesai, other_mulai, other_selesai)
         if not overlap:
             continue
-        same_dosen = other.get("lecturer_id") and other.get("lecturer_id") == class_doc.get("lecturer_id")
-        same_ruang = body.ruangan_id and other.get("ruangan_id") == body.ruangan_id
-        if same_dosen or same_ruang:
-            konflik_kind = "Dosen" if same_dosen else ("Ruangan" if same_ruang else "")
-            conflicts.append(
-                {
-                    "class_id": other.get("id", ""),
-                    "class_name": other.get("name", ""),
-                    "course_name": other.get("course_name", ""),
-                    "jam_mulai": other.get("jadwal_jam_mulai", ""),
-                    "jam_selesai": other.get("jadwal_jam_selesai", ""),
-                    "jenis": konflik_kind,
-                }
-            )
+        konflik_kind = _conflict_kind(other, class_doc.get("lecturer_id"), body.ruangan_id)
+        if konflik_kind:
+            conflicts.append(_schedule_conflict_payload(other, konflik_kind))
     if conflicts:
-        detail = "Bentrok jadwal: " + "; ".join(
-            f"{c['jenis']} pada kelas {c['course_name']} ({c['jam_mulai']}–{c['jam_selesai']})"
-            for c in conflicts[:5]
+        rooms = []
+        if body.ruangan_id:
+            rooms = await db.ruangan.find(
+                {"status": "active"},
+                {"_id": 0, "id": 1, "kode": 1, "nama": 1, "gedung_id": 1},
+            ).to_list(1000)
+        suggestions = _schedule_suggestions(
+            class_doc=class_doc,
+            hari=body.hari,
+            mulai=mulai,
+            selesai=selesai,
+            ruangan_id=body.ruangan_id,
+            scheduled_classes=await db.classes.find(
+                {
+                    "status": {"$in": JADWAL_ACTIVE_STATUSES},
+                    "id": {"$ne": class_id},
+                    "academic_year": class_doc.get("academic_year", ""),
+                    "semester": class_doc.get("semester", ""),
+                },
+                {"_id": 0},
+            ).to_list(1000),
+            rooms=rooms,
         )
+        detail = {
+            "message": "Bentrok jadwal. Pilih slot alternatif yang tersedia.",
+            "conflicts": conflicts[:5],
+            "suggestions": suggestions,
+        }
         raise HTTPException(status_code=409, detail=detail, headers={"X-Conflicts": "1"})
 
     jam_mulai = str(body.jam_mulai)

@@ -2,6 +2,26 @@
 
 Semua perubahan penting pada aplikasi ini dicatat di sini. Versi rilis utama disimpan di file [`VERSION`](./VERSION), sedangkan versi skema database yang sudah diterapkan dicatat oleh tabel `app_schema_migrations` di PostgreSQL.
 
+## [1.11.3] — 2026-08-20
+
+### Jadwal mengajar
+
+- Memperketat validasi bentrok jadwal berdasarkan dosen, ruangan, hari, jam, tahun ajaran, dan semester yang sama.
+- Kelas berstatus berakhir atau arsip tidak lagi memblokir penjadwalan kelas aktif.
+- Saat terjadi bentrok, aplikasi menampilkan detail kelas yang bertabrakan dan hingga lima saran slot/ruangan alternatif yang dapat diterapkan langsung ke form.
+- Filter halaman Jadwal Mengajar kini memulai dari semester aktif, bukan selalu semester Ganjil.
+
+### Pembayaran PMB
+
+- Admin PMB dapat mengunggah bukti transfer untuk pendaftar yang pembayarannya belum terdeteksi.
+- Bukti admin dikaitkan ke transaksi pendaftaran atau pra-studi yang pending, atau membuat transaksi pending baru jika belum tersedia.
+- Unggahan tidak otomatis melunasi pembayaran; transaksi tetap harus diverifikasi dan seluruh unggahan dicatat bersama nama admin, waktu, serta catatan pemeriksaan.
+
+### Validasi rilis
+
+- Versi aplikasi dinaikkan dari `1.11.2` ke `1.11.3` pada `VERSION`, `frontend/package.json`, `frontend/package-lock.json`, dan `frontend-pmb/package.json`.
+- Regression test perlindungan bentrok jadwal dan alur upload bukti transfer admin PMB ditambahkan; production build frontend berhasil.
+
 ## [1.11.2] — 2026-08-20
 
 ### Semester aktif dan notifikasi
@@ -23,7 +43,7 @@ Semua perubahan penting pada aplikasi ini dicatat di sini. Versi rilis utama dis
 
 - Versi aplikasi dinaikkan dari `1.11.1` ke `1.11.2` pada `VERSION`, `frontend/package.json`, `frontend/package-lock.json`, dan `frontend-pmb/package.json`.
 - Tidak ada migration SQL baru; indeks dan collection status baca chat dibuat otomatis saat backend dimulai.
-- Regression test terkait semester, adapter PostgreSQL, pencarian chat, percakapan, dan status baca lulus; production build frontend berhasil.
+- Regression test terkait semester, adapter PostgreSQL, pencarian chat, percakapan, dan status baca ditambahkan; production build frontend berhasil.
 
 ## [1.11.1] — 2026-08-20
 

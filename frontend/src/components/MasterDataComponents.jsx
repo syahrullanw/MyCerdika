@@ -2790,17 +2790,19 @@ export function JadwalMengajarPage() {
   const [gedungList, setGedungList] = useState([]);
 
   const [filterTa, setFilterTa] = useState("");
-  const [filterSemester, setFilterSemester] = useState("Ganjil");
+  const [filterSemester, setFilterSemester] = useState("");
   const [filterProdi, setFilterProdi] = useState("");
   const [filterDosen, setFilterDosen] = useState("");
   const [searchQuery, setSearchQuery] = useState("");
   const [viewMode, setViewMode] = useState("week");
+  const [filtersReady, setFiltersReady] = useState(false);
 
   const [editing, setEditing] = useState(null);
   const [form, setForm] = useState({ hari: "1", jam_mulai: "08:00", jam_selesai: "09:40", ruangan_id: "", gedung_id: "" });
   const [saving, setSaving] = useState(false);
   const [printing, setPrinting] = useState(false);
   const [error, setError] = useState("");
+  const [conflictInfo, setConflictInfo] = useState(null);
   const [loading, setLoading] = useState(false);
 
   const loadMaster = useCallback(() => {
@@ -2812,7 +2814,7 @@ export function JadwalMengajarPage() {
         setFilterTa((prev) => prev || active.tahun || active.tahun_ajaran || "");
         setFilterSemester((prev) => prev || active.semester || "Ganjil");
       }
-    });
+    }).finally(() => setFiltersReady(true));
     API("/api/v1/master/prodi").then((d) => Array.isArray(d) && setProdiList(d));
     API("/api/lecturers").then((d) => Array.isArray(d) && setDosenList(d));
     API("/api/v1/master/ruangan").then((d) => Array.isArray(d) && setRuanganList(d));
@@ -2824,6 +2826,10 @@ export function JadwalMengajarPage() {
   const loadSeqRef = useRef(0);
 
   const load = useCallback(() => {
+    if (!filtersReady) {
+      setList([]);
+      return;
+    }
     const seq = ++loadSeqRef.current;
     const params = new URLSearchParams();
     if (filterTa) params.set("tahun_ajaran", filterTa);
@@ -2839,7 +2845,7 @@ export function JadwalMengajarPage() {
       .finally(() => {
         if (seq === loadSeqRef.current) setLoading(false);
       });
-  }, [filterTa, filterSemester, filterProdi, filterDosen]);
+  }, [filterTa, filterSemester, filterProdi, filterDosen, filtersReady]);
 
   useEffect(() => { load(); }, [load]);
 
@@ -2858,6 +2864,7 @@ export function JadwalMengajarPage() {
   const openEdit = (item) => {
     setEditing(item.class_id);
     setError("");
+    setConflictInfo(null);
     setForm({
       hari: item.jadwal_hari ? String(item.jadwal_hari) : "1",
       jam_mulai: item.jam_mulai || "08:00",
@@ -2870,6 +2877,7 @@ export function JadwalMengajarPage() {
   const save = async () => {
     setSaving(true);
     setError("");
+    setConflictInfo(null);
     try {
       const { gedung_id, ...payload } = form;
       const res = await API(`/api/v1/master/jadwal-mengajar/${editing}`, {
@@ -2877,7 +2885,11 @@ export function JadwalMengajarPage() {
         body: JSON.stringify(payload),
       });
       if (res && res.detail) {
-        setError(res.detail);
+        const detail = typeof res.detail === "object" ? res.detail : { message: res.detail };
+        setError(detail.message || "Jadwal tidak dapat disimpan");
+        if (Array.isArray(detail.suggestions) || Array.isArray(detail.conflicts)) {
+          setConflictInfo(detail);
+        }
       } else {
         setEditing(null);
         load();
@@ -2887,6 +2899,19 @@ export function JadwalMengajarPage() {
     } finally {
       setSaving(false);
     }
+  };
+
+  const applySuggestion = (suggestion) => {
+    setForm((previous) => ({
+      ...previous,
+      hari: String(suggestion.hari),
+      jam_mulai: suggestion.jam_mulai,
+      jam_selesai: suggestion.jam_selesai,
+      ruangan_id: suggestion.ruangan_id || "",
+      gedung_id: suggestion.gedung_id || "",
+    }));
+    setError("");
+    setConflictInfo(null);
   };
 
   const filtered = list.filter((item) => {
@@ -3285,6 +3310,39 @@ export function JadwalMengajarPage() {
             </div>
 
             {error && <InfoBox variant="warning">{error}</InfoBox>}
+
+            {conflictInfo?.conflicts?.length > 0 && (
+              <div className="rounded-lg border border-amber-200 bg-amber-50 p-3 text-sm text-amber-900">
+                <p className="font-semibold">Detail bentrok</p>
+                <ul className="mt-1 space-y-1 list-disc pl-5">
+                  {conflictInfo.conflicts.map((conflict, index) => (
+                    <li key={`${conflict.class_id || "conflict"}-${index}`}>
+                      {conflict.jenis} · {conflict.course_name || conflict.class_name || "Kelas lain"} ({conflict.jam_mulai}–{conflict.jam_selesai})
+                    </li>
+                  ))}
+                </ul>
+              </div>
+            )}
+
+            {conflictInfo?.suggestions?.length > 0 && (
+              <div className="rounded-lg border border-indigo-200 bg-indigo-50 p-3 text-sm text-indigo-900">
+                <p className="font-semibold">Saran slot yang tersedia</p>
+                <p className="mt-1 text-indigo-700">Klik salah satu saran untuk mengisi form, lalu simpan jadwal.</p>
+                <div className="mt-2 flex flex-wrap gap-2">
+                  {conflictInfo.suggestions.map((suggestion, index) => (
+                    <button
+                      key={`${suggestion.hari}-${suggestion.jam_mulai}-${suggestion.ruangan_id || "no-room"}-${index}`}
+                      type="button"
+                      onClick={() => applySuggestion(suggestion)}
+                      className="rounded-lg border border-indigo-200 bg-white px-3 py-2 text-left text-xs font-semibold text-indigo-800 shadow-sm transition hover:border-indigo-400 hover:bg-indigo-100"
+                    >
+                      <span className="block">{suggestion.hari_label}, {suggestion.jam_mulai}–{suggestion.jam_selesai}</span>
+                      {suggestion.ruangan_kode && <span className="block font-normal text-indigo-600">Ruang {suggestion.ruangan_kode}</span>}
+                    </button>
+                  ))}
+                </div>
+              </div>
+            )}
 
             <div className="grid grid-cols-2 gap-4">
               <FieldSelect
