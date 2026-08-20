@@ -12,7 +12,7 @@ from fastapi.responses import HTMLResponse
 from pydantic import BaseModel, Field
 
 from postgres_database import PostgresDatabase
-from routers.user_access import rebuild_user_position_access
+from routers.user_access import rebuild_user_position_access, user_is_admin_or_access_role
 
 
 router = APIRouter(prefix="/api/v1/master", tags=["Master Data SIAKAD"])
@@ -65,15 +65,15 @@ async def get_current_user_with_roles(request: Request) -> Dict[str, Any]:
 
 async def require_admin(request: Request) -> Dict[str, Any]:
     user = await get_current_user_with_roles(request)
-    if user.get("role") != "admin":
-        raise HTTPException(status_code=403, detail="Hanya admin kampus yang diizinkan")
+    if not user_is_admin_or_access_role(user, "academic_operator"):
+        raise HTTPException(status_code=403, detail="Hanya admin kampus atau operator akademik yang diizinkan")
     return user
 
 
 async def require_admin_or_kaprodi(request: Request) -> Dict[str, Any]:
     user = await get_current_user_with_roles(request)
-    if user.get("role") != "admin" and not user.get("is_kaprodi"):
-        raise HTTPException(status_code=403, detail="Hanya Admin Kampus atau Kaprodi yang diizinkan")
+    if not user_is_admin_or_access_role(user, "academic_operator") and not user.get("is_kaprodi"):
+        raise HTTPException(status_code=403, detail="Hanya Admin Kampus, Operator Akademik, atau Kaprodi yang diizinkan")
     return user
 
 
@@ -523,11 +523,11 @@ async def list_dosen(
     if prodi_id:
         query["$or"] = [{"prodi_id": prodi_id}, {"prodi_id": None}, {"prodi_id": ""}]
 
-    dosen_list = await db.users.find({**query, "role": {"$nin": ["student", "Mahasiswa", "mahasiswa"]}}, {"_id": 0, "password_hash": 0}).to_list(None)
+    dosen_list = await db.users.find({**query, "role": {"$nin": ["student", "Mahasiswa", "mahasiswa", "staff", "tendik", "staf", "pegawai"]}}, {"_id": 0, "password_hash": 0}).to_list(None)
     if not dosen_list:
-        dosen_list = await db.users.find({**query, "role": {"$in": ["admin", "lecturer", "dosen", "staff", "staf"]}}, {"_id": 0, "password_hash": 0}).to_list(None)
+        dosen_list = await db.users.find({**query, "role": {"$in": ["admin", "lecturer", "dosen"]}}, {"_id": 0, "password_hash": 0}).to_list(None)
     if not dosen_list:
-        dosen_list = await db.users.find(query, {"_id": 0, "password_hash": 0}).to_list(None)
+        dosen_list = []
 
     for d in (dosen_list or []):
         did = d.get("id")
@@ -1275,11 +1275,107 @@ DEFAULT_JABATAN_AKADEMIK = [
 ]
 
 
+# Master unit organisasi dipakai sebagai sumber pilihan pada data Tendik.
+# Nilai bawaan hanya di-seed jika belum ada; unit custom tetap dikelola dari
+# database sehingga penamaan di seluruh modul tetap konsisten.
+DEFAULT_UNIT_ORGANISASI = [
+    {
+        "id": "unit-pt",
+        "nama": "Perguruan Tinggi",
+        "kode": "PT",
+        "parent_id": "",
+        "deskripsi": "Unit induk perguruan tinggi.",
+        "status": "active",
+        "is_default": True,
+    },
+    {
+        "id": "unit-akademik",
+        "nama": "Bagian Akademik / BAAK",
+        "kode": "BAAK",
+        "parent_id": "unit-pt",
+        "deskripsi": "Administrasi akademik dan layanan pendidikan.",
+        "status": "active",
+        "is_default": True,
+    },
+    {
+        "id": "unit-keuangan",
+        "nama": "Bagian Keuangan",
+        "kode": "KEUANGAN",
+        "parent_id": "unit-pt",
+        "deskripsi": "Administrasi keuangan dan pembayaran mahasiswa.",
+        "status": "active",
+        "is_default": True,
+    },
+    {
+        "id": "unit-pmb",
+        "nama": "Penerimaan Mahasiswa Baru (PMB)",
+        "kode": "PMB",
+        "parent_id": "unit-pt",
+        "deskripsi": "Pendaftaran dan penerimaan mahasiswa baru.",
+        "status": "active",
+        "is_default": True,
+    },
+    {
+        "id": "unit-prodi",
+        "nama": "Program Studi",
+        "kode": "PRODI",
+        "parent_id": "unit-pt",
+        "deskripsi": "Unit pengelola program studi.",
+        "status": "active",
+        "is_default": True,
+    },
+    {
+        "id": "unit-fakultas",
+        "nama": "Fakultas / Jurusan",
+        "kode": "FAKULTAS",
+        "parent_id": "unit-pt",
+        "deskripsi": "Unit pengelola fakultas atau jurusan.",
+        "status": "active",
+        "is_default": True,
+    },
+    {
+        "id": "unit-spmi",
+        "nama": "Lembaga Penjaminan Mutu",
+        "kode": "SPMI",
+        "parent_id": "unit-pt",
+        "deskripsi": "Unit penjaminan mutu internal.",
+        "status": "active",
+        "is_default": True,
+    },
+    {
+        "id": "unit-lppm",
+        "nama": "LPPM Kampus",
+        "kode": "LPPM",
+        "parent_id": "unit-pt",
+        "deskripsi": "Unit penelitian dan pengabdian kepada masyarakat.",
+        "status": "active",
+        "is_default": True,
+    },
+    {
+        "id": "unit-lab",
+        "nama": "Laboratorium",
+        "kode": "LAB",
+        "parent_id": "unit-pt",
+        "deskripsi": "Unit laboratorium atau bengkel.",
+        "status": "active",
+        "is_default": True,
+    },
+]
+
+
 class JabatanAkademikInput(BaseModel):
     nama: str
     kode: str = ""
     unit_kerja: str = "Program Studi"
     sks_ekuivalensi: int = 2
+    deskripsi: str = ""
+    status: str = "active"
+
+
+class UnitOrganisasiInput(BaseModel):
+    nama: str
+    kode: str = ""
+    parent_id: str = ""
     deskripsi: str = ""
     status: str = "active"
 
@@ -1305,6 +1401,104 @@ async def list_jabatan_akademik(db: PostgresDatabase = Depends(get_db)):
         if it.get("is_default") or it.get("id", "").startswith("jablokal-"):
             it["status"] = "active"
     return items or DEFAULT_JABATAN_AKADEMIK
+
+
+@router.get("/unit-organisasi")
+async def list_unit_organisasi(db: PostgresDatabase = Depends(get_db)):
+    """Ambil master unit organisasi aktif untuk pilihan data pegawai."""
+    for item in DEFAULT_UNIT_ORGANISASI:
+        if not await db.unit_organisasi.find_one({"id": item["id"]}, {"_id": 0, "id": 1}):
+            await db.unit_organisasi.insert_one({**item, "created_at": now_iso()})
+    return await db.unit_organisasi.find(
+        {"status": "active"},
+        {"_id": 0},
+    ).sort("nama", 1).to_list(None)
+
+
+@router.post("/unit-organisasi")
+async def create_unit_organisasi(
+    body: UnitOrganisasiInput,
+    db: PostgresDatabase = Depends(get_db),
+    _: Dict = Depends(require_admin),
+):
+    """Tambah unit organisasi custom ke master kampus."""
+    nama = body.nama.strip()
+    kode = (body.kode.strip() or _clean_code(nama)).upper()
+    if not nama:
+        raise HTTPException(status_code=422, detail="Nama unit organisasi wajib diisi")
+    duplicate = await db.unit_organisasi.find_one(
+        {"$or": [{"nama": nama}, {"kode": kode}]},
+        {"_id": 0, "id": 1},
+    )
+    if duplicate:
+        raise HTTPException(status_code=409, detail="Nama atau kode unit organisasi sudah digunakan")
+    doc = {
+        "id": f"unit-custom-{uuid4().hex[:8]}",
+        "nama": nama,
+        "kode": kode,
+        "parent_id": body.parent_id.strip(),
+        "deskripsi": body.deskripsi.strip(),
+        "status": body.status,
+        "is_default": False,
+        "created_at": now_iso(),
+    }
+    await db.unit_organisasi.insert_one(doc)
+    return doc
+
+
+@router.put("/unit-organisasi/{item_id}")
+async def update_unit_organisasi(
+    item_id: str,
+    body: UnitOrganisasiInput,
+    db: PostgresDatabase = Depends(get_db),
+    _: Dict = Depends(require_admin),
+):
+    """Perbarui unit organisasi pada master kampus."""
+    existing = await db.unit_organisasi.find_one({"id": item_id}, {"_id": 0})
+    if not existing:
+        raise HTTPException(status_code=404, detail="Unit organisasi tidak ditemukan")
+    nama = body.nama.strip()
+    kode = (body.kode.strip() or _clean_code(nama)).upper()
+    duplicate = await db.unit_organisasi.find_one(
+        {
+            "$and": [
+                {"id": {"$ne": item_id}},
+                {"$or": [{"nama": nama}, {"kode": kode}]},
+            ]
+        },
+        {"_id": 0, "id": 1},
+    )
+    if duplicate:
+        raise HTTPException(status_code=409, detail="Nama atau kode unit organisasi sudah digunakan")
+    changes = {
+        "nama": nama,
+        "kode": kode,
+        "parent_id": body.parent_id.strip(),
+        "deskripsi": body.deskripsi.strip(),
+        "status": body.status,
+        "updated_at": now_iso(),
+    }
+    await db.unit_organisasi.update_one({"id": item_id}, {"$set": changes})
+    return {**existing, **changes}
+
+
+@router.delete("/unit-organisasi/{item_id}")
+async def delete_unit_organisasi(
+    item_id: str,
+    db: PostgresDatabase = Depends(get_db),
+    _: Dict = Depends(require_admin),
+):
+    """Hapus unit custom yang belum dipakai oleh akun Tendik."""
+    existing = await db.unit_organisasi.find_one({"id": item_id}, {"_id": 0})
+    if not existing:
+        raise HTTPException(status_code=404, detail="Unit organisasi tidak ditemukan")
+    if existing.get("is_default"):
+        raise HTTPException(status_code=400, detail="Unit bawaan tidak dapat dihapus; ubah status menjadi inactive")
+    used = await db.users.count_documents({"unit_organisasi_id": item_id})
+    if used:
+        raise HTTPException(status_code=409, detail="Unit organisasi masih dipakai akun Tendik")
+    await db.unit_organisasi.delete_one({"id": item_id})
+    return {"ok": True}
 
 
 @router.post("/jabatan-akademik")

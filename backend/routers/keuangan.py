@@ -15,6 +15,7 @@ from fastapi import APIRouter, Depends, HTTPException, Request
 from pydantic import BaseModel, Field
 
 from postgres_database import PostgresDatabase
+from routers.user_access import normalize_base_role, user_is_admin_or_access_role
 
 
 router = APIRouter(prefix="/api/v1/keuangan", tags=["SIAKAD Keuangan"])
@@ -193,15 +194,20 @@ async def get_current_user_from_request(request: Request) -> Dict[str, Any]:
     user = await db.users.find_one({"id": session["user_id"]}, {"_id": 0})
     if not user:
         raise HTTPException(status_code=401, detail="Sesi tidak valid")
+    user["role"] = normalize_base_role(user.get("role"))
     request.state.current_user = user
     return user
 
 
 async def require_campus_admin(request: Request) -> Dict[str, Any]:
     user = await get_current_user_from_request(request)
-    if user.get("role") != "admin" and "finance_officer" not in (user.get("access_roles") or []):
+    if not user_is_admin_or_access_role(user, "finance_officer"):
         raise HTTPException(status_code=403, detail="Hanya admin kampus atau petugas keuangan aktif yang diizinkan")
     return user
+
+
+def can_manage_finance(user: Dict[str, Any]) -> bool:
+    return user_is_admin_or_access_role(user, "finance_officer")
 
 
 async def get_active_period(db: PostgresDatabase) -> Dict[str, Any]:
@@ -383,7 +389,7 @@ async def _find_bill_for_user(
     bill = await db.tuition_bills.find_one({"id": bill_id}, {"_id": 0})
     if not bill:
         raise HTTPException(status_code=404, detail="Tagihan tidak ditemukan")
-    if user.get("role") != "admin" and bill.get("student_id") not in student_id_candidates(user):
+    if not can_manage_finance(user) and bill.get("student_id") not in student_id_candidates(user):
         raise HTTPException(status_code=403, detail="Anda tidak berhak mengakses tagihan ini")
     return bill
 
@@ -951,7 +957,7 @@ async def list_bills(
 ):
     db = get_db(request)
     query: Dict[str, Any] = {}
-    if user.get("role") != "admin":
+    if not can_manage_finance(user):
         query["student_id"] = {"$in": student_id_candidates(user)}
     elif student_id:
         query["student_id"] = student_id
@@ -971,7 +977,7 @@ async def list_my_bills(
     """Endpoint kompatibel untuk portal mahasiswa dan daftar admin."""
     db = get_db(request)
     query: Dict[str, Any] = {}
-    if user.get("role") != "admin":
+    if not can_manage_finance(user):
         query["student_id"] = {"$in": student_id_candidates(user)}
     bills = await db.tuition_bills.find(query, {"_id": 0}).sort("created_at", -1).to_list(5000)
     return {"ok": True, "bills": bills}

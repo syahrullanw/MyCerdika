@@ -34,7 +34,7 @@ from cryptography.hazmat.primitives.asymmetric import padding, rsa
 from dotenv import load_dotenv
 import httpx
 from fastapi import APIRouter, BackgroundTasks, Depends, FastAPI, File, Form, Header, HTTPException, Request, UploadFile, WebSocket, WebSocketDisconnect
-from fastapi.responses import FileResponse, RedirectResponse, StreamingResponse
+from fastapi.responses import FileResponse, HTMLResponse, RedirectResponse, StreamingResponse
 from google.auth.transport.requests import Request as GoogleAuthRequest
 from google.oauth2 import service_account
 from googleapiclient.discovery import build
@@ -108,10 +108,21 @@ from routers.akademik import router as akademik_router
 from routers.krs_khs import router as krs_khs_router
 from routers.keuangan import ensure_default_finance_components, router as keuangan_router
 from routers.master_data import router as master_data_router
-from routers.master_data import _active_pejabat, _recommended_rombel_name
+from routers.master_data import (
+    DEFAULT_JABATAN_AKADEMIK,
+    DEFAULT_UNIT_ORGANISASI,
+    _active_pejabat,
+    _recommended_rombel_name,
+)
 from routers.kurikulum import router as kurikulum_router
 from routers.feeder import router as feeder_router
-from routers.user_access import rebuild_user_position_access, router as user_access_router
+from routers.user_access import (
+    normalize_base_role,
+    rebuild_user_position_access,
+    router as user_access_router,
+    user_has_access_role,
+    user_is_admin_or_access_role,
+)
 from routers.sk_mengajar import router as sk_mengajar_router
 from routers.sk_jabatan import router as sk_jabatan_router
 from routers.pmb import router as pmb_router
@@ -405,11 +416,13 @@ def oidc_application_role(claims: Dict[str, Any], client_id: str) -> str:
     roles = set(oidc_roles(claims, client_id))
     if "super_admin" in roles:
         return "admin"
+    if roles.intersection({"tendik", "staff", "staf", "pegawai"}):
+        return "staff"
     if "dosen" in roles:
         return "lecturer"
     if "mahasiswa" in roles:
         return "student"
-    raise HTTPException(status_code=403, detail="Akun SCI-ID belum memiliki role dosen, mahasiswa, atau super_admin")
+    raise HTTPException(status_code=403, detail="Akun SCI-ID belum memiliki role tendik, dosen, mahasiswa, atau super_admin")
 
 
 async def validate_oidc_id_token(id_token: str, metadata: Dict[str, Any], expected_nonce: str) -> Dict[str, Any]:
@@ -1759,9 +1772,13 @@ async def get_current_user(
                         user = applicant
                 if not user:
                     raise HTTPException(status_code=401, detail="Sesi tidak valid")
+                if user.get("role") != "camaba":
+                    user["role"] = normalize_base_role(user.get("role"))
                 if user.get("role") != "camaba" and user.get("status", "active") != "active":
                     raise HTTPException(status_code=403, detail="Akun tidak aktif")
                 cache_authenticated_user(token, session, user)
+    if user.get("role") != "camaba":
+        user["role"] = normalize_base_role(user.get("role"))
     request.state.current_user = user
     request.state.current_session = session
     return user
@@ -1773,6 +1790,22 @@ async def require_admin(user: Dict[str, Any] = Depends(get_current_user)) -> Dic
     return user
 
 
+async def require_admin_or_academic_operator(
+    user: Dict[str, Any] = Depends(get_current_user),
+) -> Dict[str, Any]:
+    if not user_is_admin_or_access_role(user, "academic_operator"):
+        raise HTTPException(status_code=403, detail="Hanya admin kampus atau operator akademik")
+    return user
+
+
+async def require_admin_or_operational_staff(
+    user: Dict[str, Any] = Depends(get_current_user),
+) -> Dict[str, Any]:
+    if not user_is_admin_or_access_role(user, "academic_operator", "finance_officer"):
+        raise HTTPException(status_code=403, detail="Akses hanya untuk admin atau staf operasional yang ditugaskan")
+    return user
+
+
 async def require_campus_admin(user: Dict[str, Any] = Depends(get_current_user)) -> Dict[str, Any]:
     if user.get("role") != "admin":
         raise HTTPException(status_code=403, detail="Hanya admin kampus")
@@ -1780,7 +1813,11 @@ async def require_campus_admin(user: Dict[str, Any] = Depends(get_current_user))
 
 
 def is_campus_admin(user: Dict[str, Any]) -> bool:
-    return user.get("role") == "admin"
+    return normalize_base_role(user.get("role")) == "admin"
+
+
+def is_academic_operator(user: Dict[str, Any]) -> bool:
+    return user_is_admin_or_access_role(user, "academic_operator")
 
 
 CALENDAR_EVENT_CATEGORIES = {
@@ -1793,7 +1830,7 @@ CALENDAR_EVENT_CATEGORIES = {
     "finance",
     "campus",
 }
-CALENDAR_EVENT_AUDIENCES = {"all", "student", "lecturer"}
+CALENDAR_EVENT_AUDIENCES = {"all", "student", "lecturer", "staff"}
 CALENDAR_EVENT_STATUSES = {"draft", "published", "archived"}
 ACADEMIC_DEADLINE_DEFINITIONS = {
     "curriculum_setup": {
@@ -1966,6 +2003,8 @@ def calendar_event_visible_to_user(event: Dict[str, Any], user: Dict[str, Any]) 
         return False
     if audience == "lecturer" and role not in {"lecturer", "admin"}:
         return False
+    if audience == "staff" and role != "staff":
+        return False
 
     target_prodi_ids = {
         str(item or "").strip()
@@ -2048,7 +2087,7 @@ async def lecturer_class_ids(user: Dict[str, Any], include_deleted: bool = False
             return list(cached[1])
 
         result: List[str]
-        if is_campus_admin(user):
+        if is_campus_admin(user) or user_has_access_role(user, "academic_operator"):
             query = {} if include_deleted else {"status": {"$ne": "deleted"}}
             docs = await db.classes.find(query, {"_id": 0, "id": 1}).to_list(5000)
             result = [item["id"] for item in docs]
@@ -2613,6 +2652,66 @@ class LecturerInput(BaseModel):
     tanggal_masuk: str = ""
     tanggal_mulai_mengajar: str = ""
     foto_url: str = ""
+
+
+class StaffInput(BaseModel):
+    employee_id: str = ""
+    nip: str = ""
+    nik: str = ""
+    nuptk: str = ""
+    username: str = Field(min_length=3)
+    name: str = Field(min_length=1)
+    email: EmailStr
+    whatsapp: str = ""
+    password: str = Field(default="Tendik123!", min_length=6)
+    status: str = "active"
+    jabatan_id: str = ""
+    jabatan: str = ""
+    unit_organisasi: str = ""
+    unit_organisasi_id: str = ""
+    jenis_pegawai: str = ""
+    status_pegawai: str = ""
+    status_kerja: str = ""
+    no_sk: str = ""
+    tanggal_masuk: str = ""
+    alamat: str = ""
+    kota: str = ""
+    provinsi: str = ""
+    foto_url: str = ""
+
+
+class StaffUpdateInput(StaffInput):
+    password: Optional[str] = Field(default=None, min_length=6)
+
+
+async def resolve_staff_master_references(jabatan_id: str, unit_organisasi_id: str) -> Dict[str, str]:
+    """Resolve ID master Tendik menjadi snapshot nama yang konsisten."""
+    jabatan_id = jabatan_id.strip()
+    unit_organisasi_id = unit_organisasi_id.strip()
+    if not jabatan_id:
+        raise HTTPException(status_code=400, detail="Jabatan / fungsi wajib dipilih dari master")
+    if not unit_organisasi_id:
+        raise HTTPException(status_code=400, detail="Unit organisasi wajib dipilih dari master")
+
+    jabatan = await db.jabatan_akademik.find_one({"id": jabatan_id}, {"_id": 0})
+    if not jabatan:
+        jabatan = next((item for item in DEFAULT_JABATAN_AKADEMIK if item["id"] == jabatan_id), None)
+    if not jabatan or jabatan.get("status") == "inactive":
+        raise HTTPException(status_code=400, detail="Jabatan / fungsi tidak ditemukan atau sudah nonaktif")
+
+    unit = await db.unit_organisasi.find_one({"id": unit_organisasi_id}, {"_id": 0})
+    if not unit:
+        unit = next((item for item in DEFAULT_UNIT_ORGANISASI if item["id"] == unit_organisasi_id), None)
+    if not unit or unit.get("status") == "inactive":
+        raise HTTPException(status_code=400, detail="Unit organisasi tidak ditemukan atau sudah nonaktif")
+
+    return {
+        "jabatan_id": jabatan["id"],
+        "jabatan": str(jabatan.get("nama") or "").strip(),
+        "jabatan_kode": str(jabatan.get("kode") or "").strip(),
+        "unit_organisasi_id": unit["id"],
+        "unit_organisasi": str(unit.get("nama") or "").strip(),
+    }
 
 
 class LecturerUpdateInput(BaseModel):
@@ -5488,7 +5587,7 @@ async def list_lecturers():
     ).sort("name", 1).to_list(2000)
     if not lecturers:
         lecturers = await db.users.find(
-            {"role": {"$ne": "student"}},
+            {"role": {"$nin": ["student", "staff", "tendik", "staf", "pegawai"]}},
             {"_id": 0, "password_hash": 0}
         ).sort("name", 1).to_list(2000)
     counts = await db.classes.aggregate(
@@ -5525,6 +5624,151 @@ async def list_lecturers():
         lecturer["drive_synced_count"] = storage.get("drive_synced_count", 0)
         lecturer["drive_failed_count"] = storage.get("drive_failed_count", 0)
     return lecturers
+
+
+@api_router.get("/staff")
+async def list_staff(_: Dict[str, Any] = Depends(require_campus_admin)):
+    staff = await db.users.find(
+        {
+            "role": {"$in": ["staff", "tendik", "staf", "pegawai"]},
+            "status": {"$ne": "deleted"},
+        },
+        {"_id": 0, "password_hash": 0},
+    ).sort("name", 1).to_list(2000)
+    for item in staff:
+        item["role"] = "staff"
+    return staff
+
+
+@api_router.post("/staff")
+async def create_staff(
+    payload: StaffInput,
+    _: Dict[str, Any] = Depends(require_campus_admin),
+):
+    if payload.status not in {"active", "inactive"}:
+        raise HTTPException(status_code=400, detail="Status tendik harus active atau inactive")
+    master_fields = await resolve_staff_master_references(
+        payload.jabatan_id,
+        payload.unit_organisasi_id,
+    )
+    username = payload.username.strip().lower()
+    email = str(payload.email).strip().lower()
+    duplicate = await db.users.find_one(
+        {"$or": [{"username": username}, {"email": email}]},
+        {"_id": 0, "id": 1},
+    )
+    if duplicate:
+        raise HTTPException(status_code=409, detail="Username atau email tendik sudah digunakan")
+    doc = {
+        "id": new_id(),
+        "role": "staff",
+        "class_ids": [],
+        "access_roles": [],
+        **payload.model_dump(),
+        **master_fields,
+        "username": username,
+        "email": email,
+        "password_hash": hash_password(payload.password),
+        "created_at": now_iso(),
+        "last_login_at": "",
+    }
+    doc.pop("password", None)
+    await db.users.insert_one(doc)
+    return public_doc(doc)
+
+
+@api_router.put("/staff/{staff_id}")
+async def update_staff(
+    staff_id: str,
+    payload: StaffUpdateInput,
+    _: Dict[str, Any] = Depends(require_campus_admin),
+):
+    existing = await db.users.find_one(
+        {
+            "id": staff_id,
+            "role": {"$in": ["staff", "tendik", "staf", "pegawai"]},
+            "status": {"$ne": "deleted"},
+        },
+        {"_id": 0},
+    )
+    if not existing:
+        raise HTTPException(status_code=404, detail="Tendik tidak ditemukan")
+    if payload.status not in {"active", "inactive"}:
+        raise HTTPException(status_code=400, detail="Status tendik harus active atau inactive")
+    master_fields = await resolve_staff_master_references(
+        payload.jabatan_id,
+        payload.unit_organisasi_id,
+    )
+    username = payload.username.strip().lower()
+    email = str(payload.email).strip().lower()
+    duplicate = await db.users.find_one(
+        {
+            "id": {"$ne": staff_id},
+            "$or": [{"username": username}, {"email": email}],
+        },
+        {"_id": 0, "id": 1},
+    )
+    if duplicate:
+        raise HTTPException(status_code=409, detail="Username atau email tendik sudah digunakan")
+    update = payload.model_dump(exclude={"password"})
+    update.update({
+        **master_fields,
+        "username": username,
+        "email": email,
+        "role": "staff",
+        "updated_at": now_iso(),
+    })
+    if payload.password:
+        update["password_hash"] = hash_password(payload.password)
+    await db.users.update_one({"id": staff_id}, {"$set": update})
+    if payload.status != existing.get("status"):
+        await db.sessions.delete_many({"user_id": staff_id})
+    return public_doc(await db.users.find_one({"id": staff_id}, {"_id": 0}))
+
+
+@api_router.post("/staff/{staff_id}/reset-password")
+async def reset_staff_password(
+    staff_id: str,
+    payload: ResetPasswordInput,
+    _: Dict[str, Any] = Depends(require_campus_admin),
+):
+    staff = await db.users.find_one(
+        {
+            "id": staff_id,
+            "role": {"$in": ["staff", "tendik", "staf", "pegawai"]},
+            "status": {"$ne": "deleted"},
+        },
+        {"_id": 0, "id": 1},
+    )
+    if not staff:
+        raise HTTPException(status_code=404, detail="Tendik tidak ditemukan")
+    password = payload.password.strip() or "Tendik123!"
+    if len(password) < 6:
+        raise HTTPException(status_code=400, detail="Password tendik minimal 6 karakter")
+    await db.users.update_one(
+        {"id": staff_id},
+        {"$set": {"password_hash": hash_password(password), "password_reset_at": now_iso()}},
+    )
+    await db.sessions.delete_many({"user_id": staff_id})
+    return {"ok": True, "temporary_password": password}
+
+
+@api_router.delete("/staff/{staff_id}")
+async def delete_staff(
+    staff_id: str,
+    _: Dict[str, Any] = Depends(require_campus_admin),
+):
+    result = await db.users.update_one(
+        {
+            "id": staff_id,
+            "role": {"$in": ["staff", "tendik", "staf", "pegawai"]},
+        },
+        {"$set": {"role": "staff", "status": "deleted", "deleted_at": now_iso()}},
+    )
+    if result.matched_count == 0:
+        raise HTTPException(status_code=404, detail="Tendik tidak ditemukan")
+    await db.sessions.delete_many({"user_id": staff_id})
+    return {"ok": True}
 
 
 @api_router.get("/jabatan-assignments")
@@ -6277,7 +6521,7 @@ def class_matches_tahun_ajaran(
 async def dashboard(
     include_activity: bool = True,
     semester_id: str = "",
-    user: Dict[str, Any] = Depends(require_admin),
+    user: Dict[str, Any] = Depends(get_current_user),
 ):
     all_class_ids = await lecturer_class_ids(user)
     scoped_classes = await db.classes.find(
@@ -9010,7 +9254,7 @@ async def prodi_student_analysis(
 
 
 @api_router.get("/students")
-async def list_students(user: Dict[str, Any] = Depends(require_admin)):
+async def list_students(user: Dict[str, Any] = Depends(require_admin_or_operational_staff)):
     query: Dict[str, Any] = {"role": "student"}
     progress_class_ids: Optional[List[str]] = None
     structural_kaprodi_scope = await active_program_manager_scope_values(user)
@@ -9038,6 +9282,10 @@ async def list_students(user: Dict[str, Any] = Depends(require_admin)):
             {"prodi_name": {"$in": kaprodi_scope_values}},
             {"program_name": {"$in": kaprodi_scope_values}},
         ]
+    elif user_has_access_role(user, "finance_officer"):
+        # Finance staff need the student master for billing and verification,
+        # but this does not grant them academic mutation or administrator UI.
+        progress_class_ids = None
     elif not is_campus_admin(user):
         class_ids = await lecturer_class_ids(user)
         progress_class_ids = class_ids
@@ -9436,6 +9684,8 @@ async def list_materials(user: Dict[str, Any] = Depends(get_current_user)):
         query = {"class_id": {"$in": user.get("class_ids", [])}, "is_active": True}
     elif user["role"] == "lecturer":
         query = {"class_id": {"$in": await lecturer_class_ids(user)}}
+    elif user.get("role") == "staff":
+        query = {"id": "__staff_learning_access_disabled__"}
     materials = await db.materials.find(query, {"_id": 0}).sort("created_at", -1).to_list(1000)
     class_ids = None if user["role"] != "student" else [material.get("class_id", "") for material in materials]
     meeting_labels = await material_meeting_label_map(class_ids)
@@ -9766,6 +10016,8 @@ async def list_assignments(background_tasks: BackgroundTasks, user: Dict[str, An
         query = {"class_id": {"$in": user.get("class_ids", [])}, "is_active": True}
     elif user["role"] == "lecturer":
         query = {"class_id": {"$in": await lecturer_class_ids(user)}}
+    elif user.get("role") == "staff":
+        query = {"id": "__staff_learning_access_disabled__"}
     assignments = await db.assignments.find(query, {"_id": 0}).sort("deadline", 1).to_list(1000)
     class_ids = list({item.get("class_id", "") for item in assignments if item.get("class_id")})
     class_docs = await db.classes.find({"id": {"$in": class_ids}}, {"_id": 0}).to_list(1000) if class_ids else []
@@ -9986,6 +10238,8 @@ async def list_submissions(user: Dict[str, Any] = Depends(get_current_user)):
         query = {"student_id": user["id"]}
     elif user["role"] == "lecturer":
         query = {"class_id": {"$in": await lecturer_class_ids(user)}}
+    elif user.get("role") == "staff":
+        query = {"id": "__staff_learning_access_disabled__"}
     submissions = await db.submissions.find(query, {"_id": 0}).sort("submitted_at", -1).to_list(2000)
     for item in submissions:
         if isinstance(item.get("grade"), (int, float)) and not item.get("grade_predicate"):
@@ -10764,6 +11018,8 @@ async def calculate_student_progress_many(
 async def progress(user: Dict[str, Any] = Depends(get_current_user)):
     if user["role"] == "student":
         return {"student": public_doc(user.copy()), "progress": await calculate_student_progress(user["id"])}
+    if user.get("role") == "staff" and not user_has_access_role(user, "academic_operator"):
+        return []
     class_ids = await lecturer_class_ids(user)
     student_ids = list({
         student_id
@@ -10778,7 +11034,7 @@ async def progress(user: Dict[str, Any] = Depends(get_current_user)):
 
 
 @api_router.get("/grade-predicates")
-async def get_grade_predicates(class_id: str = "", user: Dict[str, Any] = Depends(require_admin)):
+async def get_grade_predicates(class_id: str = "", user: Dict[str, Any] = Depends(require_admin_or_academic_operator)):
     if class_id:
         await require_class_access(class_id, user)
     elif user.get("role") == "lecturer":
@@ -11288,7 +11544,7 @@ async def export_grades_pdf(class_id: Optional[str] = None, user: Dict[str, Any]
 
 
 @api_router.get("/reports/summary")
-async def report_summary(user: Dict[str, Any] = Depends(require_admin)):
+async def report_summary(user: Dict[str, Any] = Depends(require_admin_or_academic_operator)):
     class_ids = await lecturer_class_ids(user)
     class_docs = await db.classes.find({"id": {"$in": class_ids}}, {"_id": 0, "student_ids": 1}).to_list(5000)
     student_ids = list({student_id for item in class_docs for student_id in item.get("student_ids", [])})
@@ -11305,7 +11561,7 @@ async def report_summary(user: Dict[str, Any] = Depends(require_admin)):
 
 
 @api_router.get("/reports/grade-recap")
-async def grade_recap(class_id: Optional[str] = None, user: Dict[str, Any] = Depends(require_admin)):
+async def grade_recap(class_id: Optional[str] = None, user: Dict[str, Any] = Depends(require_admin_or_academic_operator)):
     return await build_grade_recap(user, class_id)
 
 
@@ -13269,23 +13525,68 @@ if _FRONTEND_BUILD.exists():
     from starlette.staticfiles import StaticFiles
     from starlette.responses import FileResponse
 
-    app.mount("/static", StaticFiles(directory=str(_FRONTEND_BUILD / "static")), name="static-assets")
+    class CachedStaticFiles(StaticFiles):
+        def __init__(self, *args, cache_control: str, **kwargs):
+            super().__init__(*args, **kwargs)
+            self.cache_control = cache_control
+
+        async def get_response(self, path: str, scope):
+            response = await super().get_response(path, scope)
+            if response.status_code == 200:
+                response.headers["Cache-Control"] = self.cache_control
+            return response
+
+    app.mount(
+        "/static",
+        CachedStaticFiles(
+            directory=str(_FRONTEND_BUILD / "static"),
+            cache_control="public, max-age=31536000, immutable",
+        ),
+        name="static-assets",
+    )
+    if (_FRONTEND_BUILD / "campus").exists():
+        app.mount(
+            "/campus",
+            CachedStaticFiles(
+                directory=str(_FRONTEND_BUILD / "campus"),
+                cache_control="public, max-age=604800",
+            ),
+            name="campus-assets",
+        )
+    if (_FRONTEND_BUILD / "templates").exists():
+        app.mount(
+            "/templates",
+            CachedStaticFiles(
+                directory=str(_FRONTEND_BUILD / "templates"),
+                cache_control="public, max-age=3600",
+            ),
+            name="download-templates",
+        )
 
     @app.get("/manifest.json")
     async def serve_manifest():
-        return FileResponse(str(_FRONTEND_BUILD / "manifest.json"))
+        return FileResponse(
+            str(_FRONTEND_BUILD / "manifest.json"),
+            headers={"Cache-Control": "no-cache"},
+        )
 
     @app.get("/app-icon.svg")
     async def serve_icon():
-        return FileResponse(str(_FRONTEND_BUILD / "app-icon.svg"))
+        return FileResponse(
+            str(_FRONTEND_BUILD / "app-icon.svg"),
+            headers={"Cache-Control": "public, max-age=86400"},
+        )
 
     @app.get("/service-worker.js")
     async def serve_sw():
-        return FileResponse(str(_FRONTEND_BUILD / "service-worker.js"))
+        return FileResponse(
+            str(_FRONTEND_BUILD / "service-worker.js"),
+            headers={"Cache-Control": "no-cache, must-revalidate"},
+        )
 
     @app.api_route("/{full_path:path}", methods=["GET", "POST", "PUT", "DELETE", "OPTIONS", "PATCH"])
     async def serve_spa(full_path: str, request: Request):
-        """Fallback to index.html for React SPA routing."""
+        """Fallback to index.html for React SPA routing with live share metadata."""
         if full_path.startswith("api/") or full_path.startswith("api"):
             from fastapi import HTTPException
             raise HTTPException(status_code=404, detail=f"API route not found: /{full_path}")
@@ -13294,7 +13595,33 @@ if _FRONTEND_BUILD.exists():
             raise HTTPException(status_code=405, detail="Method Not Allowed")
         index_file = _FRONTEND_BUILD / "index.html"
         if index_file.exists():
-            return FileResponse(str(index_file))
+            content = index_file.read_text(encoding="utf-8")
+            defaults = default_app_settings()
+            settings = await db.app_settings.find_one({"id": "main"}, {"_id": 0}) or {}
+            app_name = str(settings.get("app_name") or defaults["app_name"]).strip()
+            description = str(settings.get("meta_description") or defaults["meta_description"]).strip()
+            safe_app_name = html.escape(app_name, quote=True)
+            safe_description = html.escape(description, quote=True)
+
+            def replace_meta(pattern: str, value: str, source: str) -> str:
+                return re.sub(
+                    pattern,
+                    lambda match: f"{match.group(1)}{value}{match.group(2)}",
+                    source,
+                    count=1,
+                    flags=re.IGNORECASE,
+                )
+
+            content = replace_meta(r'(<title>).*?(</title>)', safe_app_name, content)
+            content = replace_meta(r'(<meta name="description" content=").*?("[^>]*>)', safe_description, content)
+            content = replace_meta(r'(<meta property="og:description" content=").*?("[^>]*>)', safe_description, content)
+            content = replace_meta(r'(<meta name="twitter:description" content=").*?("[^>]*>)', safe_description, content)
+            content = replace_meta(r'(<meta property="og:title" content=").*?("[^>]*>)', safe_app_name, content)
+            content = replace_meta(r'(<meta name="twitter:title" content=").*?("[^>]*>)', safe_app_name, content)
+            return HTMLResponse(
+                content=content,
+                headers={"Cache-Control": "no-cache, must-revalidate"},
+            )
         return {"detail": "Frontend build not found"}
 
 

@@ -103,9 +103,15 @@ const DEFAULT_ACTIONS = [
 
 const templateTargetLabel = (template) => {
   if (template?.id === "tpl_kaprodi") return "Role struktural: Kaprodi / Sekprodi";
+  const roleLabels = {
+    admin: "Administrator",
+    lecturer: "Dosen",
+    student: "Mahasiswa",
+    staff: "Tendik",
+  };
   return template?.role_target === "all"
     ? "Semua Role"
-    : `Target Role: ${template?.role_target || "all"}`;
+    : `Target Role: ${roleLabels[template?.role_target] || template?.role_target || "all"}`;
 };
 
 const createRoleMatrixFallback = (rCode) => {
@@ -121,6 +127,14 @@ const createRoleMatrixFallback = (rCode) => {
         edit: ["materials", "assignments", "rps", "attendance", "grading", "krs_khs"].includes(mod.key),
         delete: isAcademic && ["materials", "assignments"].includes(mod.key),
         export: ["materials", "assignments", "rps", "attendance", "grading", "rekap_nilai", "krs_khs"].includes(mod.key),
+      };
+    } else if (rCode === "staff") {
+      matrix[mod.key] = {
+        view: ["dashboard", "academic_calendar"].includes(mod.key),
+        create: false,
+        edit: false,
+        delete: false,
+        export: false,
       };
     } else {
       const isStudentMod = ["dashboard", "materials", "assignments", "rps", "attendance", "grading", "krs_khs", "keuangan"].includes(mod.key);
@@ -149,6 +163,7 @@ export function UserAccessPage() {
   const [rolePermissionsList, setRolePermissionsList] = useState([
     { role: "lecturer", name: "Dosen Pengampu", user_count: 0, permissions: createRoleMatrixFallback("lecturer") },
     { role: "student", name: "Mahasiswa", user_count: 0, permissions: createRoleMatrixFallback("student") },
+    { role: "staff", name: "Tendik", user_count: 0, permissions: createRoleMatrixFallback("staff") },
     { role: "admin", name: "Administrator", user_count: 0, permissions: createRoleMatrixFallback("admin") }
   ]);
   const [selectedRoleCode, setSelectedRoleCode] = useState("lecturer");
@@ -293,7 +308,12 @@ export function UserAccessPage() {
         body: JSON.stringify({ permissions: roleMatrix }),
       });
 
-      const roleName = selectedRoleCode === "lecturer" ? "Dosen" : selectedRoleCode === "student" ? "Mahasiswa" : "Administrator";
+      const roleName = {
+        admin: "Administrator",
+        lecturer: "Dosen",
+        student: "Mahasiswa",
+        staff: "Tendik",
+      }[selectedRoleCode] || selectedRoleCode;
       showToast(`Hak akses modul untuk role '${roleName}' berhasil disimpan`);
       loadMetadata();
     } catch (err) {
@@ -346,6 +366,7 @@ export function UserAccessPage() {
           mode: userAccessDetail.access_mode,
           template_id: userAccessDetail.template_id,
           custom_permissions: userAccessDetail.custom_permissions,
+          base_role: userAccessDetail.user.role,
         }),
       });
       showToast(`Hak akses untuk ${editingUser.name} berhasil disimpan`);
@@ -513,7 +534,12 @@ export function UserAccessPage() {
   const pendingBulkTemplate = templates.find((tpl) => tpl.id === selectedBulkTemplate) || null;
   const activePositionMappingCount = positionMappings.filter((mapping) => mapping.enabled && mapping.template_id).length;
   const selectedRoleObj = rolePermissionsList.find((r) => r.role === selectedRoleCode) || {
-    name: selectedRoleCode === "lecturer" ? "Dosen Pengampu" : selectedRoleCode === "student" ? "Mahasiswa" : "Administrator",
+    name: {
+      admin: "Administrator",
+      lecturer: "Dosen Pengampu",
+      student: "Mahasiswa",
+      staff: "Tendik",
+    }[selectedRoleCode] || selectedRoleCode,
     user_count: 0
   };
 
@@ -663,6 +689,18 @@ export function UserAccessPage() {
               >
                 <UserCog className="w-4 h-4" />
                 Administrator ({rolePermissionsList.find((r) => r.role === "admin")?.user_count || 0})
+              </button>
+
+              <button
+                onClick={() => handleSelectRole("staff")}
+                className={`inline-flex items-center gap-2 px-4 py-2 rounded-lg text-sm font-semibold transition ${
+                  selectedRoleCode === "staff"
+                    ? "bg-indigo-600 text-white shadow-2xs"
+                    : "bg-slate-100 text-slate-700 hover:bg-slate-200"
+                }`}
+              >
+                <Briefcase className="w-4 h-4" />
+                Tendik ({rolePermissionsList.find((r) => r.role === "staff")?.user_count || 0})
               </button>
             </div>
 
@@ -821,6 +859,7 @@ export function UserAccessPage() {
                 <option value="admin">Administrator</option>
                 <option value="lecturer">Dosen</option>
                 <option value="student">Mahasiswa</option>
+                <option value="staff">Tendik</option>
               </select>
             </div>
 
@@ -898,10 +937,12 @@ export function UserAccessPage() {
                                   ? "bg-purple-100 text-purple-800 border border-purple-200"
                                   : u.role === "lecturer"
                                   ? "bg-blue-100 text-blue-800 border border-blue-200"
+                                  : u.role === "staff"
+                                  ? "bg-emerald-100 text-emerald-800 border border-emerald-200"
                                   : "bg-slate-100 text-slate-700 border border-slate-200"
                               }`}
                             >
-                              {u.role === "admin" ? "Administrator" : u.role === "lecturer" ? "Dosen" : "Mahasiswa"}
+                              {u.role === "admin" ? "Administrator" : u.role === "lecturer" ? "Dosen" : u.role === "staff" ? "Tendik" : "Mahasiswa"}
                             </span>
                           </td>
                           <td className="p-4">
@@ -1034,7 +1075,7 @@ export function UserAccessPage() {
             <div className="text-sm text-indigo-950 space-y-1">
               <div className="font-bold">Akses otomatis dari penugasan jabatan</div>
               <p className="text-xs text-indigo-800">
-                Role utama akun tetap Dosen, Admin, atau Mahasiswa. Hanya tugas tambahan/struktural yang aktif di halaman Jabatan Akademik yang menambahkan akses dan scope prodi. Jenjang fungsional seperti Asisten Ahli atau Lektor tidak membuka privilese sistem.
+                Role utama akun dapat berupa Administrator, Dosen, Mahasiswa, atau Tendik. Hanya tugas tambahan/struktural yang aktif di halaman Jabatan Akademik yang menambahkan akses dan scope prodi. Jenjang fungsional seperti Asisten Ahli atau Lektor tidak membuka privilese sistem.
               </p>
             </div>
           </div>
@@ -1138,6 +1179,34 @@ export function UserAccessPage() {
                   <div className="bg-slate-50 p-4 rounded-xl border border-slate-200 space-y-4">
                     <div className="text-sm font-bold text-slate-900 flex items-center gap-2">
                       <Sliders className="w-4 h-4 text-indigo-600" /> Mode Pengaturan Hak Akses
+                    </div>
+                    <div className="max-w-md">
+                      <label className="text-xs font-bold text-slate-700 block mb-1">Role Utama Akun</label>
+                      <select
+                        value={userAccessDetail.user.role}
+                        onChange={(event) => {
+                          const nextRole = event.target.value;
+                          const defaultTemplates = {
+                            admin: "tpl_admin",
+                            lecturer: "tpl_dosen",
+                            student: "tpl_mahasiswa",
+                            staff: "tpl_tendik",
+                          };
+                          setUserAccessDetail((prev) => ({
+                            ...prev,
+                            user: { ...prev.user, role: nextRole },
+                            template_id: defaultTemplates[nextRole] || "tpl_tendik",
+                            access_mode: "template",
+                          }));
+                        }}
+                        className="w-full px-3 py-2 text-sm border border-slate-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-indigo-500 bg-white"
+                      >
+                        <option value="admin">Administrator</option>
+                        <option value="lecturer">Dosen</option>
+                        <option value="student">Mahasiswa</option>
+                        <option value="staff">Tendik</option>
+                      </select>
+                      <p className="mt-1 text-[11px] text-slate-500">Tendik adalah role utama terpisah dari Administrator; tugas seperti Akademik atau Keuangan ditambahkan melalui jabatan/templat.</p>
                     </div>
                     <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
                       <label
@@ -1372,6 +1441,7 @@ export function UserAccessPage() {
                     <option value="admin">Administrator</option>
                     <option value="lecturer">Dosen</option>
                     <option value="student">Mahasiswa</option>
+                    <option value="staff">Tendik</option>
                   </select>
                 </div>
 

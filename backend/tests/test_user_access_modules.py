@@ -1,8 +1,10 @@
 from routers.user_access import (
+    BASE_ROLE_LABELS,
     DEFAULT_TEMPLATES,
     SYSTEM_MODULES,
     merge_permission_matrices,
     normalize_permission_matrix,
+    normalize_base_role,
     normalize_template_permissions,
     position_accesses_from_assignments,
     role_default_permission_matrix,
@@ -46,6 +48,7 @@ def test_default_roles_include_finance_and_remain_least_privilege():
     admin = role_default_permission_matrix("admin")
     lecturer = role_default_permission_matrix("lecturer")
     student = role_default_permission_matrix("student")
+    staff = role_default_permission_matrix("staff")
 
     assert all(admin["old_siakad_migration"].values())
     assert lecturer["grading"]["edit"] is True
@@ -54,15 +57,48 @@ def test_default_roles_include_finance_and_remain_least_privilege():
         "view": True, "create": False, "edit": False, "delete": False, "export": True,
     }
     assert student["student_records"]["view"] is False
+    assert staff["dashboard"]["view"] is True
+    assert staff["academic_calendar"]["view"] is True
+    assert staff["keuangan"]["view"] is False
+    assert staff["materials"]["view"] is False
+
+
+def test_staff_is_a_base_role_and_unknown_roles_fail_closed():
+    assert BASE_ROLE_LABELS["staff"] == "Tendik"
+    assert normalize_base_role("tendik") == "staff"
+    assert normalize_base_role("staf") == "staff"
+    assert normalize_base_role("role-yang-tidak-dikenal") == "role-yang-tidak-dikenal"
+    assert role_default_permission_matrix("role-yang-tidak-dikenal") == role_default_permission_matrix("staff")
 
 
 def test_templates_can_only_be_applied_to_compatible_roles():
     finance_template = {"role_target": "admin"}
+    staff_finance_template = {"role_target": "staff"}
     unrestricted_template = {"role_target": "all"}
 
     assert template_matches_user_role(finance_template, "admin") is True
     assert template_matches_user_role(finance_template, "student") is False
+    assert template_matches_user_role(staff_finance_template, "tendik") is True
+    assert template_matches_user_role(staff_finance_template, "admin") is False
     assert template_matches_user_role(unrestricted_template, "lecturer") is True
+
+
+def test_bendahara_maps_to_tendik_finance_access():
+    templates = {template["id"]: template for template in DEFAULT_TEMPLATES}
+    assignments = [{
+        "id": "assign-bendahara",
+        "jabatan_id": "jab-bendahara",
+        "jabatan_kode": "BENDAHARA",
+        "jabatan_nama": "Bendahara",
+        "prodi_id": "",
+    }]
+
+    accesses = position_accesses_from_assignments(assignments, templates)
+
+    assert len(accesses) == 1
+    assert accesses[0]["template_id"] == "tpl_keuangan"
+    assert accesses[0]["access_role"] == "finance_officer"
+    assert accesses[0]["permissions"]["keuangan"]["edit"] is True
 
 
 def test_structural_assignment_adds_role_template_and_program_scope():

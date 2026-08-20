@@ -10,6 +10,7 @@ from fastapi import APIRouter, Depends, HTTPException, Request, Header
 from pydantic import BaseModel, Field
 
 from postgres_database import PostgresDatabase
+from routers.user_access import user_is_admin_or_access_role
 
 
 router = APIRouter(prefix="/api/v1/kurikulum", tags=["Kurikulum & Dosen Pengampu SIAKAD"])
@@ -56,15 +57,15 @@ async def get_current_user_with_roles(request: Request) -> Dict[str, Any]:
 
 async def require_admin(request: Request) -> Dict[str, Any]:
     user = await get_current_user_with_roles(request)
-    if user.get("role") != "admin":
-        raise HTTPException(status_code=403, detail="Hanya admin kampus yang diizinkan")
+    if not user_is_admin_or_access_role(user, "academic_operator"):
+        raise HTTPException(status_code=403, detail="Hanya admin kampus atau operator akademik yang diizinkan")
     return user
 
 
 async def require_admin_or_kaprodi(request: Request) -> Dict[str, Any]:
     user = await get_current_user_with_roles(request)
-    if user.get("role") != "admin" and not user.get("is_kaprodi"):
-        raise HTTPException(status_code=403, detail="Hanya Admin Kampus atau Kaprodi yang diizinkan")
+    if not user_is_admin_or_access_role(user, "academic_operator") and not user.get("is_kaprodi"):
+        raise HTTPException(status_code=403, detail="Hanya Admin Kampus, Operator Akademik, atau Kaprodi yang diizinkan")
     return user
 
 

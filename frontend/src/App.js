@@ -1,6 +1,8 @@
 import {
   createContext,
+  lazy,
   memo,
+  Suspense,
   useCallback,
   useContext,
   useEffect,
@@ -9,33 +11,7 @@ import {
   useState,
 } from "react";
 import axios from "axios";
-import { Html5Qrcode } from "html5-qrcode";
 import "@/App.css";
-import { KRSPage, KHSPage, KeuanganPage, PerwalianKRSPage } from "@/components/SiakadComponents";
-import {
-  AcademicConfigPage,
-  WizardSemesterBaru,
-  FakultasPage,
-  ProdiMasterPage,
-  TahunAjaranPage,
-  DosenWaliPage,
-  MahasiswaProdiPage,
-  EnrollWizardPage,
-  MigrationPage,
-  GedungPage,
-  RuanganPage,
-  JadwalMengajarPage,
-} from "@/components/MasterDataComponents";
-import { SkMengajarPage } from "@/components/SkMengajarComponents";
-import { SkJabatanPage } from "@/components/SkJabatanComponents";
-import { StudentAttendancePage } from "@/components/StudentAttendanceComponents";
-import { KurikulumMasterPage } from "@/components/KurikulumComponents";
-import { UserAccessPage } from "@/components/UserAccessComponents";
-import { IntegrationSettingsPage } from "@/components/IntegrationSettingsPage";
-import { ProgresNilaiProdiPage } from "@/components/ProgresNilaiProdiComponents";
-import { AnalisisMahasiswaProdiPage } from "@/components/AnalisisMahasiswaProdiComponents";
-import { AnalisisRpsProdiPage } from "@/components/AnalisisRpsProdiComponents";
-import { CamabaPortal, AdminPmbHub, PmbLandingPage } from "@/components/PmbComponents";
 import { apiErrorMessage } from "@/lib/utils";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
@@ -142,6 +118,50 @@ import {
   Cell,
 } from "recharts";
 
+const lazyNamed = (loader, exportName) =>
+  lazy(() => loader().then((module) => ({ default: module[exportName] })));
+
+const KRSPage = lazyNamed(() => import("@/components/SiakadComponents"), "KRSPage");
+const KHSPage = lazyNamed(() => import("@/components/SiakadComponents"), "KHSPage");
+const KeuanganPage = lazyNamed(() => import("@/components/SiakadComponents"), "KeuanganPage");
+const PerwalianKRSPage = lazyNamed(() => import("@/components/SiakadComponents"), "PerwalianKRSPage");
+const AcademicConfigPage = lazyNamed(() => import("@/components/MasterDataComponents"), "AcademicConfigPage");
+const WizardSemesterBaru = lazyNamed(() => import("@/components/MasterDataComponents"), "WizardSemesterBaru");
+const FakultasPage = lazyNamed(() => import("@/components/MasterDataComponents"), "FakultasPage");
+const ProdiMasterPage = lazyNamed(() => import("@/components/MasterDataComponents"), "ProdiMasterPage");
+const TahunAjaranPage = lazyNamed(() => import("@/components/MasterDataComponents"), "TahunAjaranPage");
+const DosenWaliPage = lazyNamed(() => import("@/components/MasterDataComponents"), "DosenWaliPage");
+const MahasiswaProdiPage = lazyNamed(() => import("@/components/MasterDataComponents"), "MahasiswaProdiPage");
+const EnrollWizardPage = lazyNamed(() => import("@/components/MasterDataComponents"), "EnrollWizardPage");
+const MigrationPage = lazyNamed(() => import("@/components/MasterDataComponents"), "MigrationPage");
+const GedungPage = lazyNamed(() => import("@/components/MasterDataComponents"), "GedungPage");
+const RuanganPage = lazyNamed(() => import("@/components/MasterDataComponents"), "RuanganPage");
+const JadwalMengajarPage = lazyNamed(() => import("@/components/MasterDataComponents"), "JadwalMengajarPage");
+const SkMengajarPage = lazyNamed(() => import("@/components/SkMengajarComponents"), "SkMengajarPage");
+const SkJabatanPage = lazyNamed(() => import("@/components/SkJabatanComponents"), "SkJabatanPage");
+const StudentAttendancePage = lazyNamed(() => import("@/components/StudentAttendanceComponents"), "StudentAttendancePage");
+const KurikulumMasterPage = lazyNamed(() => import("@/components/KurikulumComponents"), "KurikulumMasterPage");
+const UserAccessPage = lazyNamed(() => import("@/components/UserAccessComponents"), "UserAccessPage");
+const StaffPage = lazyNamed(() => import("@/components/StaffComponents"), "StaffPage");
+const IntegrationSettingsPage = lazyNamed(() => import("@/components/IntegrationSettingsPage"), "IntegrationSettingsPage");
+const ProgresNilaiProdiPage = lazyNamed(() => import("@/components/ProgresNilaiProdiComponents"), "ProgresNilaiProdiPage");
+const AnalisisMahasiswaProdiPage = lazyNamed(() => import("@/components/AnalisisMahasiswaProdiComponents"), "AnalisisMahasiswaProdiPage");
+const AnalisisRpsProdiPage = lazyNamed(() => import("@/components/AnalisisRpsProdiComponents"), "AnalisisRpsProdiPage");
+const CamabaPortal = lazyNamed(() => import("@/components/PmbComponents"), "CamabaPortal");
+const AdminPmbHub = lazyNamed(() => import("@/components/PmbComponents"), "AdminPmbHub");
+const PmbLandingPage = lazyNamed(() => import("@/components/PmbComponents"), "PmbLandingPage");
+
+function PageModuleFallback() {
+  return (
+    <div className="flex min-h-48 items-center justify-center" role="status">
+      <div className="text-center">
+        <div className="mx-auto h-7 w-7 animate-spin rounded-full border-4 border-blue-100 border-t-blue-600" />
+        <p className="mt-3 text-sm font-semibold text-slate-600">Membuka halaman...</p>
+      </div>
+    </div>
+  );
+}
+
 function resolveBackendUrl() {
   const configuredUrl = String(
     process.env.REACT_APP_BACKEND_URL || ""
@@ -196,7 +216,7 @@ const StatusBadge = ({ children, color = "blue" }) => {
 };
 
 const logoUrl = "/app-icon.svg";
-const authBg = "/campus/poltek-campus-main.jpg";
+const authBg = "/campus/poltek-campus-main-1280.jpg";
 const authCampusDetail = "/campus/poltek-campus-aerial.webp";
 const practicumCover =
   "https://images.unsplash.com/photo-1619410283995-43d9134e7656?crop=entropy&cs=srgb&fm=jpg&ixid=M3w4NjA1MDZ8MHwxfHNlYXJjaHwxfHxjb21wdXRlciUyMHNjaWVuY2UlMjBwcm9ncmFtbWluZyUyMHNjcmVlbnxlbnwwfHx8fDE3Nzk1NTA1NDd8MA&ixlib=rb-4.1.0&q=85";
@@ -466,6 +486,7 @@ function userRoleLabel(role) {
     admin: "Admin",
     lecturer: "Dosen",
     student: "Mahasiswa",
+    staff: "Tendik",
   }[role] || "Pengguna";
 }
 
@@ -485,6 +506,7 @@ function dashboardRoleDetails(user = {}, programs = []) {
     lecturer: "Dosen Pengampu",
     dosen: "Dosen Pengampu",
     student: "Mahasiswa",
+    staff: "Tendik",
   }[user.role] || "Pengguna";
   const syncedRoles = Array.isArray(user.access_roles);
   const activeCodes = new Set(syncedRoles ? user.access_roles : []);
@@ -1259,6 +1281,8 @@ const UserProfileDropdown = memo(function UserProfileDropdown({
       ? "Admin Kampus"
       : user.role === "lecturer"
       ? "Dosen"
+      : user.role === "staff"
+      ? "Tendik"
       : "Mahasiswa";
 
   return (
@@ -1469,6 +1493,7 @@ const EmptyState = memo(function EmptyState({ title, description }) {
 
 function LoginScreen({ onAuth, branding, ssoError = "", version }) {
   const campusName = branding?.campus_name?.trim() || "POLITEKNIK SCI";
+  const campusShortName = branding?.campus_code?.trim() || campusName;
   const resetQuery = useMemo(() => getResetPasswordQuery(), []);
   const [mode, setMode] = useState(resetQuery.active ? "forgot" : "login");
   const [login, setLogin] = useState({ identifier: "", password: "" });
@@ -1684,14 +1709,14 @@ function LoginScreen({ onAuth, branding, ssoError = "", version }) {
                 className="text-xs font-semibold uppercase tracking-[0.2em] text-slate-500"
                 data-testid="login-overline"
               >
-                {campusName}
+                {campusShortName}
               </p>
               <h2
                 className="font-display text-3xl font-bold text-slate-950"
                 data-testid="login-title"
               >
                 {mode === "login"
-                  ? `Akses Masuk ${brandingName(branding)}`
+                  ? `Akses ${brandingName(branding)}`
                   : "Lupa password"}
               </h2>
             </div>
@@ -2379,7 +2404,7 @@ function ProfilePage({ token, user, onUserUpdate, enrollments = [] }) {
             <h2 className="flex flex-wrap items-center gap-2 font-display text-lg font-bold leading-tight text-slate-900 sm:text-xl">
               <span className="min-w-0 break-words">{user.name}</span>
               <Badge className="bg-indigo-100 text-indigo-700 hover:bg-indigo-200 border-none capitalize text-xs">
-                {user.role === "admin" ? "Dosen / Admin" : user.role === "lecturer" ? "Dosen" : "Mahasiswa"}
+                {user.role === "admin" ? "Dosen / Admin" : user.role === "lecturer" ? "Dosen" : user.role === "staff" ? "Tendik" : "Mahasiswa"}
               </Badge>
             </h2>
             <p className="mt-1 flex min-w-0 flex-col gap-0.5 text-xs leading-5 text-slate-500 sm:flex-row sm:flex-wrap sm:items-center sm:gap-x-2">
@@ -4315,10 +4340,14 @@ function AdminApp({
   );
   const isCampusAdmin = user.role === "admin";
   const isDosen = user.role === "lecturer" || user.role === "dosen";
+  const isStaff = user.role === "staff";
   const derivedAccessRoles = Array.isArray(user?.access_roles) ? user.access_roles : [];
   const canManageFinance = isCampusAdmin || derivedAccessRoles.includes("finance_officer");
   const canManagePmb = isCampusAdmin || derivedAccessRoles.includes("pmb_officer");
   const canManageAcademicCalendar = isCampusAdmin || derivedAccessRoles.includes("academic_operator");
+  const isAcademicOperator = isCampusAdmin || derivedAccessRoles.includes("academic_operator");
+  const canViewStudentRecords = isCampusAdmin || isAcademicOperator || canManageFinance;
+  const canUseTeachingWorkspace = isCampusAdmin || isDosen;
   const isKaprodi = Boolean(
     user?.is_kaprodi ||
     user?.kaprodi_prodi_id ||
@@ -4383,8 +4412,36 @@ function AdminApp({
     tanggal_mulai_mengajar: "",
     foto_url: "",
   };
+  const emptyStaffForm = {
+    employee_id: "",
+    nip: "",
+    nik: "",
+    nuptk: "",
+    username: "",
+    name: "",
+    email: "",
+    whatsapp: "",
+    password: "Tendik123!",
+    status: "active",
+    jabatan_id: "",
+    jabatan: "",
+    unit_organisasi: "",
+    unit_organisasi_id: "",
+    jenis_pegawai: "",
+    status_pegawai: "",
+    status_kerja: "",
+    no_sk: "",
+    tanggal_masuk: "",
+    alamat: "",
+    kota: "",
+    provinsi: "",
+    foto_url: "",
+  };
   const [data, setData] = useState({
     lecturers: [],
+    staff: [],
+    jabatanOptions: [],
+    unitOrganisasiOptions: [],
     programs: [],
     courses: [],
     classes: [],
@@ -4448,6 +4505,7 @@ function AdminApp({
   }, [data, selectedSemester]);
   const [forms, setForms] = useState({
     lecturer: emptyLecturerForm,
+    staff: emptyStaffForm,
     program: { code: "", name: "", description: "" },
     course: { program_id: "", code: "", name: "", credits: 3, description: "" },
     class: {
@@ -4612,6 +4670,208 @@ function AdminApp({
   } = useUserNotifications(token);
   const progress = useActionProgress();
   const dashboardSemesterLoadedRef = useRef("");
+  const loadedPageDataRef = useRef(new Set());
+  const pageDataPromisesRef = useRef(new Map());
+  const [loadingDataPages, setLoadingDataPages] = useState(() => new Set());
+
+  async function loadPageData(targetPage, { force = false } = {}) {
+    const pageDataKeys = {
+      dashboard: ["programs", "courses", "calendar", "enrollments", "reminders", "userActivity"],
+      pmb: ["programs"],
+      students: ["students", "programs", "lecturers", "enrollments"],
+      materials: ["materials"],
+      calendar: ["calendar", "programs"],
+      reports: ["report", "gradeRecap"],
+      rekap: ["gradeRecap"],
+      weights: ["courses"],
+      lecturers: ["lecturers", "programs"],
+      staff: ["staff", "jabatanOptions", "unitOrganisasiOptions"],
+      settings: ["settings", "lecturers"],
+      master_jabatan_akademik: ["lecturers"],
+      whatsapp: ["whatsappSettings", "whatsappMessages"],
+      email: ["emailSettings"],
+      sso: ["ssoSettings"],
+      drive: ["driveSettings"],
+      predicates: ["gradePredicates"],
+      clean: ["cleanData"],
+    };
+    const keys = Array.from(new Set(pageDataKeys[targetPage] || []));
+    if (!keys.length) return;
+    if (!force && loadedPageDataRef.current.has(targetPage)) return;
+    if (pageDataPromisesRef.current.has(targetPage)) {
+      return pageDataPromisesRef.current.get(targetPage);
+    }
+
+    const campusGet = (path, fallback) =>
+      isCampusAdmin
+        ? axios.get(`${API}${path}`, auth)
+        : Promise.resolve({ data: fallback });
+    const loaders = {
+      programs: () => axios.get(`${API}/programs`, auth),
+      courses: () => axios.get(`${API}/courses`, auth),
+      students: () => canViewStudentRecords
+        ? axios.get(`${API}/students`, auth)
+        : Promise.resolve({ data: [] }),
+      materials: () => axios.get(`${API}/materials`, auth),
+      reminders: () => axios.get(`${API}/reminders`, auth),
+      calendar: () => axios.get(`${API}/calendar`, auth),
+      report: () => isAcademicOperator
+        ? axios.get(`${API}/reports/summary`, auth)
+        : Promise.resolve({ data: null }),
+      enrollments: () => axios.get(`${API}/enrollment-requests`, auth),
+      settings: () => axios.get(`${API}/settings`, auth),
+      whatsappSettings: () => campusGet("/whatsapp/settings", defaultWhatsAppForm),
+      whatsappMessages: () => campusGet("/whatsapp/messages", []),
+      gradePredicates: () => isAcademicOperator
+        ? axios.get(`${API}/grade-predicates`, auth)
+        : Promise.resolve({ data: { predicates: [] } }),
+      driveSettings: () => campusGet("/drive/settings", defaultDriveForm),
+      cleanData: () => campusGet("/clean-data/summary", []),
+      emailSettings: () => campusGet("/email/settings", defaultEmailForm),
+      ssoSettings: () => campusGet("/sso/settings", defaultSsoForm),
+      gradeRecap: () => isAcademicOperator
+        ? axios.get(`${API}/reports/grade-recap`, auth)
+        : Promise.resolve({ data: [] }),
+      lecturers: () => campusGet("/lecturers", []),
+      staff: () => campusGet("/staff", []),
+      jabatanOptions: () => axios.get(`${API}/v1/master/jabatan-akademik`, auth),
+      unitOrganisasiOptions: () => axios.get(`${API}/v1/master/unit-organisasi`, auth),
+      userActivity: () => isCampusAdmin
+        ? axios.get(`${API}/user-activity`, { ...auth, params: { days: 14 } })
+        : Promise.resolve({ data: null }),
+    };
+
+    setLoadingDataPages((current) => new Set([...current, targetPage]));
+    const request = (async () => {
+      try {
+        const entries = await Promise.all(
+          keys.map(async (key) => [key, await loaders[key]()]),
+        );
+        const responses = Object.fromEntries(entries);
+        const programsData = responses.programs?.data || null;
+        const coursesData = responses.courses?.data || null;
+        const settingsData = responses.settings?.data || null;
+
+        setData((current) => {
+          const next = { ...current };
+          const directFields = [
+            "programs",
+            "courses",
+            "students",
+            "materials",
+            "reminders",
+            "calendar",
+            "enrollments",
+            "lecturers",
+            "staff",
+            "jabatanOptions",
+            "unitOrganisasiOptions",
+            "whatsappSettings",
+            "whatsappMessages",
+            "driveSettings",
+            "cleanData",
+            "emailSettings",
+            "ssoSettings",
+            "gradeRecap",
+          ];
+          directFields.forEach((key) => {
+            if (responses[key]) next[key] = responses[key].data;
+          });
+          if (responses.report) next.report = responses.report.data;
+          if (responses.settings) next.settings = responses.settings.data;
+          if (responses.gradePredicates) {
+            next.gradePredicates = responses.gradePredicates.data?.predicates || [];
+          }
+          if (responses.userActivity?.data) {
+            next.dashboard = {
+              ...(current.dashboard || {}),
+              user_activity: responses.userActivity.data,
+            };
+          }
+          return next;
+        });
+
+        if (
+          programsData ||
+          coursesData ||
+          settingsData ||
+          responses.whatsappSettings ||
+          responses.driveSettings ||
+          responses.emailSettings ||
+          responses.ssoSettings ||
+          responses.gradePredicates
+        ) {
+          setForms((prev) => ({
+            ...prev,
+            course: {
+              ...prev.course,
+              program_id: prev.course.program_id || programsData?.[0]?.id || "",
+            },
+            class: {
+              ...prev.class,
+              course_id:
+                prev.class.course_id ||
+                coursesData?.find(
+                  (course) => course.has_dosen_pengampu || course.dosen_utama_id,
+                )?.id ||
+                "",
+            },
+            settings: settingsData || prev.settings,
+            whatsapp: responses.whatsappSettings
+              ? {
+                  ...prev.whatsapp,
+                  ...responses.whatsappSettings.data,
+                  fonnte_token: "",
+                  waha_api_key: "",
+                }
+              : prev.whatsapp,
+            drive: responses.driveSettings
+              ? {
+                  ...defaultDriveForm,
+                  ...responses.driveSettings.data,
+                  service_account_json: "",
+                  clear_service_account: false,
+                }
+              : prev.drive,
+            email: responses.emailSettings
+              ? {
+                  ...defaultEmailForm,
+                  ...responses.emailSettings.data,
+                  smtp_password: "",
+                }
+              : prev.email,
+            sso: responses.ssoSettings
+              ? {
+                  ...defaultSsoForm,
+                  ...responses.ssoSettings.data,
+                  client_secret: "",
+                  clear_client_secret: false,
+                }
+              : prev.sso,
+            gradePredicates: responses.gradePredicates
+              ? responses.gradePredicates.data?.predicates || prev.gradePredicates
+              : prev.gradePredicates,
+          }));
+        }
+        loadedPageDataRef.current.add(targetPage);
+      } catch (error) {
+        if (isSessionError(error)) {
+          onSessionExpired?.();
+          return;
+        }
+        toast.error(error.response?.data?.detail || "Data halaman gagal dimuat");
+      } finally {
+        pageDataPromisesRef.current.delete(targetPage);
+        setLoadingDataPages((current) => {
+          const next = new Set(current);
+          next.delete(targetPage);
+          return next;
+        });
+      }
+    })();
+    pageDataPromisesRef.current.set(targetPage, request);
+    return request;
+  }
 
   async function loadAll(event) {
     const isRefresh = event?.type === "click";
@@ -4622,11 +4882,6 @@ function AdminApp({
             "Mengambil data terbaru dari server...",
           )
         : null;
-    const campusGet = (path, fallback) =>
-      isCampusAdmin
-        ? axios.get(`${API}${path}`, auth)
-        : Promise.resolve({ data: fallback });
-
     async function loadCoreData() {
       // Only data needed to paint the authenticated dashboard is fetched in
       // the critical path. Large management tables and integration settings
@@ -4692,120 +4947,10 @@ function AdminApp({
       }));
     }
 
-    async function loadSecondaryData() {
-      const [
-        programs,
-        courses,
-        students,
-        materials,
-        reminders,
-        calendar,
-        report,
-        enrollments,
-        settings,
-        whatsappSettings,
-        whatsappMessages,
-        gradePredicates,
-        driveSettings,
-        cleanData,
-        emailSettings,
-        ssoSettings,
-        gradeRecap,
-        lecturers,
-        userActivity,
-      ] = await Promise.all([
-        axios.get(`${API}/programs`, auth),
-        axios.get(`${API}/courses`, auth),
-        axios.get(`${API}/students`, auth),
-        axios.get(`${API}/materials`, auth),
-        axios.get(`${API}/reminders`, auth),
-        axios.get(`${API}/calendar`, auth),
-        axios.get(`${API}/reports/summary`, auth),
-        axios.get(`${API}/enrollment-requests`, auth),
-        axios.get(`${API}/settings`, auth),
-        campusGet("/whatsapp/settings", defaultWhatsAppForm),
-        campusGet("/whatsapp/messages", []),
-        axios.get(`${API}/grade-predicates`, auth),
-        campusGet("/drive/settings", defaultDriveForm),
-        campusGet("/clean-data/summary", []),
-        campusGet("/email/settings", defaultEmailForm),
-        campusGet("/sso/settings", defaultSsoForm),
-        axios.get(`${API}/reports/grade-recap`, auth),
-        campusGet("/lecturers", []),
-        isCampusAdmin
-          ? axios.get(`${API}/user-activity`, { ...auth, params: { days: 14 } })
-          : Promise.resolve({ data: null }),
-      ]);
-      const programsData = programs.data || [];
-      const coursesData = courses.data || [];
-      const settingsData = settings.data || null;
-      setData((current) => ({
-        ...current,
-        lecturers: lecturers.data || [],
-        programs: programsData,
-        courses: coursesData,
-        students: students.data || [],
-        materials: materials.data || [],
-        reminders: reminders.data || [],
-        calendar: calendar.data || [],
-        report: report.data || null,
-        enrollments: enrollments.data || [],
-        settings: settingsData,
-        whatsappSettings: whatsappSettings.data,
-        whatsappMessages: whatsappMessages.data || [],
-        emailSettings: emailSettings.data,
-        ssoSettings: ssoSettings.data,
-        driveSettings: driveSettings.data,
-        gradePredicates: gradePredicates.data?.predicates || [],
-        cleanData: cleanData.data || [],
-        gradeRecap: gradeRecap.data || [],
-        dashboard: userActivity.data
-          ? { ...(current.dashboard || {}), user_activity: userActivity.data }
-          : current.dashboard,
-      }));
-      setForms((prev) => ({
-        ...prev,
-        course: {
-          ...prev.course,
-          program_id: prev.course.program_id || programsData[0]?.id || "",
-        },
-        class: {
-          ...prev.class,
-          course_id: prev.class.course_id || coursesData.find((course) => course.has_dosen_pengampu || course.dosen_utama_id)?.id || "",
-        },
-        settings: settingsData || prev.settings,
-        whatsapp: {
-          ...prev.whatsapp,
-          ...whatsappSettings.data,
-          fonnte_token: "",
-          waha_api_key: "",
-        },
-        drive: {
-          ...defaultDriveForm,
-          ...driveSettings.data,
-          service_account_json: "",
-          clear_service_account: false,
-        },
-        email: {
-          ...defaultEmailForm,
-          ...emailSettings.data,
-          smtp_password: "",
-        },
-        sso: {
-          ...defaultSsoForm,
-          ...ssoSettings.data,
-          client_secret: "",
-          clear_client_secret: false,
-        },
-        gradePredicates: gradePredicates.data?.predicates || prev.gradePredicates,
-      }));
-    }
-
     try {
       await loadCoreData();
-      const secondary = loadSecondaryData();
-      if (isRefresh) await secondary;
-      else secondary.catch(() => {});
+      const pageDataRequest = loadPageData(page, { force: true });
+      if (isRefresh) await pageDataRequest;
       if (operation) progress.finish(operation, "Data terbaru dimuat");
     } catch (error) {
       if (isSessionError(error)) {
@@ -4822,10 +4967,13 @@ function AdminApp({
   }
   useEffect(() => {
     loadAll();
-    // The shell fetches critical dashboard data first, then hydrates the
-    // larger management datasets without blocking the first paint.
+    // Data tabel yang besar dimuat hanya saat halaman terkait dibuka.
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
+  useEffect(() => {
+    loadPageData(page);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [page]);
   useEffect(() => {
     if (!(data.tahunAjaran || []).length) return undefined;
     const dashboardSemesterId = selectedSemester && selectedSemester !== "all"
@@ -5858,6 +6006,29 @@ function AdminApp({
       toast.error(detail);
     }
   }
+  async function saveStaff(event) {
+    event.preventDefault();
+    const { id, ...payload } = forms.staff;
+    const operation = progress.begin(id ? "Memperbarui akun tendik" : "Membuat akun tendik");
+    try {
+      if (id) {
+        const { password, ...updatePayload } = payload;
+        await axios.put(`${API}/staff/${id}`, password ? { ...updatePayload, password } : updatePayload, auth);
+      } else {
+        await axios.post(`${API}/staff`, payload, auth);
+      }
+      setForms((prev) => ({ ...prev, staff: emptyStaffForm }));
+      await loadAll();
+      progress.finish(operation, id ? "Akun tendik diperbarui" : "Akun tendik dibuat");
+      toast.success(id ? "Akun tendik diperbarui" : "Akun tendik dibuat");
+      return true;
+    } catch (error) {
+      const detail = formatApiError(error, "Akun tendik gagal disimpan");
+      progress.fail(operation, detail);
+      toast.error(detail);
+      return false;
+    }
+  }
   async function resetLecturerPassword(lecturer) {
     const password = window.prompt(
       `Password sementara untuk ${lecturer.name}`,
@@ -5884,6 +6055,25 @@ function AdminApp({
       toast.error(detail);
     }
   }
+  async function resetStaffPassword(staffMember) {
+    const password = window.prompt(`Password sementara untuk ${staffMember.name}`, "Tendik123!");
+    if (!password) return;
+    await postJson(`/staff/${staffMember.id}/reset-password`, { password }, `Password ${staffMember.name} direset`);
+  }
+  async function deleteStaff(staffMember) {
+    if (!window.confirm(`Nonaktifkan dan hapus akun ${staffMember.name}?`)) return;
+    const operation = progress.begin("Menghapus akun tendik");
+    try {
+      await axios.delete(`${API}/staff/${staffMember.id}`, auth);
+      await loadAll();
+      progress.finish(operation, "Akun tendik dihapus");
+      toast.success("Akun tendik dihapus");
+    } catch (error) {
+      const detail = formatApiError(error, "Akun tendik gagal dihapus");
+      progress.fail(operation, detail);
+      toast.error(detail);
+    }
+  }
   const adminBadges = notificationItems
     .filter((item) => !item.read)
     .reduce(
@@ -5898,11 +6088,13 @@ function AdminApp({
       { dashboard: 0 },
     );
   function openAdminPage(targetPage) {
+    loadPageData(targetPage);
     setPage(targetPage);
   }
   function openAdminNotification(notification) {
     const targetPage = notification.target?.page || "dashboard";
     setNotificationFocus(notification);
+    loadPageData(targetPage);
     setPage(targetPage);
   }
   async function finishAdminNotification(notificationId) {
@@ -5926,28 +6118,28 @@ function AdminApp({
     {
       label: "Pembelajaran",
       items: [
-        ["materials", MessageSquare, "Materi & Diskusi"],
-        ["assignments", ClipboardList, "Tugas"],
-        ["rps", FileText, "RPS (16 Sesi)"],
-        ["attendance", CheckCircle2, "Presensi Kehadiran"],
+        ["materials", MessageSquare, "Materi & Diskusi", canUseTeachingWorkspace],
+        ["assignments", ClipboardList, "Tugas", canUseTeachingWorkspace],
+        ["rps", FileText, "RPS (16 Sesi)", canUseTeachingWorkspace],
+        ["attendance", CheckCircle2, "Presensi Kehadiran", canUseTeachingWorkspace],
       ],
     },
     {
       label: "Penilaian & Laporan",
       items: [
-        ["grading", CheckCircle2, "Penilaian"],
-        ["weights", BarChart3, "Bobot Nilai"],
-        ["rekap", BarChart3, "Rekap Nilai"],
-        ["predicates", CheckCircle2, "Predikat"],
-        ["reports", FileSpreadsheet, "Laporan Ringkas"],
-        ["lecturer_reports", FileSpreadsheet, "Laporan BKD & Portofolio"],
+        ["grading", CheckCircle2, "Penilaian", canUseTeachingWorkspace],
+        ["weights", BarChart3, "Bobot Nilai", canUseTeachingWorkspace],
+        ["rekap", BarChart3, "Rekap Nilai", canUseTeachingWorkspace || isAcademicOperator],
+        ["predicates", CheckCircle2, "Predikat", canUseTeachingWorkspace || isAcademicOperator],
+        ["reports", FileSpreadsheet, "Laporan Ringkas", canUseTeachingWorkspace || isAcademicOperator],
+        ["lecturer_reports", FileSpreadsheet, "Laporan BKD & Portofolio", canUseTeachingWorkspace],
       ],
     },
     {
       label: "Layanan Akademik",
       items: [
         ["calendar", CalendarDays, "Kalender Akademik"],
-        ["perwalian", ShieldCheck, "Perwalian KRS"],
+        ["perwalian", ShieldCheck, "Perwalian KRS", canUseTeachingWorkspace || isAcademicOperator],
         ["keuangan_admin", FileText, "Keuangan Kampus", canManageFinance],
         ["pmb", GraduationCap, "PMB (Penerimaan Mhs)", canManagePmb],
       ],
@@ -5955,32 +6147,33 @@ function AdminApp({
     {
       label: "Struktur, Periode & Sarana",
       items: [
-        ["master_config", Settings, "Konfigurasi Akademik", isCampusAdmin],
-        ["wizard_semester", Wand2, "Setup Semester Baru", isCampusAdmin],
-        ["master_tahun_ajaran", CalendarDays, "Tahun Ajaran", isCampusAdmin],
-        ["master_fakultas", BookOpen, "Fakultas", isCampusAdmin],
-        ["master_prodi", BookOpen, "Program Studi (Prodi)", isCampusAdmin],
-        ["master_gedung", Building2, "Gedung", isCampusAdmin],
-        ["master_ruangan", Building2, "Ruangan", isCampusAdmin],
+        ["master_config", Settings, "Konfigurasi Akademik", isAcademicOperator],
+        ["wizard_semester", Wand2, "Setup Semester Baru", isAcademicOperator],
+        ["master_tahun_ajaran", CalendarDays, "Tahun Ajaran", isAcademicOperator],
+        ["master_fakultas", BookOpen, "Fakultas", isAcademicOperator],
+        ["master_prodi", BookOpen, "Program Studi (Prodi)", isAcademicOperator],
+        ["master_gedung", Building2, "Gedung", isAcademicOperator],
+        ["master_ruangan", Building2, "Ruangan", isAcademicOperator],
       ],
     },
     {
       label: "Kurikulum & Penugasan",
       items: [
-        ["master_kurikulum", BookOpen, "Kurikulum & Dosen MK", isCampusAdmin || isKaprodi],
-        ["progres_nilai_prodi", Award, "Progres Nilai Prodi", isCampusAdmin || isKaprodi],
-        ["analisis_rps_prodi", ClipboardCheck, "Analisis & Approval RPS", isCampusAdmin || isKaprodi],
-        ["master_jadwal_mengajar", CalendarClock, "Jadwal Mengajar", isCampusAdmin || isKaprodi],
-        ["sk_mengajar", FileText, "SK Mengajar Dosen", isCampusAdmin || isKaprodi],
+        ["master_kurikulum", BookOpen, "Kurikulum & Dosen MK", isAcademicOperator || isKaprodi],
+        ["progres_nilai_prodi", Award, "Progres Nilai Prodi", isAcademicOperator || isKaprodi],
+        ["analisis_rps_prodi", ClipboardCheck, "Analisis & Approval RPS", isAcademicOperator || isKaprodi],
+        ["master_jadwal_mengajar", CalendarClock, "Jadwal Mengajar", isAcademicOperator || isKaprodi],
+        ["sk_mengajar", FileText, "SK Mengajar Dosen", isAcademicOperator || isKaprodi],
         ["sk_jabatan", BadgeCheck, "SK Jabatan Akademik Dosen", isCampusAdmin],
       ],
     },
     {
       label: "Sivitas & Perwalian",
       items: [
-        ["analisis_mahasiswa_prodi", BarChart3, "Analisis Mahasiswa Prodi", isCampusAdmin || isKaprodi],
-        ["students", Users, "Data Mahasiswa"],
+        ["analisis_mahasiswa_prodi", BarChart3, "Analisis Mahasiswa Prodi", isAcademicOperator || isKaprodi],
+        ["students", Users, "Data Mahasiswa", canViewStudentRecords],
         ["lecturers", Users, "Data Dosen", isCampusAdmin],
+        ["staff", Briefcase, "Data Tendik", isCampusAdmin],
         ["master_jabatan_akademik", ShieldCheck, "Jabatan Akademik Dosen", isCampusAdmin],
         ["enroll_wizard", Wand2, "Wizard Prodi + Kelas", isCampusAdmin],
         ["master_assign_prodi", UserCheck, "Penempatan Mhs > Prodi", isCampusAdmin],
@@ -6071,7 +6264,7 @@ function AdminApp({
               className="mt-0.5 text-xs font-medium text-sky-100/70"
               data-testid="admin-sidebar-subtitle"
             >
-              {isCampusAdmin ? "Admin Kampus" : "Ruang Dosen"}
+              {isCampusAdmin ? "Admin Kampus" : isStaff ? "Ruang Tendik" : "Ruang Dosen"}
             </p>
           </div>
         </div>
@@ -6136,7 +6329,7 @@ function AdminApp({
           )}
           <div className="min-w-0 flex-1">
             <p className="text-xs font-bold text-white truncate">{user.name}</p>
-            <p className="text-[10px] text-slate-400 truncate">{isCampusAdmin ? "Admin Kampus" : "Dosen / Pengajar"}</p>
+            <p className="text-[10px] text-slate-400 truncate">{isCampusAdmin ? "Admin Kampus" : isStaff ? "Tendik" : "Dosen / Pengajar"}</p>
           </div>
         </div>
         <VersionMeta version={version} className="px-5 pb-5" />
@@ -6152,7 +6345,7 @@ function AdminApp({
                 className="text-[10px] sm:text-xs font-semibold uppercase tracking-[0.2em] text-slate-500 truncate"
                 data-testid="admin-role-label"
               >
-                {isCampusAdmin ? "Admin Kampus" : "Dosen"}
+                {isCampusAdmin ? "Admin Kampus" : isStaff ? "Tendik" : "Dosen"}
               </p>
               <h1
                 className="font-display text-xl sm:text-3xl font-bold text-slate-950 leading-tight truncate"
@@ -6267,7 +6460,22 @@ function AdminApp({
             })}
           </div>
         </header>
-        <section className="p-5 md:p-8" data-testid="admin-page-section">
+        <section
+          className="relative p-5 md:p-8"
+          data-testid="admin-page-section"
+          aria-busy={loadingDataPages.has(page)}
+        >
+          {loadingDataPages.has(page) && (
+            <div
+              className="mb-4 flex items-center gap-3 rounded-xl border border-blue-100 bg-blue-50 px-4 py-3 text-sm font-semibold text-blue-800"
+              role="status"
+              data-testid="admin-page-data-loading"
+            >
+              <span className="h-4 w-4 animate-spin rounded-full border-2 border-blue-200 border-t-blue-700" />
+              Memuat data halaman...
+            </div>
+          )}
+          <Suspense fallback={<PageModuleFallback />}>
           {page === "perwalian" && <PerwalianKRSPage token={token} />}
           {page === "keuangan_admin" && <KeuanganPage user={user} token={token} />}
           {page === "pmb" && <AdminPmbHub token={token} user={user} programs={data.programs || []} />}
@@ -6309,6 +6517,18 @@ function AdminApp({
               saveLecturer={saveLecturer}
               resetLecturerPassword={resetLecturerPassword}
               deleteLecturer={deleteLecturer}
+            />
+          )}
+          {page === "staff" && isCampusAdmin && (
+            <StaffPage
+              staff={filteredData.staff}
+              jabatanOptions={filteredData.jabatanOptions}
+              unitOrganisasiOptions={filteredData.unitOrganisasiOptions}
+              forms={forms}
+              setForms={setForms}
+              saveStaff={saveStaff}
+              resetStaffPassword={resetStaffPassword}
+              deleteStaff={deleteStaff}
             />
           )}
           {page === "students" && (
@@ -6368,14 +6588,14 @@ function AdminApp({
             <RpsPage
               data={filteredData}
               token={token}
-              isLecturer={user.role !== "student"}
+              isLecturer={isDosen || isCampusAdmin}
             />
           )}
           {page === "attendance" && (
             <AttendancePage
               data={filteredData}
               token={token}
-              isLecturer={user.role !== "student"}
+              isLecturer={isDosen || isCampusAdmin}
               user={user}
             />
           )}
@@ -6446,7 +6666,7 @@ function AdminApp({
             />
           )}
           {page === "guide" && (
-            <GuidePage role={isCampusAdmin ? "admin" : "lecturer"} user={user} classes={data.classes} onNavigate={openAdminPage} />
+            <GuidePage role={isCampusAdmin ? "admin" : isStaff ? "staff" : "lecturer"} user={user} classes={data.classes} onNavigate={openAdminPage} />
           )}
           {page === "settings" && isCampusAdmin && (
             <SettingsPage
@@ -6523,6 +6743,7 @@ function AdminApp({
           {page === "backups" && isCampusAdmin && (
             <DatabaseBackupPage token={token} />
           )}
+          </Suspense>
         </section>
       </main>
     </div>
@@ -6540,6 +6761,7 @@ function LecturersPage({
 }) {
   const [showModal, setShowModal] = useState(false);
   const [searchQuery, setSearchQuery] = useState("");
+  const [lecturerListPage, setLecturerListPage] = useState(1);
   const lecturer = forms.lecturer;
   const editing = Boolean(lecturer.id);
 
@@ -6677,12 +6899,22 @@ function LecturersPage({
     setShowModal(false);
   };
 
-  const filteredLecturers = lecturers.filter((item) => {
+  const filteredLecturers = useMemo(() => lecturers.filter((item) => {
     if (!searchQuery.trim()) return true;
     const q = searchQuery.toLowerCase().trim();
     const text = `${item.name || ""} ${item.gelar || ""} ${item.employee_id || ""} ${item.nidn || ""} ${item.nik || ""} ${item.email || ""} ${item.username || ""}`.toLowerCase();
     return text.includes(q);
-  });
+  }), [lecturers, searchQuery]);
+  const lecturerPageSize = 50;
+  const lecturerPageCount = Math.max(1, Math.ceil(filteredLecturers.length / lecturerPageSize));
+  const visibleLecturers = filteredLecturers.slice(
+    (lecturerListPage - 1) * lecturerPageSize,
+    lecturerListPage * lecturerPageSize,
+  );
+  useEffect(() => setLecturerListPage(1), [searchQuery]);
+  useEffect(() => {
+    setLecturerListPage((current) => Math.min(current, lecturerPageCount));
+  }, [lecturerPageCount]);
 
   return (
     <div className="space-y-6" data-testid="lecturers-page">
@@ -6768,7 +7000,7 @@ function LecturersPage({
                 </TableRow>
               </TableHeader>
               <TableBody className="divide-y divide-slate-100">
-                {filteredLecturers.map((item) => (
+                {visibleLecturers.map((item) => (
                   <TableRow
                     key={item.id}
                     className="hover:bg-slate-50/70 transition"
@@ -6866,6 +7098,34 @@ function LecturersPage({
                 ))}
               </TableBody>
             </Table>
+          )}
+          {filteredLecturers.length > lecturerPageSize && (
+            <div className="flex flex-col gap-3 border-t border-slate-100 px-4 py-3 text-xs text-slate-600 sm:flex-row sm:items-center sm:justify-between">
+              <span>
+                Menampilkan {(lecturerListPage - 1) * lecturerPageSize + 1}–{Math.min(lecturerListPage * lecturerPageSize, filteredLecturers.length)} dari {filteredLecturers.length} dosen
+              </span>
+              <div className="flex items-center gap-2">
+                <Button
+                  type="button"
+                  size="sm"
+                  variant="outline"
+                  disabled={lecturerListPage === 1}
+                  onClick={() => setLecturerListPage((current) => Math.max(1, current - 1))}
+                >
+                  <ChevronLeft /> Sebelumnya
+                </Button>
+                <span className="font-semibold">{lecturerListPage} / {lecturerPageCount}</span>
+                <Button
+                  type="button"
+                  size="sm"
+                  variant="outline"
+                  disabled={lecturerListPage === lecturerPageCount}
+                  onClick={() => setLecturerListPage((current) => Math.min(lecturerPageCount, current + 1))}
+                >
+                  Berikutnya <ChevronRight />
+                </Button>
+              </div>
+            </div>
           )}
         </CardContent>
       </Card>
@@ -9599,6 +9859,7 @@ function StudentsPage({
   const [studentSearch, setStudentSearch] = useState("");
   const [studentProdiFilter, setStudentProdiFilter] = useState("");
   const [studentStatusFilter, setStudentStatusFilter] = useState("");
+  const [studentListPage, setStudentListPage] = useState(1);
 
   const isKaprodi = Boolean(
     user &&
@@ -9736,7 +9997,7 @@ function StudentsPage({
       prev.filter((id) => !cleanIds.includes(id)),
     );
   }
-  const filteredStudentsList = (data.students || []).filter((s) => {
+  const filteredStudentsList = useMemo(() => (data.students || []).filter((s) => {
     const q = studentSearch.trim().toLowerCase();
     const haystack = `${s.name || s.nama || ""} ${s.nim || ""} ${s.email || ""} ${s.whatsapp || s.wa || ""}`.toLowerCase();
     const matchQuery = !q || haystack.includes(q);
@@ -9759,7 +10020,24 @@ function StudentsPage({
     const matchStatus = !fStatus || sStatus === fStatus;
 
     return matchQuery && matchProdi && matchStatus;
-  });
+  }), [
+    data.students,
+    isKaprodi,
+    kaprodiScopeValues,
+    studentProdiFilter,
+    studentSearch,
+    studentStatusFilter,
+  ]);
+  const studentPageSize = 50;
+  const studentPageCount = Math.max(1, Math.ceil(filteredStudentsList.length / studentPageSize));
+  const visibleStudents = filteredStudentsList.slice(
+    (studentListPage - 1) * studentPageSize,
+    studentListPage * studentPageSize,
+  );
+  useEffect(() => setStudentListPage(1), [studentSearch, studentProdiFilter, studentStatusFilter]);
+  useEffect(() => {
+    setStudentListPage((current) => Math.min(current, studentPageCount));
+  }, [studentPageCount]);
 
   return (
     <div className="w-full space-y-5" data-testid="students-page">
@@ -9959,7 +10237,7 @@ function StudentsPage({
                 </tr>
               </thead>
               <tbody className="divide-y divide-slate-100">
-                {filteredStudentsList.map((s) => {
+                {visibleStudents.map((s) => {
                   const prodiObj = (data.programs || []).find((p) => p.id === s.prodi_id || p.code === s.prodi_id);
                   const prodiName = prodiObj ? (prodiObj.name || prodiObj.nama) : (s.prodi_name || s.program_name || s.prodi_id || "—");
 
@@ -10054,6 +10332,34 @@ function StudentsPage({
                 })}
               </tbody>
             </table>
+            {filteredStudentsList.length > studentPageSize && (
+              <div className="flex flex-col gap-3 border-t border-slate-100 px-4 py-3 text-xs text-slate-600 sm:flex-row sm:items-center sm:justify-between">
+                <span>
+                  Menampilkan {(studentListPage - 1) * studentPageSize + 1}–{Math.min(studentListPage * studentPageSize, filteredStudentsList.length)} dari {filteredStudentsList.length} mahasiswa
+                </span>
+                <div className="flex items-center gap-2">
+                  <Button
+                    type="button"
+                    size="sm"
+                    variant="outline"
+                    disabled={studentListPage === 1}
+                    onClick={() => setStudentListPage((current) => Math.max(1, current - 1))}
+                  >
+                    <ChevronLeft /> Sebelumnya
+                  </Button>
+                  <span className="font-semibold">{studentListPage} / {studentPageCount}</span>
+                  <Button
+                    type="button"
+                    size="sm"
+                    variant="outline"
+                    disabled={studentListPage === studentPageCount}
+                    onClick={() => setStudentListPage((current) => Math.min(studentPageCount, current + 1))}
+                  >
+                    Berikutnya <ChevronRight />
+                  </Button>
+                </div>
+              </div>
+            )}
           </div>
         )}
       </Card>
@@ -10427,9 +10733,7 @@ function DiscussionThread({
         <div className="discussion-comment-header">
           <strong>{comment.author_name}</strong>
           <Badge variant="outline">
-            {["admin", "lecturer"].includes(comment.author_role)
-              ? "Dosen"
-              : "Mahasiswa"}
+            {userRoleLabel(comment.author_role)}
           </Badge>
           <time>{fmtDate(comment.created_at)}</time>
         </div>
@@ -15827,7 +16131,7 @@ function CalendarPage({
                 <Field id="calendar-event-start" label="Tanggal mulai *"><Input id="calendar-event-start" type="date" value={eventForm.start_at} onChange={(e) => updateEventForm({ start_at: e.target.value })} /></Field>
                 <Field id="calendar-event-end" label="Tanggal selesai (opsional)"><Input id="calendar-event-end" type="date" min={eventForm.start_at || undefined} value={eventForm.end_at} onChange={(e) => updateEventForm({ end_at: e.target.value })} /></Field>
                 <Field id="calendar-event-semester" label="Tahun ajaran / semester"><select id="calendar-event-semester" className="h-10 w-full rounded-md border border-slate-200 bg-white px-3 text-sm" value={eventForm.academic_year_id} onChange={(e) => updateEventForm({ academic_year_id: e.target.value })}><option value="">Berlaku umum (lintas periode)</option>{(tahunAjaran || []).map((ta) => <option key={ta.id} value={ta.id}>{ta.nama || `${ta.tahun} ${ta.semester}`}</option>)}</select></Field>
-                <Field id="calendar-event-audience" label="Tampil untuk"><select id="calendar-event-audience" className="h-10 w-full rounded-md border border-slate-200 bg-white px-3 text-sm" value={eventForm.audience} onChange={(e) => updateEventForm({ audience: e.target.value })}><option value="all">Semua pengguna</option><option value="student">Mahasiswa</option><option value="lecturer">Dosen & staf akademik</option></select></Field>
+                <Field id="calendar-event-audience" label="Tampil untuk"><select id="calendar-event-audience" className="h-10 w-full rounded-md border border-slate-200 bg-white px-3 text-sm" value={eventForm.audience} onChange={(e) => updateEventForm({ audience: e.target.value })}><option value="all">Semua pengguna</option><option value="student">Mahasiswa</option><option value="lecturer">Dosen</option><option value="staff">Tendik</option></select></Field>
                 <Field id="calendar-event-prodi" label="Target program studi (opsional)"><select id="calendar-event-prodi" className="h-10 w-full rounded-md border border-slate-200 bg-white px-3 text-sm" value={eventForm.target_prodi_id} onChange={(e) => updateEventForm({ target_prodi_id: e.target.value })}><option value="">Semua program studi yang sesuai sasaran</option>{(programs || []).filter((program) => program.status !== "inactive").map((program) => <option key={program.id} value={program.id}>{program.name || program.nama || program.kode}</option>)}</select></Field>
                 <Field id="calendar-event-status" label="Status publikasi"><select id="calendar-event-status" className="h-10 w-full rounded-md border border-slate-200 bg-white px-3 text-sm" value={eventForm.status} onChange={(e) => updateEventForm({ status: e.target.value })}><option value="published">Terbit — tampil ke pengguna</option><option value="draft">Draft — hanya operator</option></select></Field>
               </div>
@@ -16911,6 +17215,13 @@ const GUIDE_AUTHORITY_PROFILES = {
     limits: ["Wewenang tetap terbatas pada scope prodi dan tidak menggantikan akses Administrator Kampus.", "Tidak dapat mengubah pengaturan sistem atau data lintas prodi."],
     actions: [["master_kurikulum", "Kurikulum Prodi"], ["progres_nilai_prodi", "Progres Nilai Prodi"], ["master_jadwal_mengajar", "Jadwal Mengajar"]],
   },
+  staff: {
+    title: "Tendik",
+    scope: "Unit kerja dan jabatan yang ditugaskan",
+    allowed: ["Menjalankan pekerjaan operasional sesuai jabatan aktif, misalnya akademik/BAAK, keuangan, PMB, atau fungsi administrasi lain yang dipetakan.", "Melihat kalender akademik dan dashboard dasar sesuai kebutuhan kerja.", "Mengakses data dan tindakan tambahan hanya melalui templat jabatan serta scope yang disetujui."],
+    limits: ["Role Tendik tidak sama dengan Administrator dan tidak otomatis membuka seluruh modul kampus.", "Tidak dapat mengubah role, templat, SSO, pengaturan sistem, atau penugasan jabatan tanpa kewenangan Administrator Kampus."],
+    actions: [["calendar", "Kalender Akademik"], ["keuangan_admin", "Keuangan Kampus"]],
+  },
   academic_operator: {
     title: "Operator Akademik / BAAK",
     scope: "Institusi sesuai penugasan",
@@ -16951,12 +17262,21 @@ const GUIDE_AUTHORITY_PROFILES = {
 function GuidePage({ role = "student", user = {}, classes = [], onNavigate }) {
   const isAdmin = role === "admin";
   const isLecturer = role === "lecturer";
-  const title = isAdmin ? "Panduan Admin Kampus" : isLecturer ? "Panduan Dosen" : "Panduan Mahasiswa";
+  const isStaff = role === "staff";
+  const title = isAdmin
+    ? "Panduan Admin Kampus"
+    : isLecturer
+      ? "Panduan Dosen"
+      : isStaff
+        ? "Panduan Tendik"
+        : "Panduan Mahasiswa";
   const intro = isAdmin
     ? "Kelola layanan akademik, data kampus, dan konfigurasi sistem sesuai wewenang akun."
     : isLecturer
       ? "Ikuti urutan kerja kelas dari persiapan hingga finalisasi nilai, serta pahami tugas tambahan yang sedang aktif."
-      : "Pahami layanan yang dapat Anda gunakan, batas wewenang, dan langkah belajar per semester.";
+      : isStaff
+        ? "Jalankan tugas operasional sesuai jabatan aktif—misalnya akademik atau keuangan—dengan scope dan templat akses yang telah ditetapkan."
+        : "Pahami layanan yang dapat Anda gunakan, batas wewenang, dan langkah belajar per semester.";
   const activeRoleCodes = Array.from(new Set([
     ...(Array.isArray(user?.access_roles) ? user.access_roles : []),
     ...((user?.is_kaprodi || user?.kaprodi_prodi_id) ? ["kaprodi"] : []),
@@ -16985,7 +17305,15 @@ function GuidePage({ role = "student", user = {}, classes = [], onNavigate }) {
           ["4", "Koreksi submission", "Nilai, feedback, dan permintaan revisi tersedia selama kelas Aktif atau Berakhir. Submission baru ditutup setelah kelas diakhiri."],
           ["5", "Finalisasi semester", "Pastikan seluruh komponen nilai lengkap, klik Finalisasi, ketik FINALISASI, lalu gunakan Arsip. Setelah itu data read-only."],
         ]
-      : [
+      : isStaff
+        ? [
+            ["1", "Periksa tugas aktif", "Pastikan jabatan, unit kerja, templat akses, dan scope yang tampil sesuai penugasan Anda."],
+            ["2", "Kerjakan antrean operasional", "Gunakan menu sesuai tugas—contohnya Kalender Akademik/BAAK atau Keuangan—tanpa memakai akses di luar kebutuhan kerja."],
+            ["3", "Validasi sebelum menyimpan", "Periksa periode, identitas mahasiswa, nominal, dan dokumen pendukung sebelum membuat atau mengubah data."],
+            ["4", "Jaga pemisahan wewenang", "Akses jabatan bersifat tambahan; perubahan role utama, templat, dan penugasan hanya dilakukan Administrator Kampus."],
+            ["5", "Selesaikan dengan jejak audit", "Gunakan status draft/final, simpan bukti kerja, dan laporkan kebutuhan akses tambahan melalui administrator."],
+          ]
+        : [
           ["1", "Lengkapi akun", "Pastikan NIM, email, dan profil Anda benar agar layanan akademik dapat diproses."],
           ["2", "Atur rencana studi", "Isi KRS pada periode aktif dan pantau status persetujuan dosen wali bila diterapkan kampus."],
           ["3", "Gabung dan belajar", "Masukkan kode kelas, tunggu persetujuan dosen, lalu buka materi dan tugas yang tersedia."],
@@ -18761,6 +19089,8 @@ const AttendancePage = memo(function AttendancePage({ data, token, isLecturer, u
     let scanner = null;
     const startScan = async () => {
       try {
+        const { Html5Qrcode } = await import("html5-qrcode");
+        if (cancelled) return;
         scanner = new Html5Qrcode("attendance-qr-reader", { verbose: false });
         scannerRef.current = scanner;
         setQrScanning(true);
@@ -20881,6 +21211,7 @@ function StudentApp({
           className="student-page-content space-y-6 p-5 md:p-8"
           data-testid="student-dashboard-section"
         >
+          <Suspense fallback={<PageModuleFallback />}>
           {studentPage === "home" && (
             <>
               <section className="student-welcome-panel" data-testid="student-welcome-panel">
@@ -21300,6 +21631,7 @@ function StudentApp({
             />
           )}
           {studentPage === "guide" && <GuidePage role="student" user={user} classes={studentClassSummaries} />}
+          </Suspense>
         </section>
       </main>
       <nav
@@ -21678,9 +22010,7 @@ const ChatWidget = memo(function ChatWidget({ token, user, onSessionExpired }) {
                 <strong>{contact.name}</strong>
                 <small>
                   @{contact.username || contact.email} ·{" "}
-                  {["admin", "lecturer"].includes(contact.role)
-                    ? "Dosen"
-                    : "Mahasiswa"}
+                  {userRoleLabel(contact.role)}
                 </small>
               </span>
             </button>
@@ -22237,18 +22567,20 @@ function App() {
       return (
         <ActionProgressProvider>
           <Toaster richColors position="bottom-center" />
-          <PmbLandingPage
-            branding={branding}
-            onOpenLogin={() => {
-              window.location.hash = "";
-              setPublicRoute({ isPublic: false });
-            }}
-            onBackToSiakad={() => {
-              window.location.hash = "";
-              setPublicRoute({ isPublic: false });
-            }}
-            onAuth={handleAuth}
-          />
+          <Suspense fallback={<PageModuleFallback />}>
+            <PmbLandingPage
+              branding={branding}
+              onOpenLogin={() => {
+                window.location.hash = "";
+                setPublicRoute({ isPublic: false });
+              }}
+              onBackToSiakad={() => {
+                window.location.hash = "";
+                setPublicRoute({ isPublic: false });
+              }}
+              onAuth={handleAuth}
+            />
+          </Suspense>
         </ActionProgressProvider>
       );
     }
@@ -22268,6 +22600,7 @@ function App() {
   return (
     <ActionProgressProvider>
       <Toaster richColors position="bottom-center" />
+      <Suspense fallback={<PageModuleFallback />}>
       {!token || !user ? (
         <LoginScreen
           onAuth={handleAuth}
@@ -22296,7 +22629,7 @@ function App() {
         />
       ) : (
         <>
-          {["admin", "lecturer"].includes(user.role) ? (
+          {["admin", "lecturer", "staff"].includes(user.role) ? (
             <AdminApp
               token={token}
               user={user}
@@ -22327,6 +22660,7 @@ function App() {
           />
         </>
       )}
+      </Suspense>
     </ActionProgressProvider>
   );
 }

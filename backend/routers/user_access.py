@@ -275,6 +275,40 @@ ACTIONS = [
 ACTION_KEYS = tuple(action["key"] for action in ACTIONS)
 SYSTEM_MODULE_KEYS = {module["key"] for module in SYSTEM_MODULES}
 
+# ``role`` identifies the user's primary persona. Operational duties such as
+# finance and academic administration are intentionally kept in
+# ``access_roles``/templates so a staff member never needs administrator
+# privileges merely to do their day-to-day work.
+BASE_ROLE_LABELS = {
+    "admin": "Administrator",
+    "lecturer": "Dosen",
+    "student": "Mahasiswa",
+    "staff": "Tendik",
+}
+BASE_ROLE_ALIASES = {
+    "administrator": "admin",
+    "dosen": "lecturer",
+    "mahasiswa": "student",
+    "staf": "staff",
+    "tendik": "staff",
+    "pegawai": "staff",
+}
+
+
+def normalize_base_role(role: Optional[str]) -> str:
+    normalized = str(role or "").strip().lower()
+    return BASE_ROLE_ALIASES.get(normalized, normalized or "staff")
+
+
+def user_has_access_role(user: Dict[str, Any], access_role: str) -> bool:
+    return access_role in (user.get("access_roles") or [])
+
+
+def user_is_admin_or_access_role(user: Dict[str, Any], *access_roles: str) -> bool:
+    return normalize_base_role(user.get("role")) == "admin" or any(
+        user_has_access_role(user, access_role) for access_role in access_roles
+    )
+
 # Jalur migrasi hak akses dari katalog versi sebelumnya. Nilai pada modul lama
 # diterapkan pada modul turunan hanya bila modul turunan belum memiliki nilai
 # eksplisit. Dengan begitu data akses tersimpan tidak mendadak hilang atau
@@ -329,7 +363,8 @@ def _matrix_from_grants(grants: Dict[str, set[str]]) -> Dict[str, Dict[str, bool
 
 
 def role_default_permission_matrix(role: str) -> Dict[str, Dict[str, bool]]:
-    """Default least-privilege matrix for the three login roles."""
+    """Default least-privilege matrix for each base login persona."""
+    role = normalize_base_role(role)
     if role == "admin":
         return default_permission_matrix(full_access=True)
 
@@ -346,18 +381,28 @@ def role_default_permission_matrix(role: str) -> Dict[str, Dict[str, bool]]:
             "academic_calendar": {"view"},
         })
 
-    return _matrix_from_grants({
-        "dashboard": {"view"},
-        "materials": {"view"},
-        "assignments": {"view", "create"},
-        "rps": {"view"},
-        "attendance": {"view"},
-        "grading": {"view", "export"},
-        "krs_khs": {"view", "create", "edit", "export"},
-        "keuangan": {"view", "export"},
-        "academic_calendar": {"view"},
-    })
+    if role == "student":
+        return _matrix_from_grants({
+            "dashboard": {"view"},
+            "materials": {"view"},
+            "assignments": {"view", "create"},
+            "rps": {"view"},
+            "attendance": {"view"},
+            "grading": {"view", "export"},
+            "krs_khs": {"view", "create", "edit", "export"},
+            "keuangan": {"view", "export"},
+            "academic_calendar": {"view"},
+        })
 
+    if role == "staff":
+        return _matrix_from_grants({
+            "dashboard": {"view"},
+            "academic_calendar": {"view"},
+        })
+
+    # Unknown/legacy personas fail closed to the least-privileged staff
+    # baseline instead of silently receiving student access.
+    return role_default_permission_matrix("staff")
 
 def normalize_permission_matrix(
     permissions: Optional[Dict[str, Dict[str, bool]]],
@@ -493,6 +538,14 @@ DEFAULT_TEMPLATES = [
         "permissions": role_default_permission_matrix("student"),
     },
     {
+        "id": "tpl_tendik",
+        "name": "Tendik (Akses Dasar)",
+        "description": "Akses dasar untuk pegawai/tendik; wewenang operasional diberikan melalui tugas dan templat tambahan",
+        "role_target": "staff",
+        "is_default": True,
+        "permissions": role_default_permission_matrix("staff"),
+    },
+    {
         "id": "tpl_kaprodi",
         "name": "Kaprodi (Ketua Program Studi)",
         "description": "Akses pengawasan kurikulum, analisis mahasiswa, progres nilai, serta approval RPS dalam scope Prodi",
@@ -504,7 +557,7 @@ DEFAULT_TEMPLATES = [
         "id": "tpl_keuangan",
         "name": "Staf Keuangan",
         "description": "Pengelolaan penuh tagihan, verifikasi pembayaran, dan laporan keuangan",
-        "role_target": "admin",
+        "role_target": "staff",
         "is_default": True,
         "permissions": FINANCE_STAFF_DEFAULT_MATRIX,
     },
@@ -544,13 +597,14 @@ ROLE_DEFAULT_TEMPLATE_MAP = {
     "admin": "tpl_admin",
     "lecturer": "tpl_dosen",
     "student": "tpl_mahasiswa",
+    "staff": "tpl_tendik",
 }
 
 
 def default_template_permissions(template_id: Optional[str], role_target: str = "all") -> Dict[str, Dict[str, bool]]:
     if template_id in DEFAULT_TEMPLATE_MATRIX:
         return DEFAULT_TEMPLATE_MATRIX[template_id]
-    if role_target in {"admin", "lecturer", "student"}:
+    if normalize_base_role(role_target) in {"admin", "lecturer", "student", "staff"}:
         return role_default_permission_matrix(role_target)
     return default_permission_matrix()
 
@@ -570,7 +624,8 @@ def normalize_template_permissions(template: Dict[str, Any]) -> Dict[str, Dict[s
 
 def template_matches_user_role(template: Dict[str, Any], user_role: str) -> bool:
     """A template can only be assigned to its declared role or to every role."""
-    return template.get("role_target", "all") in {"all", user_role}
+    target = template.get("role_target", "all")
+    return target == "all" or normalize_base_role(target) == normalize_base_role(user_role)
 
 
 # Tugas tambahan/struktural adalah sumber akses tambahan. Jenjang fungsional
@@ -707,7 +762,7 @@ async def build_effective_user_access(
     access resolution.
     """
     await ensure_seed_templates(db)
-    urole = target_user.get("role", "student")
+    urole = normalize_base_role(target_user.get("role", "staff"))
     templates = await db.access_templates.find({}, {"_id": 0}).to_list(None)
     template_map = {template["id"]: template for template in templates}
     setting = await db.user_permissions.find_one(
@@ -716,14 +771,14 @@ async def build_effective_user_access(
     ) or {}
 
     mode = setting.get("mode", "template")
-    template_id = setting.get("template_id") or ROLE_DEFAULT_TEMPLATE_MAP.get(urole, "tpl_mahasiswa")
+    template_id = setting.get("template_id") or ROLE_DEFAULT_TEMPLATE_MAP.get(urole, "tpl_tendik")
     base_template = template_map.get(template_id) or template_map.get(
-        ROLE_DEFAULT_TEMPLATE_MAP.get(urole, "tpl_mahasiswa")
+        ROLE_DEFAULT_TEMPLATE_MAP.get(urole, "tpl_tendik")
     )
     base_permissions = normalize_permission_matrix(
         base_template.get("permissions") if base_template else None,
         default_template_permissions(
-            base_template.get("id") if base_template else ROLE_DEFAULT_TEMPLATE_MAP.get(urole),
+            base_template.get("id") if base_template else ROLE_DEFAULT_TEMPLATE_MAP.get(urole, "tpl_tendik"),
             base_template.get("role_target", urole) if base_template else urole,
         ),
     )
@@ -768,6 +823,13 @@ async def ensure_seed_templates(db: PostgresDatabase):
         if not existing:
             doc = {**template, "created_at": now_iso(), "updated_at": now_iso()}
             await db.access_templates.insert_one(doc)
+        elif template["id"] == "tpl_keuangan" and existing.get("role_target") == "admin":
+            # Older installations seeded the finance template as admin-only.
+            # Migrate only its target role; preserve any local permission edits.
+            await db.access_templates.update_one(
+                {"id": template["id"]},
+                {"$set": {"role_target": "staff", "updated_at": now_iso()}},
+            )
 
 
 # ─── MODELS ──────────────────────────────────────────────────────────────────
@@ -775,7 +837,7 @@ async def ensure_seed_templates(db: PostgresDatabase):
 class TemplateCreatePayload(BaseModel):
     name: str = Field(..., min_length=2, max_length=100)
     description: Optional[str] = ""
-    role_target: str = "all"  # admin | lecturer | student | all
+    role_target: str = "all"  # admin | lecturer | student | staff | all
     permissions: Dict[str, Dict[str, bool]]
 
 
@@ -787,6 +849,7 @@ class UserPermissionSavePayload(BaseModel):
     mode: str = "template"  # "template" | "custom"
     template_id: Optional[str] = None
     custom_permissions: Optional[Dict[str, Dict[str, bool]]] = None
+    base_role: Optional[str] = None
 
 
 class BulkAssignPayload(BaseModel):
@@ -918,13 +981,17 @@ async def get_role_permissions(
     roles_info = [
         {"role": "lecturer", "name": "Dosen Pengampu", "template_id": "tpl_dosen"},
         {"role": "student", "name": "Mahasiswa", "template_id": "tpl_mahasiswa"},
+        {"role": "staff", "name": "Tendik", "template_id": "tpl_tendik"},
         {"role": "admin", "name": "Administrator", "template_id": "tpl_admin"}
     ]
 
     result = []
     for r in roles_info:
         r_code = r["role"]
-        count = await db.users.count_documents({"role": r_code})
+        count_query = {"role": r_code}
+        if r_code == "staff":
+            count_query = {"role": {"$in": ["staff", "tendik", "staf", "pegawai"]}}
+        count = await db.users.count_documents(count_query)
         
         role_doc = await db.role_permissions.find_one({"role": r_code}, {"_id": 0})
         if not role_doc:
@@ -957,7 +1024,8 @@ async def save_role_permissions(
     user: Dict[str, Any] = Depends(require_admin)
 ):
     """Menyimpan konfigurasi hak akses modul untuk seluruh pengguna dengan role tertentu."""
-    if role_name not in {"admin", "lecturer", "student"}:
+    role_name = normalize_base_role(role_name)
+    if role_name not in BASE_ROLE_LABELS:
         raise HTTPException(status_code=400, detail="Role tidak valid")
 
     existing = await db.role_permissions.find_one({"role": role_name}, {"_id": 0})
@@ -975,11 +1043,7 @@ async def save_role_permissions(
         doc["created_at"] = now_iso()
         await db.role_permissions.insert_one(doc)
 
-    role_tpl_map = {
-        "admin": "tpl_admin",
-        "lecturer": "tpl_dosen",
-        "student": "tpl_mahasiswa"
-    }
+    role_tpl_map = ROLE_DEFAULT_TEMPLATE_MAP
     tpl_id = role_tpl_map.get(role_name)
     if tpl_id:
         await db.access_templates.update_one(
@@ -1101,7 +1165,7 @@ async def delete_template(
 
 @router.get("/users")
 async def list_user_access(
-    role: Optional[str] = Query(None, description="Filter role: admin, lecturer, student"),
+    role: Optional[str] = Query(None, description="Filter role: admin, lecturer, student, staff"),
     search: Optional[str] = Query(None, description="Cari nama, email, NIM, atau NIDN"),
     page: int = 1,
     limit: int = 50,
@@ -1113,7 +1177,12 @@ async def list_user_access(
     
     query: Dict[str, Any] = {}
     if role and role != "all":
-        query["role"] = role
+        normalized_role = normalize_base_role(role)
+        query["role"] = (
+            {"$in": ["staff", "tendik", "staf", "pegawai"]}
+            if normalized_role == "staff"
+            else normalized_role
+        )
 
     if search:
         s = search.strip()
@@ -1136,11 +1205,7 @@ async def list_user_access(
     tpl_map = {t["id"]: t for t in templates}
     
     # Ambil default template fallback per role
-    role_default_map = {
-        "admin": "tpl_admin",
-        "lecturer": "tpl_dosen",
-        "student": "tpl_mahasiswa"
-    }
+    role_default_map = ROLE_DEFAULT_TEMPLATE_MAP
 
     user_ids = [u["id"] for u in users if "id" in u]
     perm_docs = await db.user_permissions.find({"user_id": {"$in": user_ids}}, {"_id": 0}).to_list(None)
@@ -1165,13 +1230,13 @@ async def list_user_access(
     result = []
     for u in users:
         uid = u.get("id")
-        urole = u.get("role", "student")
+        urole = normalize_base_role(u.get("role", "staff"))
         p_setting = perm_map.get(uid, {})
 
         mode = p_setting.get("mode", "template")
-        template_id = p_setting.get("template_id") or role_default_map.get(urole, "tpl_mahasiswa")
+        template_id = p_setting.get("template_id") or role_default_map.get(urole, "tpl_tendik")
         
-        tpl_info = tpl_map.get(template_id) or tpl_map.get(role_default_map.get(urole, "tpl_mahasiswa"))
+        tpl_info = tpl_map.get(template_id) or tpl_map.get(role_default_map.get(urole, "tpl_tendik"))
         position_accesses = position_accesses_by_user.get(uid, [])
         
         result.append({
@@ -1223,7 +1288,7 @@ async def get_user_access_detail(
             "id": target_user.get("id"),
             "name": target_user.get("name") or target_user.get("full_name") or "User",
             "email": target_user.get("email"),
-            "role": target_user.get("role", "student"),
+            "role": normalize_base_role(target_user.get("role", "staff")),
             "nim": target_user.get("nim"),
             "nidn": target_user.get("nidn")
         },
@@ -1242,7 +1307,7 @@ async def get_my_effective_access(
         "user": {
             "id": user.get("id"),
             "name": user.get("name") or user.get("full_name") or "User",
-            "role": user.get("role", "student"),
+            "role": normalize_base_role(user.get("role", "staff")),
         },
         **effective_access,
     }
@@ -1263,13 +1328,13 @@ async def save_user_permissions(
         raise HTTPException(status_code=400, detail="Mode hak akses tidak valid")
 
     existing = await db.user_permissions.find_one({"user_id": user_id}, {"_id": 0})
-    role_default_map = {
-        "admin": "tpl_admin",
-        "lecturer": "tpl_dosen",
-        "student": "tpl_mahasiswa",
-    }
-    urole = target_user.get("role", "student")
-    selected_template_id = body.template_id or role_default_map.get(urole, "tpl_mahasiswa")
+    role_default_map = ROLE_DEFAULT_TEMPLATE_MAP
+    urole = normalize_base_role(body.base_role or target_user.get("role", "staff"))
+    if urole not in BASE_ROLE_LABELS:
+        raise HTTPException(status_code=400, detail="Role utama tidak valid")
+    if user_id == user.get("id") and urole != "admin":
+        raise HTTPException(status_code=400, detail="Administrator aktif tidak dapat menurunkan role akunnya sendiri")
+    selected_template_id = body.template_id or role_default_map.get(urole, "tpl_tendik")
     selected_template = await db.access_templates.find_one({"id": selected_template_id}, {"_id": 0})
     if not selected_template:
         raise HTTPException(status_code=404, detail="Templat hak akses tidak ditemukan")
@@ -1278,6 +1343,16 @@ async def save_user_permissions(
             status_code=422,
             detail="Templat hanya dapat diterapkan pada pengguna dengan role yang sesuai",
         )
+    if urole != normalize_base_role(target_user.get("role", "staff")):
+        await db.users.update_one(
+            {"id": user_id},
+            {"$set": {"role": urole, "updated_at": now_iso()}},
+        )
+        # A role downgrade must not wait for an authentication-cache expiry.
+        # Force the affected account to sign in again, while keeping the
+        # administrator's own session intact.
+        if user_id != user.get("id"):
+            await db.sessions.delete_many({"user_id": user_id})
     base_permissions = normalize_permission_matrix(
         selected_template.get("permissions"),
         default_template_permissions(

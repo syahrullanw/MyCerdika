@@ -2,6 +2,41 @@
 
 Semua perubahan penting pada aplikasi ini dicatat di sini. Versi rilis utama disimpan di file [`VERSION`](./VERSION), sedangkan versi skema database yang sudah diterapkan dicatat oleh tabel `app_schema_migrations` di PostgreSQL.
 
+## [1.11.1] — 2026-08-20
+
+### Role Tendik dan hak akses operasional
+
+- Menambahkan **Tendik** sebagai role utama tersendiri (`staff`), terpisah dari Admin, Dosen, dan Mahasiswa.
+- Menambahkan pengelolaan akun Tendik berupa daftar, tambah, edit, reset password, aktivasi/nonaktivasi, dan penghapusan akun.
+- Menambahkan templat hak akses operasional untuk Tendik, termasuk **Operator Akademik**, **Staf Keuangan**, dan **Operator PMB**, tanpa memberikan hak Administrator Kampus secara otomatis.
+- Menormalisasi variasi role lama seperti `tendik`, `staf`, dan `pegawai` menjadi role `staff`, serta menyiapkan pemetaan role Tendik pada integrasi SSO ketika SSO diaktifkan kembali.
+- Memperbaiki akun Tendik yang baru dibuat agar langsung muncul pada daftar Tendik dan dapat menggunakan menu sesuai hak akses yang diberikan.
+- Mengubah input **Jabatan / Fungsi** dan **Unit Organisasi** menjadi dropdown dari master database serta menambahkan validasi backend agar data kepegawaian konsisten.
+
+### Login, branding, dan pratinjau tautan
+
+- Mengubah judul login dari **Akses Masuk (nama aplikasi)** menjadi **Akses (nama aplikasi)**.
+- Menampilkan singkatan/kode kampus pada bagian atas judul login, dengan nama resmi kampus tetap digunakan pada informasi institusi yang lebih lengkap.
+- Menyelaraskan `title`, meta description, Open Graph, dan Twitter Card dengan nama aplikasi serta deskripsi yang disimpan pada Pengaturan Kampus.
+- Menambahkan metadata dinamis pada respons HTML backend agar pratinjau tautan WhatsApp dan media sosial mengikuti konfigurasi aplikasi meskipun JavaScript belum dijalankan oleh crawler.
+
+### Performa dan kecepatan navigasi
+
+- Memisahkan halaman login ringan dari bundle aplikasi utama; halaman dashboard, grafik, master data, PMB, integrasi, dan modul lain dimuat secara bertahap sesuai kebutuhan.
+- Mengubah pemuatan data admin menjadi per halaman sehingga tabel besar dan pengaturan integrasi tidak lagi diminta bersamaan saat dashboard pertama kali dibuka.
+- Memuat pustaka pemindai QR hanya ketika kamera presensi digunakan.
+- Menambahkan pagination 50 baris pada daftar Mahasiswa dan Dosen untuk mengurangi beban render DOM.
+- Mengoptimalkan gambar hero login, mencegah gambar desktop diunduh pada perangkat mobile, mempercepat pemuatan font, dan menambahkan cache jangka panjang untuk aset build ber-hash.
+- Ukuran bundle awal frontend turun dari sekitar **660 KB gzip** menjadi sekitar **66 KB gzip**.
+- Audit Lighthouse lokal setelah optimasi menghasilkan skor **99 Mobile** dan **97 Desktop**, dengan Mobile LCP sekitar **1,8 detik** dan TBT sekitar **20 ms**.
+
+### Validasi rilis
+
+- Versi aplikasi dinaikkan dari `1.11.0` ke `1.11.1` pada `VERSION`, `frontend/package.json`, `frontend/package-lock.json`, dan `frontend-pmb/package.json`.
+- Backend tetap membaca sumber versi dari file `VERSION`; endpoint `GET /api/version` akan menampilkan `1.11.1` setelah backend dimulai ulang.
+- Versi skema database tetap `002_domain_tables`; tidak ada migration database baru pada rilis ini.
+- Production build frontend utama dan portal PMB, pemeriksaan sintaks backend, smoke test browser, cache header aset, dan audit Lighthouse berhasil dijalankan.
+
 ## [1.11.0] — 2026-08-15
 
 ### CMS Landing Page PMB
