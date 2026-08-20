@@ -102,5 +102,14 @@ def test_array_query_compiles_jsonb_containment_for_embedded_documents():
     assert {"files": [{"file_id": "file-one"}]} in parameters
 
 
+def test_scalar_query_compiles_array_containment_for_membership_fields():
+    compiler = _QueryCompiler()
+    sql = compiler.compile({"participant_ids": "user-one"})
+    parameters = [json.loads(value) for value in compiler.parameters]
+
+    assert "data @>" in sql
+    assert {"participant_ids": ["user-one"]} in parameters
+
+
 def test_update_many_accepts_motor_array_filters_keyword():
     assert "array_filters" in inspect.signature(PostgresCollection.update_many).parameters

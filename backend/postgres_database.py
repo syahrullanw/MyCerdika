@@ -119,7 +119,15 @@ def _nested_document(path: str, value: Any) -> Dict[str, Any]:
 def _nested_containment_documents(path: str, value: Any) -> List[Dict[str, Any]]:
     """Build JSONB containment candidates for object and embedded-array paths."""
     parts = _path_parts(path)
-    candidates: List[Any] = [{parts[-1]: json_value(value)}]
+    normalized_value = json_value(value)
+    # Mongo-like equality matches a scalar against an item in an array. Keep
+    # the direct scalar candidate and add an array candidate for PostgreSQL's
+    # JSONB containment operator so queries such as participant_ids: user_id
+    # work for chat conversations and other membership arrays.
+    candidates: List[Any] = [
+        {parts[-1]: normalized_value},
+        {parts[-1]: [normalized_value]},
+    ]
     for part in reversed(parts[:-1]):
         nested: List[Any] = []
         for candidate in candidates:

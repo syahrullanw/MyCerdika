@@ -2,6 +2,29 @@
 
 Semua perubahan penting pada aplikasi ini dicatat di sini. Versi rilis utama disimpan di file [`VERSION`](./VERSION), sedangkan versi skema database yang sudah diterapkan dicatat oleh tabel `app_schema_migrations` di PostgreSQL.
 
+## [1.11.2] — 2026-08-20
+
+### Semester aktif dan notifikasi
+
+- Menjadikan semester aktif sebagai semester pilihan awal saat login atau reload pada dashboard Admin dan Mahasiswa, sehingga aplikasi tidak lagi memulai dengan seluruh semester.
+- Membatasi daftar dan jumlah notifikasi berdasarkan semester yang sedang dipilih; notifikasi dari semester lama tidak ikut dimuat pada semester baru.
+- Menyelaraskan aksi membaca satu atau seluruh notifikasi dengan semester yang sedang ditampilkan.
+
+### Chat dan percakapan
+
+- Memperbaiki pencarian kontak chat agar mendukung pencocokan sebagian, tidak peka huruf besar/kecil, berdasarkan nama, username, atau email.
+- Memungkinkan pengguna Dosen menemukan kontak Mahasiswa maupun Dosen lain, dengan pengguna yang sudah dihapus tetap dikecualikan.
+- Memperbaiki query PostgreSQL untuk field array `participant_ids`, sehingga percakapan yang sudah tersimpan tampil di daftar chat untuk pengirim dan penerima.
+- Menambahkan badge jumlah pesan belum dibaca pada setiap percakapan, bukan jumlah seluruh pesan.
+- Menyimpan waktu baca per pasangan pengguna; membuka percakapan menandai pesan sebagai sudah dibaca dan menghilangkan badge.
+- Pesan baru yang diterima saat percakapan sedang terbuka langsung diperlakukan sebagai sudah dibaca.
+
+### Validasi rilis
+
+- Versi aplikasi dinaikkan dari `1.11.1` ke `1.11.2` pada `VERSION`, `frontend/package.json`, `frontend/package-lock.json`, dan `frontend-pmb/package.json`.
+- Tidak ada migration SQL baru; indeks dan collection status baca chat dibuat otomatis saat backend dimulai.
+- Regression test terkait semester, adapter PostgreSQL, pencarian chat, percakapan, dan status baca lulus; production build frontend berhasil.
+
 ## [1.11.1] — 2026-08-20
 
 ### Role Tendik dan hak akses operasional

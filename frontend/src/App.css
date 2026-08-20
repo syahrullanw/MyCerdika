@@ -2903,8 +2903,9 @@ button, .form-select, input, textarea, [data-testid$="card"] {
 .chat-lecturer-button > svg { height: 17px; width: 17px; color: #0369a1; }
 
 .chat-contact {
-  display: flex;
+  display: grid;
   width: 100%;
+  grid-template-columns: auto minmax(0, 1fr) auto;
   align-items: center;
   gap: 11px;
   border: 0;
@@ -2914,8 +2915,23 @@ button, .form-select, input, textarea, [data-testid$="card"] {
 }
 
 .chat-contact:hover { background: #eff6ff; }
+.chat-contact-copy { min-width: 0; }
 .chat-contact strong { display: block; color: #0f172a; font-size: 14px; }
 .chat-contact small { display: block; margin-top: 2px; color: #64748b; font-size: 12px; }
+
+.chat-unread-count {
+  display: inline-grid;
+  min-width: 22px;
+  height: 22px;
+  place-items: center;
+  border-radius: 999px;
+  background: #fee2e2;
+  color: #dc2626;
+  padding: 0 6px;
+  font-size: 11px;
+  font-weight: 800;
+  line-height: 1;
+}
 
 .chat-dot {
   height: 10px;

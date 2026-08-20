@@ -481,6 +481,12 @@ function calendarEventsForSemester(events, selectedSemester, classes = []) {
   });
 }
 
+function defaultSemesterId(tahunAjaran = []) {
+  const periods = Array.isArray(tahunAjaran) ? tahunAjaran : [];
+  const active = periods.find((item) => item?.is_active);
+  return String(active?.id || periods[0]?.id || "");
+}
+
 function userRoleLabel(role) {
   return {
     admin: "Admin",
@@ -1004,7 +1010,7 @@ const NotificationBadge = memo(function NotificationBadge({ count, testid }) {
   );
 });
 
-function useUserNotifications(token) {
+function useUserNotifications(token, semesterId) {
   const [notifications, setNotifications] = useState({
     items: [],
     unread_count: 0,
@@ -1016,10 +1022,20 @@ function useUserNotifications(token) {
     [token],
   );
   const loadNotifications = useCallback(async () => {
+    if (!semesterId) {
+      setNotifications({
+        items: [],
+        unread_count: 0,
+        total: 0,
+        loading: false,
+      });
+      return;
+    }
+    setNotifications((current) => ({ ...current, loading: true }));
     try {
       const { data } = await axios.get(`${API}/notifications`, {
         ...auth,
-        params: { limit: 100 },
+        params: { limit: 100, semester_id: semesterId },
       });
       setNotifications({
         items: data.items || [],
@@ -1030,8 +1046,17 @@ function useUserNotifications(token) {
     } catch {
       setNotifications((current) => ({ ...current, loading: false }));
     }
-  }, [auth]);
+  }, [auth, semesterId]);
   useEffect(() => {
+    if (!semesterId) {
+      setNotifications({
+        items: [],
+        unread_count: 0,
+        total: 0,
+        loading: false,
+      });
+      return undefined;
+    }
     loadNotifications();
     const timer = window.setInterval(loadNotifications, 60000);
     const refreshVisible = () => {
@@ -1042,7 +1067,7 @@ function useUserNotifications(token) {
       window.clearInterval(timer);
       document.removeEventListener("visibilitychange", refreshVisible);
     };
-  }, [loadNotifications]);
+  }, [loadNotifications, semesterId]);
   const markNotificationRead = useCallback(
     async (notificationId) => {
       if (!notificationId) return false;
@@ -1077,11 +1102,12 @@ function useUserNotifications(token) {
     [auth],
   );
   const markAllNotificationsRead = useCallback(async () => {
+    if (!semesterId) return false;
     try {
       const { data } = await axios.post(
         `${API}/notifications/read-all`,
         {},
-        auth,
+        { ...auth, params: { semester_id: semesterId } },
       );
       setNotifications((current) => ({
         ...current,
@@ -1098,7 +1124,7 @@ function useUserNotifications(token) {
       toast.error("Gagal menandai semua notifikasi");
       return false;
     }
-  }, [auth]);
+  }, [auth, semesterId]);
   return {
     ...notifications,
     loadNotifications,
@@ -1393,7 +1419,7 @@ const UserProfileDropdown = memo(function UserProfileDropdown({
                       <CalendarDays className="h-3.5 w-3.5 text-indigo-600 shrink-0" />
                       <select
                         className="bg-transparent text-xs font-bold text-slate-800 focus:outline-none cursor-pointer w-full truncate"
-                        value={selectedSemester}
+                        value={selectedSemester || "all"}
                         onChange={(e) => setSelectedSemester(e.target.value)}
                       >
                         {(tahunAjaran || []).map((ta) => {
@@ -4329,7 +4355,7 @@ function AdminApp({
   version,
 }) {
   const [page, setPage] = useState("dashboard");
-  const [selectedSemester, setSelectedSemester] = useState("all");
+  const [selectedSemester, setSelectedSemester] = useState("");
   const [collapsedNavGroups, setCollapsedNavGroups] = useState(
     () => new Set([
       "Struktur, Periode & Sarana",
@@ -4466,6 +4492,7 @@ function AdminApp({
     cleanData: [],
     gradeRecap: [],
   });
+  const displayedSemester = selectedSemester || defaultSemesterId(data.tahunAjaran);
 
   const filteredData = useMemo(() => {
     if (!selectedSemester || selectedSemester === "all") return data;
@@ -4660,6 +4687,7 @@ function AdminApp({
     () => ({ headers: { Authorization: `Bearer ${token}` } }),
     [token],
   );
+  const notificationSemesterId = displayedSemester;
   const {
     items: notificationItems,
     unread_count: notificationUnreadCount,
@@ -4667,7 +4695,7 @@ function AdminApp({
     loadNotifications,
     markNotificationRead,
     markAllNotificationsRead,
-  } = useUserNotifications(token);
+  } = useUserNotifications(token, notificationSemesterId);
   const progress = useActionProgress();
   const dashboardSemesterLoadedRef = useRef("");
   const loadedPageDataRef = useRef(new Set());
@@ -4899,7 +4927,7 @@ function AdminApp({
         ? tahunAjaranRes.data
         : [];
       const activeTa = tahunAjaranData.find((ta) => ta.is_active) || tahunAjaranData[0];
-      const dashboardSemesterId = selectedSemester !== "all"
+      const dashboardSemesterId = selectedSemester && selectedSemester !== "all"
         ? selectedSemester
         : activeTa?.id || "";
       const dashboard = await axios.get(`${API}/dashboard`, {
@@ -4911,7 +4939,7 @@ function AdminApp({
       });
       dashboardSemesterLoadedRef.current = dashboardSemesterId || "all";
       if (activeTa?.id) {
-        setSelectedSemester((prev) => (prev === "all" ? activeTa.id : prev));
+        setSelectedSemester((prev) => (prev === "" || prev === "all" ? activeTa.id : prev));
       }
       setData((current) => ({
         ...current,
@@ -6365,7 +6393,7 @@ function AdminApp({
                     <span className="text-[8px] sm:text-[9px] font-extrabold uppercase text-slate-400 leading-none">Semester</span>
                     <select
                       className="bg-transparent text-xs font-bold text-slate-800 focus:outline-none cursor-pointer p-0 m-0 border-none truncate"
-                      value={selectedSemester}
+                      value={displayedSemester}
                       onChange={(e) => setSelectedSemester(e.target.value)}
                     >
                       {(data.tahunAjaran || []).map((ta) => {
@@ -6425,7 +6453,7 @@ function AdminApp({
                 onNavigateGuide={() => setPage("guide")}
                 onLogout={onLogout}
                 testidPrefix="admin"
-                selectedSemester={selectedSemester}
+                selectedSemester={displayedSemester}
                 setSelectedSemester={setSelectedSemester}
                 tahunAjaran={data.tahunAjaran}
                 onRefresh={async (event) => {
@@ -20205,7 +20233,7 @@ function StudentApp({
   showPhysicalDocumentsReminder = false,
   onDismissPhysicalDocumentsReminder,
 }) {
-  const [selectedSemester, setSelectedSemester] = useState("all");
+  const [selectedSemester, setSelectedSemester] = useState("");
   const [data, setData] = useState({
     assignments: [],
     materials: [],
@@ -20216,6 +20244,7 @@ function StudentApp({
     tahunAjaran: [],
     progress: null,
   });
+  const displayedSemester = selectedSemester || defaultSemesterId(data.tahunAjaran);
   const [fileMap, setFileMap] = useState({});
   const [noteMap, setNoteMap] = useState({});
   const [uploadMap, setUploadMap] = useState({});
@@ -20227,13 +20256,14 @@ function StudentApp({
     () => ({ headers: { Authorization: `Bearer ${token}` } }),
     [token],
   );
+  const notificationSemesterId = displayedSemester;
   const {
     items: notificationItems,
     unread_count: notificationUnreadCount,
     loading: notificationLoading,
     markNotificationRead,
     markAllNotificationsRead,
-  } = useUserNotifications(token);
+  } = useUserNotifications(token, notificationSemesterId);
   const progress = useActionProgress();
   async function loadStudent() {
     // The home page only needs learning content and progress. Calendar,
@@ -20251,7 +20281,7 @@ function StudentApp({
       : [];
     const activeTa = listTa.find((ta) => ta.is_active) || listTa[0];
     if (activeTa?.id) {
-      setSelectedSemester((prev) => (prev === "all" ? activeTa.id : prev));
+      setSelectedSemester((prev) => (prev === "" || prev === "all" ? activeTa.id : prev));
     }
     setData((current) => ({
       ...current,
@@ -21141,7 +21171,7 @@ function StudentApp({
                     <span className="text-[8px] sm:text-[9px] font-extrabold uppercase text-slate-400 leading-none">Semester</span>
                     <select
                       className="bg-transparent text-xs font-bold text-slate-800 focus:outline-none cursor-pointer p-0 m-0 border-none truncate"
-                      value={selectedSemester}
+                      value={displayedSemester}
                       onChange={(e) => setSelectedSemester(e.target.value)}
                     >
                       {(data.tahunAjaran || []).map((ta) => {
@@ -21197,7 +21227,7 @@ function StudentApp({
                 onNavigateGuide={() => setStudentPage("guide")}
                 onLogout={onLogout}
                 testidPrefix="student"
-                selectedSemester={selectedSemester}
+                selectedSemester={displayedSemester}
                 setSelectedSemester={setSelectedSemester}
                 tahunAjaran={data.tahunAjaran}
                 onRefresh={async (event) => {
@@ -21722,6 +21752,20 @@ const ChatWidget = memo(function ChatWidget({ token, user, onSessionExpired }) {
     }
   }
 
+  async function markChatRead(contactId) {
+    if (!contactId) return;
+    try {
+      await axios.post(`${API}/chat/users/${contactId}/read`, {}, auth);
+      setContacts((items) =>
+        items.map((item) =>
+          item.id === contactId ? { ...item, unread_count: 0 } : item,
+        ),
+      );
+    } catch (error) {
+      if (isSessionError(error)) onSessionExpired?.();
+    }
+  }
+
   async function loadLecturers() {
     if (user.role !== "student") return;
     try {
@@ -21790,6 +21834,7 @@ const ChatWidget = memo(function ChatWidget({ token, user, onSessionExpired }) {
                 ? items
                 : [...items, message],
             );
+            if (message.sender_id !== user.id) markChatRead(active.id);
           }
           if (
             message.sender_id !== user.id &&
@@ -21936,7 +21981,7 @@ const ChatWidget = memo(function ChatWidget({ token, user, onSessionExpired }) {
           <p className="text-xs">
             {selected
               ? `${selected.name} · ${statusLabel()}`
-              : "Cari username atau email lengkap"}
+              : "Cari nama, username, atau email"}
           </p>
         </div>
         <button
@@ -21985,7 +22030,7 @@ const ChatWidget = memo(function ChatWidget({ token, user, onSessionExpired }) {
             <input
               value={query}
               onChange={(event) => setQuery(event.target.value)}
-              placeholder="Username atau email lengkap"
+              placeholder="Nama, username, atau email..."
               data-testid="chat-search-input"
             />
           </label>
@@ -22006,13 +22051,22 @@ const ChatWidget = memo(function ChatWidget({ token, user, onSessionExpired }) {
               <span
                 className={`chat-dot ${onlineIds.includes(contact.id) ? "online" : ""}`}
               />
-              <span>
+              <span className="chat-contact-copy">
                 <strong>{contact.name}</strong>
                 <small>
                   @{contact.username || contact.email} ·{" "}
                   {userRoleLabel(contact.role)}
                 </small>
               </span>
+              {Number(contact.unread_count || 0) > 0 && (
+                <span
+                  className="chat-unread-count"
+                  data-testid={`chat-contact-${contact.id}-unread-count`}
+                  aria-label={`${contact.unread_count} pesan belum dibaca`}
+                >
+                  {contact.unread_count > 99 ? "99+" : contact.unread_count}
+                </span>
+              )}
             </button>
           ))}
         </div>

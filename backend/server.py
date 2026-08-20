@@ -2216,6 +2216,17 @@ def chat_user_payload(user: Dict[str, Any]) -> Dict[str, Any]:
     }
 
 
+def chat_contact_matches_query(user: Dict[str, Any], query: str) -> bool:
+    """Match chat contacts by a partial, case-insensitive name or identifier."""
+    normalized_query = str(query or "").strip().casefold()
+    if not normalized_query:
+        return True
+    return any(
+        normalized_query in str(user.get(field) or "").casefold()
+        for field in ("name", "username", "email")
+    )
+
+
 async def chat_contact_payload(user: Dict[str, Any]) -> Dict[str, Any]:
     payload = chat_user_payload(user)
     if user.get("role") != "admin":
@@ -2229,6 +2240,46 @@ async def chat_contact_payload(user: Dict[str, Any]) -> Dict[str, Any]:
     elif str(payload.get("name", "")).strip().lower() == "dosen admin":
         payload["name"] = "Dosen Pengampu"
     return payload
+
+
+async def mark_chat_read(user_id: str, contact_id: str) -> None:
+    read_at = now_iso()
+    await db.chat_read_receipts.update_one(
+        {"user_id": user_id, "contact_id": contact_id},
+        {"$set": {"last_read_at": read_at, "updated_at": read_at}},
+        upsert=True,
+    )
+
+
+async def chat_unread_count(contact_id: str, viewer: Dict[str, Any]) -> int:
+    if chat_connections.is_viewing(viewer["id"], contact_id):
+        return 0
+    receipt = await db.chat_read_receipts.find_one(
+        {"user_id": viewer["id"], "contact_id": contact_id},
+        {"_id": 0, "last_read_at": 1},
+    )
+    query: Dict[str, Any] = {
+        "conversation_id": chat_conversation_id(viewer["id"], contact_id),
+        "recipient_id": viewer["id"],
+    }
+    last_read_at = str((receipt or {}).get("last_read_at") or "").strip()
+    if last_read_at:
+        query["created_at"] = {"$gt": last_read_at}
+    return await db.chat_messages.count_documents(query)
+
+
+async def chat_contact_view_payload(
+    contact: Dict[str, Any], viewer: Dict[str, Any]
+) -> Dict[str, Any]:
+    """Build a contact row with live presence and unread message count."""
+    viewing_chat = chat_connections.is_viewing(viewer["id"], contact["id"])
+    unread_count = await chat_unread_count(contact["id"], viewer)
+    return {
+        **await chat_contact_payload(contact),
+        "online": chat_connections.is_online(contact["id"]),
+        "viewing_chat": viewing_chat,
+        "unread_count": unread_count,
+    }
 
 
 class ChatConnectionManager:
@@ -6178,14 +6229,68 @@ def notification_time_is_visible(value: Any, cutoff: datetime) -> bool:
     return bool(parsed and parsed >= cutoff)
 
 
+async def notification_class_scope(
+    user: Dict[str, Any],
+    semester_id: str = "",
+) -> tuple[List[str], str]:
+    """Return the user's notification class scope for one academic period.
+
+    Notifications are shown in the context of the selected semester. An
+    explicit ``all`` keeps the old cross-semester view available, while a
+    missing semester defaults to the active period so an older client cannot
+    accidentally load every historical class on startup.
+    """
+    clean_semester_id = str(semester_id or "").strip()
+    if not clean_semester_id:
+        active_tahun_ajaran = await db.tahun_ajaran.find_one(
+            {"is_active": True},
+            {"_id": 0, "id": 1},
+        )
+        clean_semester_id = str((active_tahun_ajaran or {}).get("id") or "").strip()
+
+    all_class_ids = await lecturer_class_ids(user)
+    if clean_semester_id == "all":
+        return all_class_ids, clean_semester_id
+    if not clean_semester_id or not all_class_ids:
+        return [], clean_semester_id
+
+    selected_tahun_ajaran = await db.tahun_ajaran.find_one(
+        {"id": clean_semester_id},
+        {"_id": 0},
+    )
+    if not selected_tahun_ajaran:
+        raise HTTPException(status_code=404, detail="Tahun ajaran yang dipilih tidak ditemukan")
+
+    scoped_classes = await db.classes.find(
+        {"id": {"$in": all_class_ids}},
+        {
+            "_id": 0,
+            "id": 1,
+            "tahun_ajaran_id": 1,
+            "academic_year_id": 1,
+            "academic_year": 1,
+            "tahun_ajaran": 1,
+            "semester": 1,
+        },
+    ).to_list(5000)
+    scoped_class_ids = [
+        str(class_doc.get("id") or "")
+        for class_doc in scoped_classes
+        if class_doc.get("id")
+        and class_matches_tahun_ajaran(class_doc, selected_tahun_ajaran, clean_semester_id)
+    ]
+    return scoped_class_ids, clean_semester_id
+
+
 async def notification_center_payload(
     user: Dict[str, Any],
     limit: int = 30,
+    semester_id: str = "",
 ) -> Dict[str, Any]:
     now = datetime.now(timezone.utc)
     cutoff = now - timedelta(days=NOTIFICATION_LOOKBACK_DAYS)
     cutoff_iso = cutoff.isoformat()
-    class_ids = await lecturer_class_ids(user)
+    class_ids, scoped_semester_id = await notification_class_scope(user, semester_id)
     material_query: Dict[str, Any] = {"class_id": {"$in": class_ids}}
     if user.get("role") == "student":
         material_query["is_active"] = True
@@ -6408,15 +6513,17 @@ async def notification_center_payload(
     )
     payload = finalize_notifications(events, read_receipts, limit)
     payload["lookback_days"] = NOTIFICATION_LOOKBACK_DAYS
+    payload["semester_id"] = scoped_semester_id
     return payload
 
 
 @api_router.get("/notifications")
 async def list_notifications(
     limit: int = 30,
+    semester_id: str = "",
     user: Dict[str, Any] = Depends(get_current_user),
 ):
-    return await notification_center_payload(user, limit)
+    return await notification_center_payload(user, limit, semester_id)
 
 
 @api_router.post("/notifications/{notification_id}/read")
@@ -6448,9 +6555,10 @@ async def mark_notification_read(
 
 @api_router.post("/notifications/read-all")
 async def mark_all_notifications_read(
+    semester_id: str = "",
     user: Dict[str, Any] = Depends(get_current_user),
 ):
-    payload = await notification_center_payload(user, limit=500)
+    payload = await notification_center_payload(user, limit=500, semester_id=semester_id)
     items = payload.get("items", [])
     unread_items = [item for item in items if not item.get("read")]
     read_at = now_iso()
@@ -10253,15 +10361,14 @@ async def chat_contacts(q: str = "", user: Dict[str, Any] = Depends(get_current_
     query = q.strip().lower()
     users: List[Dict[str, Any]] = []
     if query:
-        pattern = re.compile(f"^{re.escape(query)}$", re.IGNORECASE)
-        users = await db.users.find(
+        candidates = await db.users.find(
             {
                 "id": {"$ne": user["id"]},
                 "status": {"$ne": "deleted"},
-                "$or": [{"username": pattern}, {"email": pattern}],
             },
             {"_id": 0, "password_hash": 0},
-        ).sort("name", 1).to_list(20)
+        ).sort("name", 1).to_list(5000)
+        users = [item for item in candidates if chat_contact_matches_query(item, query)][:20]
     else:
         messages = await db.chat_messages.find(
             {"participant_ids": user["id"]}, {"_id": 0, "participant_ids": 1}
@@ -10278,11 +10385,7 @@ async def chat_contacts(q: str = "", user: Dict[str, Any] = Depends(get_current_
             by_id = {item["id"]: item for item in user_docs}
             users = [by_id[item_id] for item_id in recent_ids if item_id in by_id]
     return [
-        {
-            **await chat_contact_payload(item),
-            "online": chat_connections.is_online(item["id"]),
-            "viewing_chat": chat_connections.is_viewing(item["id"], user["id"]),
-        }
+        await chat_contact_view_payload(item, user)
         for item in users
     ]
 
@@ -10300,13 +10403,21 @@ async def chat_lecturers(user: Dict[str, Any] = Depends(get_current_user)):
         {"_id": 0, "password_hash": 0},
     ).sort("name", 1).to_list(100)
     return [
-        {
-            **await chat_contact_payload(item),
-            "online": chat_connections.is_online(item["id"]),
-            "viewing_chat": chat_connections.is_viewing(item["id"], user["id"]),
-        }
+        await chat_contact_view_payload(item, user)
         for item in lecturers
     ]
+
+
+@api_router.post("/chat/users/{other_user_id}/read")
+async def mark_chat_read_endpoint(
+    other_user_id: str,
+    user: Dict[str, Any] = Depends(get_current_user),
+):
+    other = await db.users.find_one({"id": other_user_id}, {"_id": 0, "id": 1})
+    if not other or other_user_id == user["id"]:
+        raise HTTPException(status_code=404, detail="Pengguna chat tidak ditemukan")
+    await mark_chat_read(user["id"], other_user_id)
+    return {"unread_count": 0}
 
 
 @api_router.get("/chat/users/{other_user_id}/messages")
@@ -10314,15 +10425,14 @@ async def list_chat_messages(other_user_id: str, user: Dict[str, Any] = Depends(
     other = await db.users.find_one({"id": other_user_id}, {"_id": 0, "password_hash": 0})
     if not other or other_user_id == user["id"]:
         raise HTTPException(status_code=404, detail="Pengguna chat tidak ditemukan")
+    await mark_chat_read(user["id"], other_user_id)
     conversation_id = chat_conversation_id(user["id"], other_user_id)
     messages = await db.chat_messages.find(
         {"conversation_id": conversation_id}, {"_id": 0}
     ).sort("created_at", 1).to_list(500)
     return {
         "contact": {
-            **await chat_contact_payload(other),
-            "online": chat_connections.is_online(other_user_id),
-            "viewing_chat": chat_connections.is_viewing(other_user_id, user["id"]),
+            **await chat_contact_view_payload(other, user),
         },
         "messages": messages,
     }
@@ -13687,6 +13797,11 @@ async def on_startup():
     await db.oidc_login_tickets.create_index("ticket_hash", unique=True)
     await db.oidc_login_tickets.create_index("expires_at", expireAfterSeconds=0)
     await db.chat_messages.create_index([("conversation_id", 1), ("created_at", 1)])
+    await db.chat_read_receipts.create_index(
+        [("user_id", 1), ("contact_id", 1)],
+        unique=True,
+    )
+    await db.chat_read_receipts.create_index("last_read_at")
     await db.assignments.create_index("class_id")
     await db.assignments.create_index([("is_active", 1), ("published_at", 1)])
     await db.assignments.create_index("deadline")
