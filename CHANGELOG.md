@@ -2,6 +2,24 @@
 
 Semua perubahan penting pada aplikasi ini dicatat di sini. Versi rilis utama disimpan di file [`VERSION`](./VERSION), sedangkan versi skema database yang sudah diterapkan dicatat oleh tabel `app_schema_migrations` di PostgreSQL.
 
+## [1.11.6] — 2026-08-21
+
+### Backup dan restore database
+
+- Menambahkan fitur **Restore database** pada halaman Backup Database untuk mengunggah file hasil backup `.json.gz`.
+- Menambahkan validasi format, versi, gzip, ukuran file maksimal 200 MB, struktur collection, dan duplikasi ID sebelum restore dijalankan.
+- Menjalankan restore seluruh collection aplikasi dalam satu transaksi PostgreSQL agar kegagalan tidak meninggalkan restore parsial.
+- Membuat salinan pengaman otomatis sebelum restore dan menampilkannya pada riwayat backup.
+- Mempertahankan sesi Administrator yang sedang melakukan restore apabila akun tersebut masih tersedia di backup.
+- Menyesuaikan ulang path lokal file dan backup setelah restore agar tidak bergantung pada path komputer sumber.
+- Menambahkan konfirmasi risiko, indikator proses, notifikasi hasil restore, dan peringatan file lokal yang tidak tersedia pada halaman frontend.
+- Menyelaraskan keterangan format backup pada riwayat agar mencerminkan logical backup JSON database aplikasi.
+
+### Validasi rilis
+
+- Menambahkan regression test untuk parser backup yang valid, file gzip rusak, format tidak dikenal, dan ID dokumen duplikat.
+- Versi aplikasi dinaikkan dari `1.11.5` ke `1.11.6` pada `VERSION`, `frontend/package.json`, `frontend/package-lock.json`, dan `frontend-pmb/package.json`.
+
 ## [1.11.5] — 2026-08-21
 
 ### Rekonsiliasi dosen dan homebase

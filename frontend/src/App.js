@@ -185,6 +185,7 @@ function resolveBackendUrl() {
 
 const BACKEND_URL = resolveBackendUrl();
 const API = `${BACKEND_URL}/api`;
+const DATABASE_RESTORE_MAX_FILE_BYTES = 200 * 1024 * 1024;
 const DEFAULT_SUBMISSION_MAX_FILE_MB = 5;
 const DEFAULT_SUBMISSION_FORMATS = [
   "pdf",
@@ -7815,6 +7816,9 @@ function DatabaseBackupPage({ token }) {
     drive_folder: "",
   });
   const [busy, setBusy] = useState(false);
+  const [restoreBusy, setRestoreBusy] = useState(false);
+  const [restoreFile, setRestoreFile] = useState(null);
+  const [restoreInputKey, setRestoreInputKey] = useState(0);
   const auth = useMemo(
     () => ({ headers: { Authorization: `Bearer ${token}` } }),
     [token],
@@ -7898,6 +7902,64 @@ function DatabaseBackupPage({ token }) {
     }
   }
 
+  function selectRestoreFile(event) {
+    const selected = event.target.files?.[0] || null;
+    if (!selected) return;
+    if (selected.size > DATABASE_RESTORE_MAX_FILE_BYTES) {
+      toast.error("Ukuran file backup maksimal 200 MB");
+      event.target.value = "";
+      setRestoreFile(null);
+      return;
+    }
+    setRestoreFile(selected);
+  }
+
+  async function restoreBackup() {
+    if (!restoreFile) {
+      toast.error("Pilih file backup terlebih dahulu");
+      return;
+    }
+    const confirmed = window.confirm(
+      `Restore akan mengganti seluruh data database dengan isi file ${restoreFile.name}. Lanjutkan?`,
+    );
+    if (!confirmed) return;
+
+    const formData = new FormData();
+    formData.append("file", restoreFile);
+    setRestoreBusy(true);
+    try {
+      const response = await axios.post(
+        `${API}/database-backups/restore`,
+        formData,
+        { headers: auth.headers },
+      );
+      let historyLoadFailed = false;
+      try {
+        await loadBackups();
+      } catch {
+        historyLoadFailed = true;
+      }
+      setRestoreFile(null);
+      setRestoreInputKey((value) => value + 1);
+      const missing = Number(response.data?.storage_missing || 0);
+      if (historyLoadFailed) {
+        toast.warning("Restore berhasil, tetapi riwayat backup gagal dimuat ulang");
+      } else if (missing > 0) {
+        toast.warning(
+          `Restore berhasil, tetapi ${missing} file lokal tidak ditemukan pada server ini`,
+        );
+      } else {
+        toast.success(
+          `Restore database berhasil. Salinan pengaman: ${response.data?.safety_backup?.file_name || "tersimpan di riwayat backup"}`,
+        );
+      }
+    } catch (error) {
+      toast.error(formatApiError(error, "Restore database gagal"));
+    } finally {
+      setRestoreBusy(false);
+    }
+  }
+
   const settings = backupData.settings || {};
   const successfulBackups = backupData.backups.filter((item) =>
     ["completed", "completed_with_warning"].includes(item.status),
@@ -7927,9 +7989,14 @@ function DatabaseBackupPage({ token }) {
             ke Google Drive.
           </p>
         </div>
-        <Button onClick={runBackup} disabled={busy || settings.running}>
+        <Button
+          onClick={runBackup}
+          disabled={busy || restoreBusy || settings.running}
+        >
           <Database />{" "}
-          {busy || settings.running ? "Memproses..." : "Backup sekarang"}
+          {busy || restoreBusy || settings.running
+            ? "Memproses..."
+            : "Backup sekarang"}
         </Button>
       </section>
 
@@ -8083,8 +8150,67 @@ function DatabaseBackupPage({ token }) {
             </span>
           </div>
         )}
-        <Button disabled={busy}>Simpan jadwal backup</Button>
+        <Button disabled={busy || restoreBusy}>Simpan jadwal backup</Button>
       </form>
+
+      <Card
+        className="backup-restore-card rounded-md shadow-none"
+        data-testid="database-restore-card"
+      >
+        <CardHeader>
+          <div className="backup-section-heading">
+            <div>
+              <h3>Restore database</h3>
+              <p>Upload file hasil backup untuk memulihkan seluruh data aplikasi.</p>
+            </div>
+            <AlertTriangle className="backup-restore-heading-icon" />
+          </div>
+        </CardHeader>
+        <CardContent className="space-y-4">
+          <div className="backup-restore-warning">
+            <AlertTriangle />
+            <span>
+              Restore akan mengganti data database saat ini. Sistem otomatis membuat
+              salinan pengaman sebelum proses dimulai.
+            </span>
+          </div>
+          <div className="backup-restore-picker">
+            <input
+              key={restoreInputKey}
+              id="database-restore-file"
+              type="file"
+              accept=".json.gz,.gz,application/gzip"
+              className="sr-only"
+              onChange={selectRestoreFile}
+              disabled={restoreBusy || busy}
+            />
+            <label htmlFor="database-restore-file" className="backup-file-picker">
+              <Upload /> Pilih file backup
+            </label>
+            <span className="backup-restore-filename">
+              {restoreFile
+                ? `${restoreFile.name} · ${formatBytes(restoreFile.size)}`
+                : "Belum ada file yang dipilih"}
+            </span>
+          </div>
+          <Button
+            type="button"
+            variant="destructive"
+            onClick={restoreBackup}
+            disabled={!restoreFile || restoreBusy || busy}
+          >
+            {restoreBusy ? (
+              <Loader2 className="animate-spin" />
+            ) : (
+              <RotateCcw />
+            )}
+            {restoreBusy ? "Memulihkan..." : "Restore database"}
+          </Button>
+          <p className="text-xs text-slate-500">
+            Format yang didukung: file backup terkompresi <code>.json.gz</code>, maksimal 200 MB.
+          </p>
+        </CardContent>
+      </Card>
 
       <Card
         className="rounded-md shadow-none"
@@ -8093,7 +8219,7 @@ function DatabaseBackupPage({ token }) {
         <CardHeader>
           <CardTitle>Riwayat backup</CardTitle>
           <p className="text-sm text-slate-500">
-            Backup berformat JSON MongoDB terkompresi (.json.gz).
+            Backup berformat JSON database terkompresi (.json.gz).
           </p>
         </CardHeader>
         <CardContent>
@@ -8115,12 +8241,21 @@ function DatabaseBackupPage({ token }) {
                     </p>
                     <p className="text-xs text-slate-500">
                       {fmtDate(item.created_at)} · {formatBytes(item.size || 0)}{" "}
-                      · {item.trigger === "automatic" ? "Otomatis" : "Manual"}
+                      · {
+                        {
+                          automatic: "Otomatis",
+                          "pre-restore": "Sebelum restore",
+                          manual: "Manual",
+                        }[item.trigger] || item.trigger
+                      }
                     </p>
                     {item.error && (
                       <p className="mt-1 text-xs text-amber-700">
                         {item.error}
                       </p>
+                    )}
+                    {item.note && (
+                      <p className="mt-1 text-xs text-slate-500">{item.note}</p>
                     )}
                   </div>
                   <Badge

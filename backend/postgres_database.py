@@ -990,6 +990,39 @@ class PostgresDatabase:
         rows = await self.pool.fetch("SELECT collection_name FROM app_collection_registry ORDER BY collection_name")
         return [str(row["collection_name"]) for row in rows]
 
+    async def replace_collections(
+        self, collections: Dict[str, List[Dict[str, Any]]]
+    ) -> Dict[str, int]:
+        """Replace all registered document collections in one transaction.
+
+        Database backups contain the application documents rather than raw SQL.
+        Restore every known collection, including collections omitted by an older
+        backup as empty, while keeping the collection registry intact for the
+        current application version.
+        """
+        current_names = set(await self.list_collection_names())
+        collection_names = sorted(current_names | set(collections))
+
+        # Ensure tables before opening the restore transaction. This is needed
+        # for a backup that contains a collection introduced after this process
+        # started, and table creation is itself idempotent.
+        for name in collection_names:
+            await self[name]._ensure_table()
+
+        async with self.pool.acquire() as connection:
+            async with connection.transaction():
+                for name in collection_names:
+                    collection = self[name]
+                    await connection.execute(f"DELETE FROM {collection.table_name}")
+                    documents = collections.get(name, [])
+                    if documents:
+                        await connection.executemany(
+                            f"INSERT INTO {collection.table_name} (data) VALUES ($1::jsonb)",
+                            [(_json_dump(json_value(document)),) for document in documents],
+                        )
+
+        return {name: len(collections.get(name, [])) for name in collection_names}
+
     def __getitem__(self, name: str) -> PostgresCollection:
         if name not in self._collections:
             self._collections[name] = PostgresCollection(self, name)

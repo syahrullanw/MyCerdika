@@ -3583,9 +3583,18 @@ def get_drive_service(settings: Optional[Dict[str, Any]] = None):
     return build("drive", "v3", credentials=credentials, cache_discovery=False)
 
 
+DATABASE_BACKUP_FORMAT = "nugaslagi-postgresql-jsonb"
+DATABASE_BACKUP_VERSION = 2
+DATABASE_RESTORE_MAX_BYTES = int(
+    os.environ.get("DATABASE_RESTORE_MAX_BYTES", str(200 * 1024 * 1024))
+)
+DATABASE_RESTORE_MAX_UNCOMPRESSED_BYTES = int(
+    os.environ.get("DATABASE_RESTORE_MAX_UNCOMPRESSED_BYTES", str(1024 * 1024 * 1024))
+)
 BACKUP_ROOT = STORAGE_ROOT / "Database Backups"
 BACKUP_TIMEZONE = ZoneInfo(os.environ.get("BACKUP_TIMEZONE", "Asia/Jakarta"))
 _database_backup_scheduler_task: Optional[asyncio.Task] = None
+_database_restore_lock = asyncio.Lock()
 
 
 async def reconcile_local_storage_paths() -> Dict[str, int]:
@@ -3694,14 +3703,119 @@ async def database_backup_payload() -> bytes:
             documents.append(document)
         collections[name] = documents
     payload = {
-        "format": "nugaslagi-postgresql-jsonb",
-        "version": 2,
+        "format": DATABASE_BACKUP_FORMAT,
+        "version": DATABASE_BACKUP_VERSION,
         "database": db.name,
         "created_at": now_iso(),
         "collections": collections,
     }
     raw = json.dumps(payload, ensure_ascii=False, separators=(",", ":")).encode("utf-8")
     return gzip.compress(raw, compresslevel=6)
+
+
+def parse_database_backup_payload(content: bytes) -> Dict[str, Any]:
+    """Decode and validate an uploaded application-level database backup."""
+    if len(content) > DATABASE_RESTORE_MAX_BYTES:
+        raise ValueError(
+            f"Ukuran file backup maksimal {DATABASE_RESTORE_MAX_BYTES // (1024 * 1024)} MB"
+        )
+
+    try:
+        with gzip.GzipFile(fileobj=io.BytesIO(content), mode="rb") as compressed:
+            raw = compressed.read(DATABASE_RESTORE_MAX_UNCOMPRESSED_BYTES + 1)
+    except (EOFError, OSError, gzip.BadGzipFile) as exc:
+        raise ValueError("File backup tidak valid atau bukan gzip yang didukung") from exc
+
+    if len(raw) > DATABASE_RESTORE_MAX_UNCOMPRESSED_BYTES:
+        raise ValueError(
+            "Isi file backup terlalu besar setelah dibuka (maksimal 1 GB)"
+        )
+
+    try:
+        payload = json.loads(raw.decode("utf-8"))
+    except (UnicodeDecodeError, json.JSONDecodeError) as exc:
+        raise ValueError("Isi file backup bukan JSON UTF-8 yang valid") from exc
+
+    if not isinstance(payload, dict):
+        raise ValueError("Struktur file backup tidak valid")
+    if payload.get("format") != DATABASE_BACKUP_FORMAT:
+        raise ValueError("Format file tidak dikenali sebagai backup database aplikasi ini")
+    if payload.get("version") != DATABASE_BACKUP_VERSION:
+        raise ValueError(
+            f"Versi backup tidak didukung (gunakan versi {DATABASE_BACKUP_VERSION})"
+        )
+
+    raw_collections = payload.get("collections")
+    if not isinstance(raw_collections, dict):
+        raise ValueError("File backup tidak memiliki data collection yang valid")
+
+    collections: Dict[str, List[Dict[str, Any]]] = {}
+    document_count = 0
+    for collection_name, documents in raw_collections.items():
+        if not isinstance(collection_name, str) or not re.fullmatch(
+            r"[A-Za-z0-9_-]+", collection_name
+        ):
+            raise ValueError(f"Nama collection backup tidak valid: {collection_name!r}")
+        if not isinstance(documents, list):
+            raise ValueError(f"Data collection {collection_name} harus berupa array")
+
+        seen_ids: set[str] = set()
+        validated_documents: List[Dict[str, Any]] = []
+        for index, document in enumerate(documents):
+            if not isinstance(document, dict):
+                raise ValueError(
+                    f"Dokumen ke-{index + 1} pada collection {collection_name} tidak valid"
+                )
+            document_id = document.get("id")
+            if document_id is not None:
+                normalized_id = str(document_id)
+                if normalized_id in seen_ids:
+                    raise ValueError(
+                        f"ID dokumen duplikat pada collection {collection_name}: {normalized_id}"
+                    )
+                seen_ids.add(normalized_id)
+            validated_documents.append(document)
+
+        collections[collection_name] = validated_documents
+        document_count += len(validated_documents)
+
+    return {
+        "format": payload.get("format"),
+        "version": payload.get("version"),
+        "created_at": payload.get("created_at", ""),
+        "database": payload.get("database", ""),
+        "collections": collections,
+        "document_count": document_count,
+    }
+
+
+async def create_restore_safety_backup(user_id: str) -> Dict[str, Any]:
+    """Keep a local recovery point immediately before an uploaded restore."""
+    content = await database_backup_payload()
+    BACKUP_ROOT.mkdir(parents=True, exist_ok=True)
+    file_name = (
+        "nugaslagi-pre-restore-"
+        f"{datetime.now(BACKUP_TIMEZONE).strftime('%Y%m%d-%H%M%S')}-"
+        f"{uuid.uuid4().hex[:8]}.json.gz"
+    )
+    local_path = BACKUP_ROOT / file_name
+    await asyncio.to_thread(local_path.write_bytes, content)
+    return {
+        "id": str(uuid.uuid4()),
+        "file_name": file_name,
+        "trigger": "pre-restore",
+        "status": "completed",
+        "created_at": now_iso(),
+        "completed_at": now_iso(),
+        "created_by": user_id,
+        "size": len(content),
+        "local_path": str(local_path),
+        "local_available": True,
+        "drive_file_id": "",
+        "drive_file_url": "",
+        "error": "",
+        "note": "Salinan pengaman otomatis sebelum restore upload.",
+    }
 
 
 def upload_database_backup_to_drive_sync(
@@ -3768,7 +3882,7 @@ async def enforce_database_backup_retention(settings: Dict[str, Any]) -> None:
         await db.database_backups.delete_one({"id": item["id"]})
 
 
-async def create_database_backup(trigger: str, user_id: str = "system") -> Dict[str, Any]:
+async def _create_database_backup(trigger: str, user_id: str = "system") -> Dict[str, Any]:
     backup_id = str(uuid.uuid4())
     created_at = now_iso()
     file_name = f"nugaslagi-db-{datetime.now(BACKUP_TIMEZONE).strftime('%Y%m%d-%H%M%S')}.json.gz"
@@ -3832,6 +3946,12 @@ async def create_database_backup(trigger: str, user_id: str = "system") -> Dict[
             {"$set": {"status": "failed", "completed_at": now_iso(), "error": str(exc)[:500]}},
         )
     return await db.database_backups.find_one({"id": backup_id}, {"_id": 0})
+
+
+async def create_database_backup(trigger: str, user_id: str = "system") -> Dict[str, Any]:
+    """Serialize backup and restore operations within this process."""
+    async with _database_restore_lock:
+        return await _create_database_backup(trigger, user_id)
 
 
 async def database_backup_scheduler() -> None:
@@ -8320,10 +8440,113 @@ async def update_database_backup_settings(
 
 @api_router.post("/database-backups/run")
 async def run_database_backup(user: Dict[str, Any] = Depends(require_campus_admin)):
+    if _database_restore_lock.locked():
+        raise HTTPException(status_code=409, detail="Restore database sedang berjalan")
     running = await db.database_backups.find_one({"status": "running"}, {"_id": 0, "id": 1})
     if running:
         raise HTTPException(status_code=409, detail="Proses backup lain masih berjalan")
     return await create_database_backup("manual", user["id"])
+
+
+@api_router.post("/database-backups/restore")
+async def restore_database_backup(
+    request: Request,
+    file: UploadFile = File(...),
+    user: Dict[str, Any] = Depends(require_campus_admin),
+):
+    filename = os.path.basename(file.filename or "").lower()
+    if not filename.endswith((".json.gz", ".gz")):
+        await file.close()
+        raise HTTPException(
+            status_code=422,
+            detail="File restore harus berupa backup terkompresi .json.gz",
+        )
+
+    try:
+        content = await file.read(DATABASE_RESTORE_MAX_BYTES + 1)
+    finally:
+        await file.close()
+
+    try:
+        parsed = parse_database_backup_payload(content)
+    except ValueError as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
+
+    async with _database_restore_lock:
+        running = await db.database_backups.find_one(
+            {"status": "running"}, {"_id": 0, "id": 1}
+        )
+        if running:
+            raise HTTPException(status_code=409, detail="Proses backup lain masih berjalan")
+
+        active_session = None
+        authorization = request.headers.get("authorization", "")
+        if authorization.lower().startswith("bearer "):
+            active_token = authorization.split(" ", 1)[1].strip()
+            if active_token:
+                active_session = await db.sessions.find_one(
+                    {"token": active_token}, {"_id": 0}
+                )
+
+        collections_to_restore = {
+            name: list(documents) for name, documents in parsed["collections"].items()
+        }
+        restored_users = collections_to_restore.get("users", [])
+        current_user_is_restored = any(
+            document.get("id") == user.get("id") for document in restored_users
+        )
+        if active_session and current_user_is_restored:
+            restored_sessions = collections_to_restore.setdefault("sessions", [])
+            if not any(
+                document.get("token") == active_session.get("token")
+                for document in restored_sessions
+            ):
+                restored_sessions.append(active_session)
+
+        try:
+            safety_backup = await create_restore_safety_backup(user["id"])
+        except Exception as exc:
+            logger.exception("Salinan pengaman sebelum restore gagal dibuat: %s", exc)
+            raise HTTPException(
+                status_code=500,
+                detail="Restore dibatalkan karena salinan pengaman gagal dibuat",
+            ) from exc
+
+        try:
+            restored_counts = await db.replace_collections(collections_to_restore)
+        except Exception as exc:
+            logger.exception("Restore database dari upload gagal: %s", exc)
+            raise HTTPException(
+                status_code=500,
+                detail="Restore gagal. Data database tidak diubah.",
+            ) from exc
+
+        safety_record_saved = True
+        try:
+            await db.database_backups.insert_one(safety_backup)
+        except Exception as exc:
+            safety_record_saved = False
+            logger.exception("Metadata salinan pengaman restore gagal disimpan: %s", exc)
+
+        try:
+            storage_reconciliation = await reconcile_local_storage_paths()
+        except Exception as exc:
+            storage_reconciliation = {"rebased": 0, "missing": 0}
+            logger.warning("Path file lokal setelah restore gagal direkonsiliasi: %s", exc)
+
+    return {
+        "ok": True,
+        "source_file": file.filename or "backup.json.gz",
+        "source_created_at": parsed.get("created_at", ""),
+        "restored_collections": len(restored_counts),
+        "restored_documents": sum(restored_counts.values()),
+        "storage_rebased": storage_reconciliation.get("rebased", 0),
+        "storage_missing": storage_reconciliation.get("missing", 0),
+        "safety_backup": {
+            "file_name": safety_backup["file_name"],
+            "saved_to_history": safety_record_saved,
+        },
+    }
 
 
 @api_router.get("/database-backups/{backup_id}/download")

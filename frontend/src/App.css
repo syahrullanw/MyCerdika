@@ -987,6 +987,76 @@ button, .form-select, input, textarea, [data-testid$="card"] {
   color: #c2410c;
 }
 
+.backup-restore-card {
+  border-color: #fecaca;
+  background: linear-gradient(135deg, #fff 0%, #fff7ed 100%);
+}
+
+.backup-restore-heading-icon {
+  width: 22px;
+  height: 22px;
+  color: #dc2626;
+}
+
+.backup-restore-warning {
+  display: flex;
+  align-items: flex-start;
+  gap: 10px;
+  border: 1px solid #fed7aa;
+  border-radius: 13px;
+  background: #fff7ed;
+  padding: 12px 14px;
+  color: #9a3412;
+  font-size: 0.82rem;
+  line-height: 1.5;
+}
+
+.backup-restore-warning svg {
+  width: 18px;
+  height: 18px;
+  flex: 0 0 18px;
+  margin-top: 1px;
+}
+
+.backup-restore-picker {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 12px;
+}
+
+.backup-file-picker {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  border: 1px solid #fecaca;
+  border-radius: 10px;
+  background: #fff;
+  padding: 9px 13px;
+  color: #b91c1c;
+  cursor: pointer;
+  font-size: 0.82rem;
+  font-weight: 700;
+}
+
+.backup-file-picker:hover {
+  background: #fef2f2;
+}
+
+.backup-file-picker svg {
+  width: 17px;
+  height: 17px;
+}
+
+.backup-restore-filename {
+  min-width: 0;
+  overflow: hidden;
+  color: #64748b;
+  font-size: 0.82rem;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
 .backup-history-list {
   display: grid;
   gap: 10px;
