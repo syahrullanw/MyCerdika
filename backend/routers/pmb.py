@@ -23,6 +23,7 @@ import mimetypes
 
 PMB_PROOF_DIR = Path(__file__).resolve().parent.parent / "storage" / "pmb" / "proofs"
 PMB_BRANDING_DIR = Path(__file__).resolve().parent.parent / "storage" / "pmb" / "branding"
+PMB_STORAGE_ROOT = Path(__file__).resolve().parent.parent / "storage"
 from fastapi.responses import FileResponse
 import mimetypes
 from pydantic import BaseModel, Field, field_validator
@@ -6800,7 +6801,9 @@ async def upload_pmb_landing_logo(
         "original_name": file.filename,
         "mime_type": file.content_type or f"image/{ext.replace('.', '')}",
         "size": len(content),
+        "storage_path": str(file_path.relative_to(PMB_STORAGE_ROOT)),
         "local_path": str(file_path),
+        "local_available": True,
         "created_at": now_iso(),
     }
     await db.stored_files.update_one({"id": file_id}, {"$set": file_doc}, upsert=True)
@@ -6870,7 +6873,9 @@ async def upload_pmb_landing_image(
         "original_name": file.filename,
         "mime_type": file.content_type or f"image/{ext.replace('.', '')}",
         "size": len(content),
+        "storage_path": str(file_path.relative_to(PMB_STORAGE_ROOT)),
         "local_path": str(file_path),
+        "local_available": True,
         "created_at": now_iso(),
     }
     await db.stored_files.update_one({"id": file_id}, {"$set": file_doc}, upsert=True)

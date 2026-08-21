@@ -6,6 +6,7 @@
 
 import React, { useState, useEffect, useCallback, useMemo } from "react";
 import { isKaprodiUser } from "@/accessControl";
+import { lecturerHomebase } from "@/utils/lecturerHomebase";
 import {
   BookOpen,
   Plus,
@@ -23,6 +24,8 @@ import {
   AlertCircle,
   FileSpreadsheet,
   UserCheck,
+  Search,
+  X,
 } from "lucide-react";
 
 // ─── Helpers ──────────────────────────────────────────────────────────────────
@@ -109,6 +112,196 @@ const FieldSelect = ({ label, value, onChange, options = [], hint = "", disabled
   </div>
 );
 
+const lecturerName = (lecturer) => (
+  lecturer?.name || lecturer?.nama || lecturer?.username || lecturer?.id || "Dosen"
+);
+
+const lecturerIdentifiers = (lecturer) => [
+  lecturer?.nidn ? `NIDN ${lecturer.nidn}` : "",
+  lecturer?.nip ? `NIP ${lecturer.nip}` : "",
+  lecturer?.nuptk ? `NUPTK ${lecturer.nuptk}` : "",
+  !lecturer?.nidn && !lecturer?.nip && lecturer?.employee_id
+    ? `ID ${lecturer.employee_id}`
+    : "",
+].filter(Boolean);
+
+const LecturerSearchField = ({
+  label,
+  lecturers = [],
+  programs = [],
+  selectedIds = [],
+  onChange,
+  multiple = false,
+  excludeIds = [],
+  hint = "",
+}) => {
+  const [query, setQuery] = useState("");
+  const [focused, setFocused] = useState(false);
+  const normalizedQuery = query.trim().toLocaleLowerCase("id-ID");
+  const excluded = useMemo(() => new Set(excludeIds.filter(Boolean)), [excludeIds]);
+  const selected = useMemo(
+    () => selectedIds
+      .map((id) => lecturers.find((lecturer) => lecturer.id === id) || { id, name: id })
+      .filter((lecturer) => !excluded.has(lecturer.id)),
+    [excluded, lecturers, selectedIds],
+  );
+  const results = useMemo(() => {
+    if (normalizedQuery.length < 2) return [];
+    const terms = normalizedQuery.split(/\s+/).filter(Boolean);
+    return lecturers
+      .filter((lecturer) => !excluded.has(lecturer.id))
+      .filter((lecturer) => !multiple || !selectedIds.includes(lecturer.id))
+      .filter((lecturer) => {
+        const searchable = [
+          lecturerName(lecturer),
+          lecturer.id,
+          lecturer.nidn,
+          lecturer.nip,
+          lecturer.nuptk,
+          lecturer.employee_id,
+          lecturerHomebase(lecturer, programs).code,
+          lecturerHomebase(lecturer, programs).name,
+        ].filter(Boolean).join(" ").toLocaleLowerCase("id-ID");
+        return terms.every((term) => searchable.includes(term));
+      })
+      .slice(0, 8);
+  }, [excluded, lecturers, multiple, normalizedQuery, programs, selectedIds]);
+
+  const chooseLecturer = (lecturerId) => {
+    onChange(multiple ? [...selectedIds, lecturerId] : [lecturerId]);
+    setQuery("");
+    if (!multiple) setFocused(false);
+  };
+
+  const removeLecturer = (lecturerId) => {
+    onChange(selectedIds.filter((id) => id !== lecturerId));
+  };
+
+  const showResults = focused && normalizedQuery.length >= 2;
+
+  return (
+    <div
+      className="relative flex min-w-0 flex-col gap-1"
+      onBlur={(event) => {
+        if (!event.currentTarget.contains(event.relatedTarget)) setFocused(false);
+      }}
+    >
+      <label className="text-sm font-medium text-slate-700">{label}</label>
+      <div className="relative">
+        <Search className="pointer-events-none absolute left-3 top-1/2 h-4 w-4 -translate-y-1/2 text-slate-400" />
+        <input
+          type="search"
+          value={query}
+          onChange={(event) => setQuery(event.target.value)}
+          onFocus={() => setFocused(true)}
+          onKeyDown={(event) => {
+            if (event.key === "Escape") {
+              setFocused(false);
+              event.currentTarget.blur();
+            }
+          }}
+          placeholder="Cari nama, NIDN, NIP, atau NUPTK..."
+          autoComplete="off"
+          role="combobox"
+          aria-expanded={showResults}
+          aria-autocomplete="list"
+          className="min-w-0 w-full rounded-lg border border-slate-300 bg-white py-2 pl-9 pr-3 text-sm transition placeholder:text-slate-400 focus:border-transparent focus:outline-none focus:ring-2 focus:ring-indigo-400"
+        />
+
+        {showResults && (
+          <div
+            role="listbox"
+            className="absolute z-40 mt-1 max-h-56 w-full overflow-y-auto rounded-lg border border-slate-200 bg-white p-1 shadow-lg"
+          >
+            {results.length > 0 ? results.map((lecturer) => {
+              const identifiers = lecturerIdentifiers(lecturer);
+              const homebase = lecturerHomebase(lecturer, programs);
+              const isSelected = selectedIds.includes(lecturer.id);
+              return (
+                <button
+                  key={lecturer.id}
+                  type="button"
+                  role="option"
+                  aria-selected={isSelected}
+                  onMouseDown={(event) => event.preventDefault()}
+                  onClick={() => chooseLecturer(lecturer.id)}
+                  className="flex w-full items-center justify-between gap-3 rounded-md px-3 py-2 text-left hover:bg-indigo-50 focus:bg-indigo-50 focus:outline-none"
+                >
+                  <span className="min-w-0">
+                    <span className="flex min-w-0 flex-wrap items-center gap-1.5">
+                      <span className="truncate text-sm font-medium text-slate-800">
+                        {lecturerName(lecturer)}
+                      </span>
+                      <span
+                        title={homebase.name}
+                        className={`inline-flex shrink-0 rounded-full px-2 py-0.5 text-[10px] font-semibold ${
+                          homebase.valid
+                            ? "bg-emerald-100 text-emerald-700"
+                            : "bg-amber-100 text-amber-700"
+                        }`}
+                      >
+                        Homebase {homebase.code}
+                      </span>
+                    </span>
+                    <span className="block truncate text-xs text-slate-500">
+                      {identifiers.join(" · ") || `ID ${lecturer.id}`}
+                    </span>
+                  </span>
+                  {isSelected && <Check className="h-4 w-4 shrink-0 text-indigo-600" />}
+                </button>
+              );
+            }) : (
+              <p className="px-3 py-5 text-center text-xs text-slate-500">
+                Dosen tidak ditemukan untuk kata kunci tersebut.
+              </p>
+            )}
+          </div>
+        )}
+      </div>
+
+      {normalizedQuery.length === 1 && focused && (
+        <span className="text-xs text-slate-400">Ketik minimal 2 karakter untuk mencari.</span>
+      )}
+
+      {selected.length > 0 && (
+        <div className={multiple ? "flex flex-wrap gap-1.5 pt-1" : "pt-1"}>
+          {selected.map((lecturer) => {
+            const homebase = lecturerHomebase(lecturer, programs);
+            return (
+              <span
+                key={lecturer.id}
+                className="inline-flex max-w-full items-center gap-1.5 rounded-full border border-indigo-200 bg-indigo-50 py-1 pl-2.5 pr-1.5 text-xs text-indigo-800"
+              >
+                <span className="truncate">{lecturerName(lecturer)}</span>
+                <span
+                  title={homebase.name}
+                  className={`shrink-0 rounded-full px-1.5 py-0.5 text-[9px] font-semibold ${
+                    homebase.valid
+                      ? "bg-emerald-100 text-emerald-700"
+                      : "bg-amber-100 text-amber-700"
+                  }`}
+                >
+                  {homebase.code}
+                </span>
+                <button
+                  type="button"
+                  onClick={() => removeLecturer(lecturer.id)}
+                  className="shrink-0 rounded-full p-0.5 text-indigo-500 hover:bg-indigo-100 hover:text-indigo-800 focus:outline-none focus:ring-2 focus:ring-indigo-300"
+                  aria-label={`Hapus ${lecturerName(lecturer)}`}
+                >
+                  <X className="h-3 w-3" />
+                </button>
+              </span>
+            );
+          })}
+        </div>
+      )}
+
+      {hint && <span className="text-xs text-slate-400">{hint}</span>}
+    </div>
+  );
+};
+
 const EmptyState = ({ Icon = Inbox, title, desc }) => (
   <div className="flex flex-col items-center justify-center px-4 py-12 text-center sm:py-16">
     <Icon className="w-12 h-12 text-slate-300 mb-3" strokeWidth={1.5} />
@@ -172,7 +365,8 @@ export function KurikulumMasterPage({ user }) {
   const loadData = useCallback(() => {
     API("/api/v1/kurikulum").then((d) => Array.isArray(d) && setKurikulumList(d));
     API("/api/v1/master/prodi").then((d) => Array.isArray(d) && setProdiList(d));
-    API("/api/v1/master/dosen").then((d) => Array.isArray(d) && setDosenList(d));
+    API("/api/v1/master/dosen?selection_context=curriculum_course_mapping")
+      .then((d) => Array.isArray(d) && setDosenList(d));
   }, []);
 
   useEffect(() => { loadData(); }, [loadData]);
@@ -294,11 +488,6 @@ export function KurikulumMasterPage({ user }) {
         ...prodiList.map((p) => [p.id, `${p.nama} (${p.kode})`]),
       ];
 
-  const dosenOptions = [
-    ["", "-- Pilih Dosen Utama / Koordinator MK --"],
-    ...dosenList.map((d) => [d.id, `${d.name}${d.nip ? ` (NIP: ${d.nip})` : ""}`]),
-  ];
-
   // Calculated totals for active Kurikulum
   const totalSksTeori = courses.reduce((acc, c) => acc + (parseInt(c.sks_teori || c.sks || 0)), 0);
   const totalSksPrak = courses.reduce((acc, c) => acc + (parseInt(c.sks_praktikum || 0)), 0);
@@ -405,39 +594,34 @@ export function KurikulumMasterPage({ user }) {
                   options={[["wajib", "Wajib"], ["pilihan", "Pilihan"]]}
                 />
 
-                <FieldSelect
+                <LecturerSearchField
                   label="Dosen Pengampu Utama (Koordinator)"
-                  value={courseForm.dosen_utama_id || ""}
-                  onChange={(v) => setCourseForm((p) => ({ ...p, dosen_utama_id: v }))}
-                  options={dosenOptions}
+                  lecturers={dosenList}
+                  programs={prodiList}
+                  selectedIds={courseForm.dosen_utama_id ? [courseForm.dosen_utama_id] : []}
+                  onChange={(ids) => setCourseForm((previous) => ({
+                    ...previous,
+                    dosen_utama_id: ids[0] || "",
+                    dosen_anggota_ids: previous.dosen_anggota_ids.filter(
+                      (id) => id !== ids[0],
+                    ),
+                  }))}
                   hint="Dosen penanggung jawab mata kuliah"
                 />
 
-                {/* Team Teaching Dosen Anggota Multi-Select */}
-                <div className="flex flex-col gap-1">
-                  <label className="text-sm font-medium text-slate-700">Team Teaching (Dosen Anggota)</label>
-                  <div className="border border-slate-300 rounded-lg p-2.5 max-h-32 overflow-y-auto space-y-1 bg-white">
-                    {dosenList.map((d) => (
-                      <label key={d.id} className="flex items-center gap-2 text-xs text-slate-700 cursor-pointer hover:bg-slate-50 p-1 rounded">
-                        <input
-                          type="checkbox"
-                          checked={courseForm.dosen_anggota_ids.includes(d.id)}
-                          onChange={(e) => {
-                            const checked = e.target.checked;
-                            setCourseForm((p) => ({
-                              ...p,
-                              dosen_anggota_ids: checked
-                                ? [...p.dosen_anggota_ids, d.id]
-                                : p.dosen_anggota_ids.filter((id) => id !== d.id),
-                            }));
-                          }}
-                        />
-                        <span>{d.name} {d.nip && `(${d.nip})`}</span>
-                      </label>
-                    ))}
-                  </div>
-                  <span className="text-xs text-slate-400">Pilih dosen pendamping mengajar</span>
-                </div>
+                <LecturerSearchField
+                  label="Team Teaching (Dosen Anggota)"
+                  lecturers={dosenList}
+                  programs={prodiList}
+                  selectedIds={courseForm.dosen_anggota_ids}
+                  onChange={(ids) => setCourseForm((previous) => ({
+                    ...previous,
+                    dosen_anggota_ids: ids,
+                  }))}
+                  multiple
+                  excludeIds={[courseForm.dosen_utama_id]}
+                  hint="Cari dan pilih satu atau beberapa dosen pendamping"
+                />
               </div>
 
               {/* SKS Total Preview Badge */}

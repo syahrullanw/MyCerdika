@@ -192,6 +192,194 @@ def test_incremental_update_allows_additive_backfill_when_old_fields_match_basel
     assert conflict_entries[0]["status"] == "conflict"
 
 
+def test_feeder_homebase_selects_one_program_and_holds_latest_year_conflict():
+    same_program = [
+        {"id_prodi": "P2", "id_tahun_ajaran": "2024", "a_sp_homebase": "1"},
+        {"id_prodi": "P2", "id_tahun_ajaran": "2025", "a_sp_homebase": "1"},
+    ]
+    transferred = [
+        {"id_prodi": "P1", "id_tahun_ajaran": "2024", "a_sp_homebase": "1"},
+        {"id_prodi": "P2", "id_tahun_ajaran": "2025", "a_sp_homebase": "1"},
+    ]
+    conflict = [
+        {"id_prodi": "P1", "id_tahun_ajaran": "2025", "a_sp_homebase": "1"},
+        {"id_prodi": "P2", "id_tahun_ajaran": "2025", "a_sp_homebase": "1"},
+    ]
+
+    assert reconciliation.select_feeder_homebase(same_program) == (
+        "P2",
+        "feeder_unique",
+    )
+    assert reconciliation.select_feeder_homebase(transferred) == (
+        "P2",
+        "feeder_latest",
+    )
+    assert reconciliation.select_feeder_homebase(conflict) == ("", "conflict")
+
+
+def test_authoritative_homebase_can_update_without_baseline_but_not_profile_data():
+    homebase_only = PlannedUpdate(
+        "users",
+        {"id": "D1"},
+        {"name": "Dosen", "homebase": "P2", "prodi_id": "P2"},
+        authoritative_fields=("homebase", "prodi_id"),
+    )
+    profile_and_homebase = PlannedUpdate(
+        "users",
+        {"id": "D1"},
+        {"name": "Nama Berbeda", "homebase": "P2", "prodi_id": "P2"},
+        authoritative_fields=("homebase", "prodi_id"),
+    )
+    current = {
+        "users": [
+            {"id": "D1", "name": "Dosen", "homebase": "P1,P2", "prodi_id": "P1,P2"}
+        ]
+    }
+
+    safe_entries, _ = reconciliation.classify_incremental_updates(
+        [homebase_only], current, []
+    )
+    guarded_entries, _ = reconciliation.classify_incremental_updates(
+        [profile_and_homebase], current, []
+    )
+
+    assert safe_entries[0]["status"] == "ready_update"
+    assert guarded_entries[0]["status"] == "conflict"
+
+
+def test_plan_uses_feeder_homebase_and_canonical_lecturer_references():
+    tables = {
+        "prodi": [
+            {"ProdiID": "P1", "Nama": "Program Satu", "IDProdiDiktiID": "FP1"},
+            {"ProdiID": "P2", "Nama": "Program Dua", "IDProdiDiktiID": "FP2"},
+        ],
+        "pegawai": [
+            {
+                "Login": "D-OLD",
+                "Nama": "Dosen Contoh",
+                "NIDN": "001",
+                "ProdiID": "P1,P2",
+                "Homebase": "P1",
+            },
+            {
+                "Login": "D-CANON",
+                "Nama": "Dosen Contoh",
+                "NIDN": "001",
+                "ProdiID": "P1,P2",
+                "Homebase": "P1",
+            },
+        ],
+        "mhsw": [
+            {
+                "MhswID": "S1",
+                "Nama": "Mahasiswa",
+                "ProdiID": "P1",
+                "PenasehatAkademik": "D-OLD",
+            }
+        ],
+        "jadwal": [
+            {
+                "JadwalID": "J1",
+                "TahunID": "20261",
+                "DosenID": "D-OLD",
+                "MKID": "MK1",
+                "ProdiID": "P1",
+            }
+        ],
+    }
+    current = {
+        "users": [
+            {
+                "id": "D-OLD",
+                "role": "lecturer",
+                "name": "Dosen Contoh",
+                "status": "deleted",
+                "merged_into_user_id": "D-CANON",
+            },
+            {
+                "id": "D-CANON",
+                "role": "lecturer",
+                "name": "Dosen Contoh",
+                "nidn": "001",
+                "feeder_lecturer_id": "L1",
+                "prodi_id": "P1",
+                "homebase": "P1",
+            },
+            {"id": "S1", "role": "student", "name": "Mahasiswa"},
+        ],
+        "programs": [
+            {"id": "P1", "name": "Program Satu", "feeder_program_id": "FP1"},
+            {"id": "P2", "name": "Program Dua", "feeder_program_id": "FP2"},
+        ],
+        "courses": [{"id": "MK1", "code": "MK1", "name": "Mata Kuliah"}],
+        "classes": [],
+        "kurikulum": [],
+        "academic_periods": [],
+        "krs": [],
+        "khs": [],
+    }
+    live = {
+        "lecturers_master": [
+            {"id_dosen": "L1", "nidn": "001", "nama_dosen": "Dosen Contoh"}
+        ],
+        "lecturer_registrations": [
+            {
+                "id_dosen": "L1",
+                "id_registrasi_dosen": "R1",
+                "id_prodi": "FP2",
+                "id_tahun_ajaran": "2024",
+                "a_sp_homebase": "1",
+            },
+            {
+                "id_dosen": "L1",
+                "id_registrasi_dosen": "R2",
+                "id_prodi": "FP2",
+                "id_tahun_ajaran": "2025",
+                "a_sp_homebase": "1",
+            },
+        ],
+    }
+
+    updates, report = reconciliation.build_plan(
+        tables=tables,
+        current=current,
+        live=live,
+        period="20261",
+        source_name="latest.json",
+    )
+
+    assert not any(
+        item.collection == "users" and item.query == {"id": "D-OLD"}
+        for item in updates
+    )
+    lecturer = next(
+        item
+        for item in updates
+        if item.collection == "users" and item.query == {"id": "D-CANON"}
+    )
+    student = next(
+        item
+        for item in updates
+        if item.collection == "users" and item.query == {"id": "S1"}
+    )
+    class_update = next(
+        item
+        for item in updates
+        if item.collection == "classes" and item.query == {"id": "J1"}
+    )
+
+    assert lecturer.values["homebase"] == "P2"
+    assert lecturer.values["prodi_id"] == "P2"
+    assert lecturer.values["homebase_source"] == "feeder"
+    assert lecturer.values["access_scope_prodi_ids"] == ["P1", "P2"]
+    assert student.values["dosen_wali_id"] == "D-CANON"
+    assert class_update.values["lecturer_id"] == "D-CANON"
+    assert class_update.values["local_dosen_pengajar"][0]["lecturer_id"] == "D-CANON"
+    assert report["merged_staff_skipped"] == [
+        {"source_id": "D-OLD", "canonical_id": "D-CANON"}
+    ]
+
+
 def test_plan_backfills_semester_status_from_old_khs():
     tables = {
         "mhsw": [{"MhswID": "25001", "Nama": "Mahasiswa", "ProdiID": "P1"}],

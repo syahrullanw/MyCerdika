@@ -27,6 +27,8 @@ from routers.user_access import (
 
 router = APIRouter(prefix="/api/v1/master", tags=["Master Data SIAKAD"])
 
+CURRICULUM_LECTURER_SELECTION_CONTEXT = "curriculum_course_mapping"
+
 
 def get_db(request: Request) -> PostgresDatabase:
     return request.app.state.db
@@ -594,6 +596,7 @@ async def list_dosen(
     request: Request,
     is_wali: Optional[bool] = None,
     prodi_id: Optional[str] = None,
+    selection_context: Optional[str] = None,
     db: PostgresDatabase = Depends(get_db),
     user: Dict = Depends(get_current_user_with_roles),
 ):
@@ -609,7 +612,11 @@ async def list_dosen(
     if not dosen_list:
         dosen_list = []
 
-    if _is_scoped_program_manager(user):
+    allow_cross_program_curriculum_selection = (
+        _is_scoped_program_manager(user)
+        and selection_context == CURRICULUM_LECTURER_SELECTION_CONTEXT
+    )
+    if _is_scoped_program_manager(user) and not allow_cross_program_curriculum_selection:
         scope_values = await _program_manager_scope(db, user)
         dosen_list = [
             dosen

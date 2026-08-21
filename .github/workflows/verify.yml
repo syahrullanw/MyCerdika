@@ -21,6 +21,7 @@ jobs:
     runs-on: ubuntu-latest
     env:
       DATABASE_URL: postgresql://ci:ci@127.0.0.1:5432/ci
+      PYTHONPATH: .:backend
     steps:
       - uses: actions/checkout@v6
       - uses: actions/setup-python@v6
@@ -42,6 +43,7 @@ jobs:
           backend/user_notifications.py
           backend/youtube_urls.py
           backend/scripts/repair_duplicate_student_identities.py
+          scripts/transfer_bundle.py
       - name: Test PostgreSQL compatibility and identity repair
         run: >-
           python -m pytest -q
@@ -51,6 +53,9 @@ jobs:
           backend/tests/test_user_activity.py
           backend/tests/test_user_notifications.py
           backend/tests/test_youtube_urls.py
+          backend/tests/test_transfer_bundle.py
+          backend/tests/test_old_siakad_reconciliation.py
+          backend/tests/test_ordinary_lecturer_scopes.py
 
   frontend:
     name: Frontend build

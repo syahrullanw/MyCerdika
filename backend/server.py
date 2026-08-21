@@ -61,6 +61,8 @@ try:
         DRIVE_SYNC_MAX_ATTEMPTS_PER_DAY,
         local_copy_is_expired,
         next_drive_retry_at,
+        portable_storage_path_from_local_path,
+        resolve_storage_local_path,
         retry_is_due,
         sync_attempt_day,
     )
@@ -82,6 +84,8 @@ except ImportError:  # Supports `uvicorn server:app` from the backend directory.
         DRIVE_SYNC_MAX_ATTEMPTS_PER_DAY,
         local_copy_is_expired,
         next_drive_retry_at,
+        portable_storage_path_from_local_path,
+        resolve_storage_local_path,
         retry_is_due,
         sync_attempt_day,
     )
@@ -660,6 +664,31 @@ STORAGE_MAINTENANCE_INTERVAL_SECONDS = max(
     int(os.environ.get("STORAGE_MAINTENANCE_INTERVAL_SECONDS", "300")),
 )
 _storage_maintenance_scheduler_task: Optional[asyncio.Task] = None
+
+
+def resolved_stored_file_path(file_doc: Dict[str, Any]) -> Optional[Path]:
+    """Return a safe local path, preferring the portable storage_path field."""
+    storage_path = str(file_doc.get("storage_path") or "")
+    if not storage_path:
+        storage_path = portable_storage_path_from_local_path(
+            str(file_doc.get("local_path") or "")
+        )
+    portable_path = resolve_storage_local_path(
+        ROOT_DIR / "storage",
+        storage_path,
+    )
+    if portable_path and portable_path.exists() and portable_path.is_file():
+        return portable_path
+
+    local_path = str(file_doc.get("local_path") or "").strip()
+    if not local_path:
+        return None
+    candidate = Path(local_path).resolve()
+    storage_roots = (STORAGE_ROOT.resolve(), PMB_STORAGE_ROOT.resolve())
+    if any(root == candidate or root in candidate.parents for root in storage_roots):
+        if candidate.exists() and candidate.is_file():
+            return candidate
+    return None
 
 
 def safe_path_segment(value: str) -> str:
@@ -3559,6 +3588,65 @@ BACKUP_TIMEZONE = ZoneInfo(os.environ.get("BACKUP_TIMEZONE", "Asia/Jakarta"))
 _database_backup_scheduler_task: Optional[asyncio.Task] = None
 
 
+async def reconcile_local_storage_paths() -> Dict[str, int]:
+    """Rebase machine-specific file paths after a database/storage restore."""
+    rebased = 0
+    missing = 0
+    async for file_doc in db.stored_files.find(
+        {},
+        {"_id": 0, "id": 1, "storage_path": 1, "local_path": 1, "local_available": 1},
+    ):
+        storage_path = str(file_doc.get("storage_path") or "")
+        if not storage_path:
+            storage_path = portable_storage_path_from_local_path(
+                str(file_doc.get("local_path") or "")
+            )
+        portable_path = resolve_storage_local_path(
+            ROOT_DIR / "storage",
+            storage_path,
+        )
+        if not portable_path:
+            continue
+        available = portable_path.exists() and portable_path.is_file()
+        updates: Dict[str, Any] = {}
+        if str(file_doc.get("storage_path") or "") != storage_path:
+            updates["storage_path"] = storage_path
+        if str(file_doc.get("local_path") or "") != str(portable_path):
+            updates["local_path"] = str(portable_path)
+        if bool(file_doc.get("local_available")) != available:
+            updates["local_available"] = available
+        if updates:
+            updates["updated_at"] = now_iso()
+            await db.stored_files.update_one({"id": file_doc["id"]}, {"$set": updates})
+            rebased += 1
+        if not available:
+            missing += 1
+
+    async for backup_doc in db.database_backups.find(
+        {},
+        {"_id": 0, "id": 1, "file_name": 1, "local_path": 1, "local_available": 1},
+    ):
+        file_name = Path(str(backup_doc.get("file_name") or "")).name
+        if not file_name:
+            continue
+        portable_path = BACKUP_ROOT / file_name
+        available = portable_path.exists() and portable_path.is_file()
+        updates = {}
+        if str(backup_doc.get("local_path") or "") != str(portable_path):
+            updates["local_path"] = str(portable_path)
+        if bool(backup_doc.get("local_available")) != available:
+            updates["local_available"] = available
+        if updates:
+            await db.database_backups.update_one(
+                {"id": backup_doc["id"]},
+                {"$set": updates},
+            )
+            rebased += 1
+        if not available:
+            missing += 1
+    return {"rebased": rebased, "missing": missing}
+
+
 def default_database_backup_settings() -> Dict[str, Any]:
     return {
         "id": "main",
@@ -4380,14 +4468,19 @@ async def sync_stored_file_to_drive(file_id: str) -> None:
         await refresh_embedded_file_references(file_id)
         return
     file_doc = await db.stored_files.find_one({"id": file_id}, {"_id": 0}) or file_doc
-    local_path = Path(file_doc.get("local_path", ""))
-    if not file_doc.get("local_path") or not local_path.exists():
+    local_path = resolved_stored_file_path(file_doc)
+    if not local_path:
         await mark_drive_sync_failure(
             file_id,
             "File lokal tidak ditemukan untuk sinkron Google Drive.",
             attempts_today,
         )
         return
+    if str(file_doc.get("local_path") or "") != str(local_path):
+        await db.stored_files.update_one(
+            {"id": file_id},
+            {"$set": {"local_path": str(local_path), "local_available": True}},
+        )
     try:
         drive_doc = await asyncio.to_thread(
             upload_to_drive,
@@ -5607,7 +5700,9 @@ async def upload_user_avatar(
         "original_name": file.filename,
         "mime_type": file.content_type or f"image/{ext.replace('.', '')}",
         "size": len(content),
+        "storage_path": portable_storage_path_from_local_path(str(file_path)),
         "local_path": str(file_path),
+        "local_available": True,
         "created_at": now_iso(),
     }
     await db.stored_files.update_one({"id": file_id}, {"$set": file_doc}, upsert=True)
@@ -10680,14 +10775,16 @@ async def stored_file_context(
             academic_class_id = assignment.get("class_id", "")
         if academic_class_id:
             await require_class_access(academic_class_id, user)
-    local_path = str(file_doc.get("local_path") or "")
-    if local_path:
-        path = Path(local_path).resolve()
-        storage_roots = (STORAGE_ROOT.resolve(), PMB_STORAGE_ROOT.resolve())
-        if not any(root == path or root in path.parents for root in storage_roots):
-            raise HTTPException(status_code=403, detail="Path file tidak valid")
-        if path.exists() and path.is_file():
-            return user, file_doc, path, False
+    path = resolved_stored_file_path(file_doc)
+    if path:
+        if str(file_doc.get("local_path") or "") != str(path):
+            await db.stored_files.update_one(
+                {"id": file_doc.get("id")},
+                {"$set": {"local_path": str(path), "local_available": True}},
+            )
+            file_doc["local_path"] = str(path)
+            file_doc["local_available"] = True
+        return user, file_doc, path, False
     drive_file_id = str(file_doc.get("drive_file_id") or "").strip()
     if drive_file_id:
         settings = await get_google_drive_settings(mask=False)
@@ -13601,7 +13698,9 @@ async def upload_campus_logo(
         "original_name": file.filename,
         "mime_type": file.content_type or f"image/{ext.replace('.', '')}",
         "size": len(content),
+        "storage_path": portable_storage_path_from_local_path(str(file_path)),
         "local_path": str(file_path),
+        "local_available": True,
         "created_at": now_iso(),
     }
     await db.stored_files.update_one({"id": file_id}, {"$set": file_doc}, upsert=True)
@@ -13645,7 +13744,9 @@ async def upload_app_logo(
         "original_name": file.filename,
         "mime_type": file.content_type or f"image/{ext.replace('.', '')}",
         "size": len(content),
+        "storage_path": portable_storage_path_from_local_path(str(file_path)),
         "local_path": str(file_path),
+        "local_available": True,
         "created_at": now_iso(),
     }
     await db.stored_files.update_one({"id": file_id}, {"$set": file_doc}, upsert=True)
@@ -13689,7 +13790,9 @@ async def upload_kop_header(
         "original_name": file.filename,
         "mime_type": file.content_type or f"image/{ext.replace('.', '')}",
         "size": len(content),
+        "storage_path": portable_storage_path_from_local_path(str(file_path)),
         "local_path": str(file_path),
+        "local_available": True,
         "created_at": now_iso(),
     }
     await db.stored_files.update_one({"id": file_id}, {"$set": file_doc}, upsert=True)
@@ -13733,7 +13836,9 @@ async def upload_kop_footer(
         "original_name": file.filename,
         "mime_type": file.content_type or f"image/{ext.replace('.', '')}",
         "size": len(content),
+        "storage_path": portable_storage_path_from_local_path(str(file_path)),
         "local_path": str(file_path),
+        "local_available": True,
         "created_at": now_iso(),
     }
     await db.stored_files.update_one({"id": file_id}, {"$set": file_doc}, upsert=True)
@@ -13857,6 +13962,13 @@ async def on_startup():
     await db.connect()
     app.state.db = db
     await seed_data()
+    storage_reconciliation = await reconcile_local_storage_paths()
+    if storage_reconciliation["rebased"] or storage_reconciliation["missing"]:
+        logger.info(
+            "Rekonsiliasi path storage: %s diperbarui, %s file lokal belum tersedia",
+            storage_reconciliation["rebased"],
+            storage_reconciliation["missing"],
+        )
     # Penugasan yang telah ada sebelum modul Hak Akses diperbarui juga harus
     # menurunkan scope terbaru saat server menyala atau setelah migrasi data.
     assignment_users = await db.jabatan_assignments.find(

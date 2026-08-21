@@ -2,6 +2,41 @@
 
 Semua perubahan penting pada aplikasi ini dicatat di sini. Versi rilis utama disimpan di file [`VERSION`](./VERSION), sedangkan versi skema database yang sudah diterapkan dicatat oleh tabel `app_schema_migrations` di PostgreSQL.
 
+## [1.11.5] — 2026-08-21
+
+### Rekonsiliasi dosen dan homebase
+
+- Menjadikan identitas serta riwayat penugasan Dosen dari Feeder sebagai sumber otoritatif untuk NIDN, NUPTK, dan homebase tanpa menimpa perubahan profil lokal yang tidak berkaitan.
+- Menyatukan riwayat homebase tahunan yang menunjuk Program Studi sama, memilih penugasan tunggal pada tahun ajaran terbaru saat Dosen berpindah homebase, dan menahan pembaruan jika tahun terbaru masih mengandung lebih dari satu Program Studi.
+- Memetakan ID Program Studi Feeder ke kode Program Studi lokal dan hanya memakai data OLD-SIAKAD sebagai fallback apabila homebase tunggal serta tidak ambigu.
+- Meneruskan ID Dosen hasil merge ke Dosen PA, kelas, Dosen utama, dan team teaching agar relasi tidak kembali menunjuk akun Dosen lama yang sudah digabung.
+- Memperketat eksekusi rekonsiliasi incremental dengan pemeriksaan stale sebelum penulisan, melewati konflik/local-newer, menyimpan baseline sinkronisasi, checksum sumber, dan audit setiap import aman tanpa menulis balik ke Neo Feeder.
+- Menambahkan ringkasan hasil resolusi homebase, konflik, akun hasil merge yang dilewati, serta klasifikasi create/update/unchanged pada dry-run dan eksekusi migrasi.
+
+### Kurikulum & Dosen Mata Kuliah
+
+- Mengganti pilihan Dosen Pengampu Utama dan team teaching menjadi pencarian berdasarkan nama, NIDN, NIP, atau NUPTK dengan dukungan pemilihan satu maupun beberapa Dosen.
+- Menampilkan badge homebase pada hasil pencarian dan Dosen terpilih agar Kaprodi dapat memeriksa asal Program Studi sebelum menyimpan pemetaan Mata Kuliah.
+- Menambahkan konteks khusus pemetaan Dosen Mata Kuliah agar Kaprodi dapat memilih Dosen lintas Program Studi tanpa memperluas scope halaman Data Dosen yang tetap terbatas pada Program Studi yang dipimpin.
+- Memperbaiki normalisasi homebase dengan memetakan kode, nama, ID lokal, dan ID Feeder ke satu Program Studi kanonis. Data Syahrul Anwar kini dikenali sebagai `RKJ-D4 — REKAYASA KOMPUTER JARINGAN`, bukan **Homebase Belum valid**.
+- Tetap menandai homebase sebagai belum valid apabila tidak tersedia atau aliasnya benar-benar merujuk ke lebih dari satu Program Studi.
+
+### Backup dan restore portabel
+
+- Mengganti backup database lama menjadi satu bundle transfer yang memuat dump PostgreSQL format custom, seluruh `backend/storage`, manifest versi, ukuran, dan checksum SHA-256.
+- Mengecualikan `.env`, password database, token, private key, dan credential Google dari bundle serta tetap mengecualikan bundle dari GitHub melalui `.gitignore`.
+- Menjadikan restore bersifat preflight secara default; perubahan data hanya dijalankan dengan `--execute` setelah format, checksum, keamanan path arsip, dump, dan koneksi target lolos pemeriksaan.
+- Membuat backup database target dan salinan storage lama secara otomatis sebelum restore, serta menjalankan restore database dalam satu transaksi.
+- Menghapus pemilihan container PostgreSQL pertama secara sembarang; jika ada beberapa container, target harus dinyatakan secara eksplisit.
+- Menyesuaikan ulang path absolut file dan backup database secara otomatis saat backend startup, sehingga data dari komputer lokal dapat digunakan pada struktur direktori server baru.
+- Menambahkan panduan pemindahan data lokal-ke-server dan regression test untuk integritas bundle, penolakan path traversal, checksum, dan rebase path storage.
+
+### Validasi rilis
+
+- Versi aplikasi dinaikkan dari `1.11.4` ke `1.11.5` pada `VERSION`, `frontend/package.json`, `frontend/package-lock.json`, dan `frontend-pmb/package.json`.
+- Tidak ada migration SQL baru; perubahan rekonsiliasi dijalankan melalui CLI migrasi OLD-SIAKAD yang sudah memiliki mode dry-run dan audit.
+- Menambahkan regression test untuk resolusi homebase Feeder, propagasi ID Dosen kanonis, scope pemilihan Dosen MK Kaprodi, serta normalisasi alias homebase pada frontend.
+
 ## [1.11.4] — 2026-08-20
 
 ### Hak akses Tendik

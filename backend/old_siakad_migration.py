@@ -27,6 +27,7 @@ from dataclasses import dataclass
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
+from uuid import uuid4
 
 import httpx
 import bcrypt
@@ -39,6 +40,7 @@ sys.path.insert(0, str(BACKEND_DIR))
 load_dotenv(BACKEND_DIR / ".env")
 
 from postgres_database import PostgresDatabase, matches  # noqa: E402
+from program_scope import split_program_identifiers  # noqa: E402
 from routers.feeder import (  # noqa: E402
     feeder_response_token,
     fetch_feeder_rows,
@@ -112,6 +114,14 @@ def parse_old_tables(path: Path) -> dict[str, list[dict[str, Any]]]:
     }
 
 
+def file_sha256(path: Path) -> str:
+    digest = hashlib.sha256()
+    with path.open("rb") as handle:
+        for chunk in iter(lambda: handle.read(1024 * 1024), b""):
+            digest.update(chunk)
+    return digest.hexdigest()
+
+
 def read_csv_rows(path: Path) -> list[dict[str, str]]:
     if not path.exists():
         return []
@@ -147,6 +157,41 @@ def nonempty_fields(values: dict[str, Any]) -> dict[str, Any]:
     return {key: value for key, value in values.items() if meaningful(value)}
 
 
+def select_feeder_homebase(
+    registrations: list[dict[str, Any]],
+) -> tuple[str, str]:
+    """Pilih tepat satu prodi homebase dari riwayat penugasan Feeder.
+
+    Feeder dapat mengembalikan beberapa baris tahunan untuk satu dosen. Semua
+    baris dengan prodi yang sama bukan duplikasi homebase. Jika pernah terjadi
+    perpindahan prodi, baris tahun ajaran terbaru yang tunggal menjadi sumber
+    kebenaran. Dua prodi pada tahun terbaru dianggap konflik dan tidak ditebak.
+    """
+    rows = [row for row in registrations if meaningful(row.get("id_prodi"))]
+    if not rows:
+        return "", "missing"
+
+    homebase_rows = [
+        row
+        for row in rows
+        if normalized(row.get("a_sp_homebase")) in {"1", "TRUE", "Y", "YA"}
+    ]
+    candidates = homebase_rows or rows
+    program_ids = {clean(row.get("id_prodi")) for row in candidates}
+    if len(program_ids) == 1:
+        return next(iter(program_ids)), "feeder_unique"
+
+    latest_year = max(normalized(row.get("id_tahun_ajaran")) for row in candidates)
+    latest_program_ids = {
+        clean(row.get("id_prodi"))
+        for row in candidates
+        if normalized(row.get("id_tahun_ajaran")) == latest_year
+    }
+    if len(latest_program_ids) == 1:
+        return next(iter(latest_program_ids)), "feeder_latest"
+    return "", "conflict"
+
+
 @dataclass
 class PlannedUpdate:
     collection: str
@@ -154,6 +199,7 @@ class PlannedUpdate:
     values: dict[str, Any]
     upsert: bool = False
     needs_write: bool = True
+    authoritative_fields: tuple[str, ...] = ()
 
 
 VOLATILE_MIGRATION_FIELDS = {
@@ -273,11 +319,25 @@ def classify_incremental_updates(
                 == clean(previous.get("target_hash"))
             )
         )
+        changed_fields = sorted(
+            key
+            for key, value in desired.items()
+            if target is None or target.get(key) != value
+        )
+        authoritative_change = bool(operation.authoritative_fields) and set(
+            changed_fields
+        ).issubset(set(operation.authoritative_fields))
 
         if target is None:
             status = "ready_create" if operation.upsert else "conflict"
         elif target_subset == desired:
             status = "unchanged"
+        elif authoritative_change:
+            # Field ini berasal dari sumber yang memang ditetapkan sebagai
+            # otoritas (saat ini hanya identitas/homebase dosen Feeder). Scope
+            # field dibatasi pada operasi sehingga data profil lain tetap
+            # tunduk pada three-way conflict guard biasa.
+            status = "ready_update"
         elif previous:
             source_changed = source_hash != clean(previous.get("source_hash"))
             target_changed = not target_matches_previous
@@ -294,11 +354,6 @@ def classify_incremental_updates(
             # yang lebih baru. Admin dapat menyelesaikannya melalui preview.
             status = "conflict"
 
-        changed_fields = sorted(
-            key
-            for key, value in desired.items()
-            if target is None or target.get(key) != value
-        )
         entry = {
             "id": state_id,
             "collection": operation.collection,
@@ -322,6 +377,7 @@ def classify_incremental_updates(
                 else "none"
             ),
             "changed_fields": changed_fields,
+            "authoritative_fields": list(operation.authoritative_fields),
             "source_hash": source_hash,
             "target_hash_before": target_hash_before,
             "target_hash_after": target_hash_after,
@@ -522,22 +578,55 @@ def build_plan(
     old_staff = {normalized(row.get("Login")): row for row in tables.get("pegawai", [])}
     old_students = {normalized(row.get("MhswID")): row for row in tables.get("mhsw", [])}
 
+    def canonical_lecturer_id(value: Any) -> str:
+        """Ikuti rantai merge dosen tanpa pernah mengaktifkan record asal."""
+        candidate = clean(value)
+        seen: set[str] = set()
+        while normalized(candidate) and normalized(candidate) not in seen:
+            key = normalized(candidate)
+            seen.add(key)
+            user = users_by_id.get(key, {})
+            merged_into = clean(user.get("merged_into_user_id"))
+            if not merged_into:
+                return clean(user.get("id")) or candidate
+            candidate = merged_into
+        return candidate
+
+    feeder_program_to_local: dict[str, str] = {
+        normalized(row.get("IDProdiDiktiID")): clean(row.get("ProdiID"))
+        for row in tables.get("prodi", [])
+        if meaningful(row.get("IDProdiDiktiID")) and meaningful(row.get("ProdiID"))
+    }
+    for program in current["programs"]:
+        feeder_program_id = normalized(program.get("feeder_program_id"))
+        if feeder_program_id:
+            feeder_program_to_local[feeder_program_id] = clean(program.get("id"))
+
     live_students = {
         normalized(row.get("nim")): row for row in live.get("students", []) if normalized(row.get("nim"))
     }
-    live_lecturers = {
-        normalized(row.get("nidn")): row
+    live_lecturers_by_id = {
+        normalized(row.get("id_dosen")): row
         for row in live.get("lecturers_master", [])
-        if normalized(row.get("nidn"))
+        if normalized(row.get("id_dosen"))
     }
+    live_lecturers_by_nidn: defaultdict[str, list[dict[str, Any]]] = defaultdict(list)
+    for row in live.get("lecturers_master", []):
+        if normalized(row.get("nidn")):
+            live_lecturers_by_nidn[normalized(row.get("nidn"))].append(row)
+    source_staff_by_nidn: defaultdict[str, list[dict[str, Any]]] = defaultdict(list)
+    for row in tables.get("pegawai", []):
+        if normalized(row.get("NIDN")):
+            source_staff_by_nidn[normalized(row.get("NIDN"))].append(row)
+
     live_assignments_by_class: defaultdict[str, list[dict[str, Any]]] = defaultdict(list)
-    live_registration_by_nidn: defaultdict[str, set[str]] = defaultdict(set)
     for row in live.get("lecturers", []):
         live_assignments_by_class[normalized(row.get("id_kelas_kuliah"))].append(row)
-        if meaningful(row.get("id_registrasi_dosen")):
-            live_registration_by_nidn[normalized(row.get("nidn"))].add(
-                clean(row.get("id_registrasi_dosen"))
-            )
+    live_registrations_by_lecturer_id: defaultdict[str, list[dict[str, Any]]] = defaultdict(list)
+    for row in live.get("lecturer_registrations", []):
+        lecturer_id = normalized(row.get("id_dosen"))
+        if lecturer_id:
+            live_registrations_by_lecturer_id[lecturer_id].append(row)
 
     # NIDN pada OLD-SIAP tidak selalu terisi. Untuk dosen yang benar-benar
     # mengajar di kelas aktif, relasi kelas + nama yang sama persis menjadi
@@ -546,7 +635,7 @@ def build_plan(
     for class_id, source in old_classes.items():
         if normalized(source.get("TahunID")) != period:
             continue
-        lecturer_id = normalized(source.get("DosenID"))
+        lecturer_id = normalized(canonical_lecturer_id(source.get("DosenID")))
         feeder_class_id = normalized(source.get("JadwalIDDIkti"))
         lecturer = users_by_id.get(lecturer_id, {})
         local_name = name_key(lecturer.get("name") or old_staff.get(lecturer_id, {}).get("Nama"))
@@ -898,6 +987,10 @@ def build_plan(
             "migration_source": source_name,
             "migration_verified_at": generated_at,
         }
+        if meaningful(source.get("PenasehatAkademik")):
+            values["dosen_wali_id"] = canonical_lecturer_id(
+                source.get("PenasehatAkademik")
+            )
         target_id = target.get("id") or clean(source.get("MhswID"))
         if is_new_user:
             program_id = clean(source.get("ProdiID"))
@@ -932,7 +1025,7 @@ def build_plan(
                     "prodi_name": clean(program.get("Nama")),
                     "prodi_kode": program_id,
                     "angkatan": clean(source.get("TahunID"))[:4],
-                    "dosen_wali_id": clean(source.get("PenasehatAkademik")),
+                    "dosen_wali_id": values.get("dosen_wali_id", ""),
                     "password_hash": initial_password_hash(),
                     "must_reset_password": True,
                     "created_at": generated_at,
@@ -943,35 +1036,74 @@ def build_plan(
             PlannedUpdate("users", {"id": target_id}, values, upsert=is_new_user)
         )
 
+    homebase_resolution_counts: Counter[str] = Counter()
+    homebase_conflicts: list[dict[str, Any]] = []
+    merged_staff_skipped: list[dict[str, str]] = []
     for staff_id, source in old_staff.items():
+        canonical_staff_id = canonical_lecturer_id(source.get("Login"))
+        if normalized(canonical_staff_id) != staff_id:
+            merged_staff_skipped.append(
+                {"source_id": clean(source.get("Login")), "canonical_id": canonical_staff_id}
+            )
+            continue
+
         target = users_by_id.get(staff_id)
         is_new_user = target is None
         target = target or {}
         agama = agama_map.get(normalized(source.get("AgamaID")), {})
-        feeder_current = live_lecturers.get(normalized(source.get("NIDN")), {})
         verified_rows = verified_staff_from_active_class.get(staff_id, [])
-        if not feeder_current and verified_rows:
-            feeder_current = verified_rows[0]
+        feeder_current: dict[str, Any] = {}
         if feeder_available:
-            feeder_registration_ids = set(
-                live_registration_by_nidn.get(normalized(source.get("NIDN")), set())
+            existing_feeder_id = normalized(target.get("feeder_lecturer_id"))
+            feeder_current = live_lecturers_by_id.get(existing_feeder_id, {})
+            if not feeder_current:
+                nidn = normalized(source.get("NIDN"))
+                candidates = live_lecturers_by_nidn.get(nidn, [])
+                source_nidn_is_unique = len(source_staff_by_nidn.get(nidn, [])) == 1
+                matching_names = [
+                    row
+                    for row in candidates
+                    if name_key(row.get("nama_dosen")) == name_key(source.get("Nama"))
+                ]
+                if len(candidates) == 1 and (source_nidn_is_unique or len(matching_names) == 1):
+                    feeder_current = candidates[0]
+            if not feeder_current and verified_rows:
+                feeder_current = live_lecturers_by_id.get(
+                    normalized(verified_rows[0].get("id_dosen")), verified_rows[0]
+                )
+
+            feeder_lecturer_id = clean(feeder_current.get("id_dosen"))
+            registration_rows = live_registrations_by_lecturer_id.get(
+                normalized(feeder_lecturer_id), []
             )
+            feeder_registration_ids = {
+                clean(row.get("id_registrasi_dosen"))
+                for row in registration_rows
+                if meaningful(row.get("id_registrasi_dosen"))
+            }
             feeder_registration_ids.update(
                 clean(row.get("id_registrasi_dosen"))
                 for row in verified_rows
                 if meaningful(row.get("id_registrasi_dosen"))
             )
-            feeder_lecturer_id = clean(feeder_current.get("id_dosen"))
         else:
+            registration_rows = []
             feeder_registration_ids = {
                 clean(value)
                 for value in target.get("feeder_registration_ids", [])
                 if meaningful(value)
             }
             feeder_lecturer_id = clean(target.get("feeder_lecturer_id"))
+
+        access_scope_prodi_ids = [
+            value
+            for value in split_program_identifiers(source.get("ProdiID"))
+            if normalized(value) in old_programs or normalized(value) in programs_by_id
+        ]
         values = {
             "feeder_lecturer_id": feeder_lecturer_id,
             "feeder_registration_ids": sorted(feeder_registration_ids),
+            "access_scope_prodi_ids": access_scope_prodi_ids,
             "agama": agama.get("name") or target.get("agama") or "",
             "agama_id": agama.get("id", ""),
             "kewarganegaraan": clean(source.get("Negara")) or "ID",
@@ -987,6 +1119,87 @@ def build_plan(
             "migration_source": source_name,
             "migration_verified_at": generated_at,
         }
+
+        if meaningful(feeder_current.get("nidn")):
+            values["nidn"] = clean(feeder_current.get("nidn"))
+        if meaningful(feeder_current.get("nuptk")):
+            values["nuptk"] = clean(feeder_current.get("nuptk"))
+
+        homebase_values: dict[str, Any] = {}
+        if feeder_available and feeder_current:
+            feeder_program_id, resolution = select_feeder_homebase(registration_rows)
+            homebase_resolution_counts[resolution] += 1
+            if resolution == "conflict":
+                homebase_conflicts.append(
+                    {
+                        "lecturer_id": canonical_staff_id,
+                        "name": clean(source.get("Nama")),
+                        "reason": "multiple_feeder_programs_in_latest_year",
+                    }
+                )
+            elif feeder_program_id:
+                local_program_id = feeder_program_to_local.get(
+                    normalized(feeder_program_id), ""
+                )
+                if local_program_id:
+                    program = programs_by_id.get(normalized(local_program_id), {}) or old_programs.get(
+                        normalized(local_program_id), {}
+                    )
+                    homebase_values = {
+                        "prodi_id": local_program_id,
+                        "prodi_kode": local_program_id,
+                        "homebase": local_program_id,
+                        "prodi_name": clean(
+                            program.get("name") or program.get("nama") or program.get("Nama")
+                        ),
+                        "homebase_source": "feeder",
+                        "homebase_feeder_program_id": feeder_program_id,
+                    }
+                    homebase_resolution_counts["mapped_to_local_program"] += 1
+                else:
+                    homebase_resolution_counts["unmapped_feeder_program"] += 1
+                    homebase_conflicts.append(
+                        {
+                            "lecturer_id": canonical_staff_id,
+                            "name": clean(source.get("Nama")),
+                            "reason": "unmapped_feeder_program",
+                            "feeder_program_id": feeder_program_id,
+                        }
+                    )
+        elif feeder_available:
+            homebase_resolution_counts["no_feeder_match"] += 1
+
+        # Sumber lama hanya boleh menjadi fallback jika nilainya tunggal dan
+        # record baru belum memiliki identitas Feeder. Daftar CSV ProdiID tidak
+        # pernah ditulis ke kolom homebase/prodi_id.
+        if not homebase_values and not feeder_current and (is_new_user or not target.get("homebase")):
+            old_homebase_candidates = [
+                value
+                for value in split_program_identifiers(
+                    source.get("Homebase") or source.get("ProdiID")
+                )
+                if normalized(value) in old_programs or normalized(value) in programs_by_id
+            ]
+            if len(old_homebase_candidates) == 1:
+                local_program_id = old_homebase_candidates[0]
+                program = programs_by_id.get(normalized(local_program_id), {}) or old_programs.get(
+                    normalized(local_program_id), {}
+                )
+                homebase_values = {
+                    "prodi_id": local_program_id,
+                    "prodi_kode": local_program_id,
+                    "homebase": local_program_id,
+                    "prodi_name": clean(
+                        program.get("name") or program.get("nama") or program.get("Nama")
+                    ),
+                    "homebase_source": "old_siakad_single_fallback",
+                    "homebase_feeder_program_id": "",
+                }
+                homebase_resolution_counts["old_single_fallback"] += 1
+            elif old_homebase_candidates:
+                homebase_resolution_counts["old_multiple_rejected"] += 1
+        values.update(homebase_values)
+
         target_id = target.get("id") or clean(source.get("Login"))
         if is_new_user:
             level_ids = {
@@ -1004,8 +1217,10 @@ def build_plan(
                     "email": safe_migration_email(source.get("Email"), target_id),
                     "whatsapp": clean(source.get("WA") or source.get("Handphone")),
                     "status": "inactive" if normalized(source.get("NA")) == "Y" else "active",
-                    "prodi_id": clean(source.get("ProdiID")),
-                    "homebase": clean(source.get("Homebase") or source.get("ProdiID")),
+                    "prodi_id": homebase_values.get("prodi_id", ""),
+                    "prodi_kode": homebase_values.get("prodi_kode", ""),
+                    "prodi_name": homebase_values.get("prodi_name", ""),
+                    "homebase": homebase_values.get("homebase", ""),
                     "gender": clean(source.get("KelaminID")),
                     "tempat_lahir": clean(source.get("TempatLahir")),
                     "tanggal_lahir": clean(source.get("TanggalLahir")),
@@ -1023,7 +1238,29 @@ def build_plan(
                 }
             )
         updates.append(
-            PlannedUpdate("users", {"id": target_id}, values, upsert=is_new_user)
+            PlannedUpdate(
+                "users",
+                {"id": target_id},
+                values,
+                upsert=is_new_user,
+                authoritative_fields=(
+                    (
+                        "access_scope_prodi_ids",
+                        "feeder_lecturer_id",
+                        "feeder_registration_ids",
+                        "homebase",
+                        "homebase_feeder_program_id",
+                        "homebase_source",
+                        "nidn",
+                        "nuptk",
+                        "prodi_id",
+                        "prodi_kode",
+                        "prodi_name",
+                    )
+                    if homebase_values.get("homebase_source") == "feeder"
+                    else ()
+                ),
+            )
         )
 
     extra_lecturers: defaultdict[str, list[str]] = defaultdict(list)
@@ -1058,15 +1295,20 @@ def build_plan(
         is_new_class = target is None
         target = target or {}
         feeder_class_id = clean(source.get("JadwalIDDIkti"))
-        source_lecturer_ids = [clean(source.get("DosenID")), *extra_lecturers.get(class_id, [])]
+        source_lecturer_ids = [
+            canonical_lecturer_id(value)
+            for value in [source.get("DosenID"), *extra_lecturers.get(class_id, [])]
+            if meaningful(value)
+        ]
         local_teachers = []
         for lecturer_id in dict.fromkeys(item for item in source_lecturer_ids if item):
             lecturer = users_by_id.get(normalized(lecturer_id), {})
+            lecturer_source = old_staff.get(normalized(lecturer_id), {})
             local_teachers.append(
                 {
                     "lecturer_id": lecturer_id,
-                    "lecturer_name": lecturer.get("name") or old_staff.get(normalized(lecturer_id), {}).get("Nama", ""),
-                    "nidn": lecturer.get("nidn") or old_staff.get(normalized(lecturer_id), {}).get("NIDN", ""),
+                    "lecturer_name": lecturer.get("name") or lecturer_source.get("Nama", ""),
+                    "nidn": lecturer.get("nidn") or lecturer_source.get("NIDN", ""),
                     "source": "old_siakad",
                 }
             )
@@ -1122,6 +1364,19 @@ def build_plan(
             "migration_source": source_name,
             "migration_verified_at": generated_at,
         }
+        primary_lecturer_id = canonical_lecturer_id(source.get("DosenID"))
+        primary_lecturer = users_by_id.get(normalized(primary_lecturer_id), {})
+        primary_lecturer_source = old_staff.get(normalized(primary_lecturer_id), {})
+        if primary_lecturer_id:
+            values.update(
+                {
+                    "lecturer_id": primary_lecturer_id,
+                    "lecturer_name": clean(
+                        primary_lecturer.get("name")
+                        or primary_lecturer_source.get("Nama")
+                    ),
+                }
+            )
         target_id = target.get("id") or clean(source.get("JadwalID"))
         if is_new_class:
             period_code = clean(source.get("TahunID"))
@@ -1165,8 +1420,8 @@ def build_plan(
                     "ruangan_id": room_code if room_exists else "",
                     "ruangan_kode": room_code if room_exists else "",
                     "class_code": f"KLS{target_id.zfill(4)}",
-                    "lecturer_id": clean(source.get("DosenID")),
-                    "lecturer_name": clean(old_staff.get(normalized(source.get("DosenID")), {}).get("Nama")),
+                    "lecturer_id": primary_lecturer_id,
+                    "lecturer_name": values.get("lecturer_name", ""),
                     "status": "active" if period_code == period else "ended",
                     "rombel_id": f"RLM-{rombel_source_id}" if rombel_source_id else "",
                     "student_ids": sorted(source_students_by_class.get(class_id, set())),
@@ -1582,11 +1837,19 @@ def build_plan(
             normalized(row.get("TahunID")) == period and meaningful(row.get("JadwalIDDIkti"))
             for row in old_classes.values()
         ),
+        "homebase_resolution": homebase_resolution_counts,
+        "homebase_conflicts": homebase_conflicts,
+        "merged_staff_skipped": merged_staff_skipped,
     }
     return updates, report
 
 
 async def execute_plan(db: PostgresDatabase, updates: list[PlannedUpdate]) -> Counter[str]:
+    """Eksekutor lama tanpa three-way guard; dipertahankan untuk kompatibilitas tes.
+
+    Jalur CLI produksi menggunakan ``execute_safe_entries`` di bawah. Jangan
+    panggil fungsi ini untuk rekonsiliasi incremental.
+    """
     results: Counter[str] = Counter()
     for operation in updates:
         if not operation.needs_write:
@@ -1600,6 +1863,79 @@ async def execute_plan(db: PostgresDatabase, updates: list[PlannedUpdate]) -> Co
         results[f"{operation.collection}.modified"] += result.modified_count
         if result.upserted_id is not None:
             results[f"{operation.collection}.upserted"] += 1
+    return results
+
+
+async def execute_safe_entries(
+    db: PostgresDatabase,
+    entries: list[dict[str, Any]],
+    *,
+    source_filename: str,
+    source_file_hash: str,
+    period: str,
+    run_id: str,
+) -> Counter[str]:
+    """Terapkan hanya create/update aman dan cek ulang stale sebelum menulis."""
+    results: Counter[str] = Counter()
+    applied_at = now_iso()
+    for entry in entries:
+        status = clean(entry.get("status"))
+        if status not in {"ready_create", "ready_update", "unchanged"}:
+            results[f"skipped_{status or 'unknown'}"] += 1
+            continue
+
+        collection = getattr(db, entry["collection"])
+        current = await collection.find_one(entry["query"], {"_id": 0})
+        desired = managed_values(entry.get("values") or {})
+        current_subset = (
+            managed_values({key: current.get(key) for key in desired})
+            if current is not None
+            else None
+        )
+        current_hash = stable_hash(current_subset) if current_subset is not None else ""
+        is_stale = (status == "ready_create" and current is not None) or (
+            status in {"ready_update", "unchanged"}
+            and current_hash != clean(entry.get("target_hash_before"))
+        )
+        if is_stale:
+            results["skipped_stale"] += 1
+            continue
+
+        if status in {"ready_create", "ready_update"} and entry.get("needs_write", True):
+            write_values = dict(entry.get("values") or {})
+            if current is not None:
+                write_values.pop("created_at", None)
+            write = await collection.update_one(
+                entry["query"],
+                {"$set": write_values},
+                upsert=bool(entry.get("upsert")),
+            )
+            if write.upserted_id is not None:
+                results["created"] += 1
+                results[f"{entry['collection']}.created"] += 1
+            elif write.modified_count:
+                results["updated"] += 1
+                results[f"{entry['collection']}.updated"] += 1
+            else:
+                results["matched_no_change"] += 1
+        else:
+            results["baseline_seeded"] += 1
+
+        state_document = {
+            "id": entry["id"],
+            "collection": entry["collection"],
+            "query": entry["query"],
+            "source_hash": entry["source_hash"],
+            "target_hash": entry["target_hash_after"],
+            "source_filename": source_filename,
+            "source_file_hash": source_file_hash,
+            "period": period,
+            "last_applied_run_id": run_id,
+            "updated_at": applied_at,
+        }
+        await db.old_siakad_sync_state.update_one(
+            {"id": state_document["id"]}, {"$set": state_document}, upsert=True
+        )
     return results
 
 
@@ -1643,6 +1979,10 @@ async def run(args: argparse.Namespace) -> None:
             period=args.period,
             source_name=old_path.name,
         )
+        for name in sorted({item.collection for item in updates} - set(current)):
+            current[name] = await load_collection(db, name)
+        states = await db.old_siakad_sync_state.find({}, {"_id": 0}).to_list(None)
+        entries, incremental = classify_incremental_updates(updates, current, states)
 
         print("\n=== AUDIT TIGA ARAH NILAI ===")
         for key, value in sorted(grade_summary.items()):
@@ -1669,18 +2009,63 @@ async def run(args: argparse.Namespace) -> None:
             "  Mahasiswa hanya di OLD/SIAKAD (perlu tindak lanjut Feeder): "
             f"{len(report['students_old_only_vs_feeder'])}"
         )
+        print("\n=== VALIDASI HOMEBASE DOSEN ===")
+        for key, value in sorted(report["homebase_resolution"].items()):
+            print(f"  {key}: {value}")
+        print(f"  merged_staff_skipped: {len(report['merged_staff_skipped'])}")
+        print(f"  homebase_conflicts: {len(report['homebase_conflicts'])}")
+        for conflict in report["homebase_conflicts"][:10]:
+            print(f"    - {conflict}")
+
+        print("\n=== KLASIFIKASI INCREMENTAL ===")
+        for status in ["ready_create", "ready_update", "unchanged", "local_newer", "conflict"]:
+            print(f"  {status}: {incremental.get(status, 0)}")
 
         if not args.execute:
             print("\nDRY-RUN selesai. Tidak ada database yang diubah.")
             return
 
-        print("\nMenjalankan backfill ke PostgreSQL SIAKAD baru...")
-        result = await execute_plan(db, updates)
+        print("\nMenerapkan hanya record berstatus aman ke PostgreSQL SIAKAD baru...")
+        source_file_hash = file_sha256(old_path)
+        run_id = str(uuid4())
+        result = await execute_safe_entries(
+            db,
+            entries,
+            source_filename=old_path.name,
+            source_file_hash=source_file_hash,
+            period=args.period,
+            run_id=run_id,
+        )
+        run_document = {
+            "id": run_id,
+            "period": args.period,
+            "source": {
+                "filename": old_path.name,
+                "sha256": source_file_hash,
+                "size_bytes": old_path.stat().st_size,
+            },
+            "preview_summary": {
+                status: incremental.get(status, 0)
+                for status in [
+                    "ready_create",
+                    "ready_update",
+                    "unchanged",
+                    "local_newer",
+                    "conflict",
+                ]
+            },
+            "result": dict(result),
+            "executed_by": "safe_cli",
+            "executed_at": now_iso(),
+            "feeder_write_count": 0,
+        }
+        await db.old_siakad_import_runs.insert_one(run_document)
         print("\n=== HASIL EKSEKUSI ===")
+        print(f"  run_id: {run_id}")
         for key, value in sorted(result.items()):
             if value:
                 print(f"  {key}: {value}")
-        print("\nBackfill selesai. Neo Feeder tidak diubah.")
+        print("\nBackfill aman selesai. Konflik dilewati dan Neo Feeder tidak diubah.")
     finally:
         await db.close()
 

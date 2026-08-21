@@ -13,6 +13,7 @@ Versi aplikasi saat ini dapat dilihat pada file [`VERSION`](./VERSION) atau endp
 - [`PANDUAN_SINKRONISASI_FEEDER.md`](./PANDUAN_SINKRONISASI_FEEDER.md) — migrasi OLD-SIAKAD, audit tiga arah, persetujuan, dan sinkronisasi aman ke Feeder.
 - [`VERSIONING.md`](./VERSIONING.md) — aturan SemVer, metadata deployment, dan rollback.
 - [`BACKUP_GITHUB.md`](./BACKUP_GITHUB.md) — prosedur backup, push, tag, dan update server.
+- [`DATA_TRANSFER.md`](./DATA_TRANSFER.md) — memindahkan database dan seluruh file upload dari lokal ke server dengan aman.
 - [`CONTRIBUTING.md`](./CONTRIBUTING.md) — aturan branch, commit, Pull Request, dan release.
 - [`backend/POSTGRESQL_MIGRATION.md`](./backend/POSTGRESQL_MIGRATION.md) — migrasi MongoDB ke PostgreSQL.
 
@@ -32,3 +33,19 @@ Versi aplikasi saat ini dapat dilihat pada file [`VERSION`](./VERSION) atau endp
 Script hanya memeriksa repository. Ia tidak melakukan `git add`, commit, atau push otomatis. Baca [`BACKUP_GITHUB.md`](./BACKUP_GITHUB.md) sebelum mengunggah perubahan.
 
 > Jangan memasukkan `.env`, credential Google, token, private key, backup database, atau data pengguna ke repository.
+
+## Backup data portabel
+
+```bash
+# Membuat bundle database + seluruh backend/storage
+bash scripts/backup_db.sh
+
+# Memeriksa bundle di server tanpa mengubah data
+bash scripts/restore_db.sh backups/mycerdika-transfer-latest.tar.gz
+
+# Jalankan hanya setelah preflight berhasil dan backend server dihentikan
+bash scripts/restore_db.sh backups/mycerdika-transfer-latest.tar.gz --execute
+```
+
+Panduan lengkap dan opsi Docker/PostgreSQL native tersedia di
+[`DATA_TRANSFER.md`](./DATA_TRANSFER.md).

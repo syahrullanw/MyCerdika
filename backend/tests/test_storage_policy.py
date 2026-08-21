@@ -8,10 +8,11 @@ from backend.storage_policy import (
     DRIVE_SYNC_MAX_ATTEMPTS_PER_DAY,
     local_copy_is_expired,
     next_drive_retry_at,
+    portable_storage_path_from_local_path,
+    resolve_storage_local_path,
     retry_is_due,
     sync_attempt_day,
 )
-
 
 JAKARTA = ZoneInfo("Asia/Jakarta")
 
@@ -56,3 +57,35 @@ def test_retry_due_accepts_empty_schedule_and_respects_future_time():
     assert retry_is_due("", now)
     assert retry_is_due((now - timedelta(seconds=1)).isoformat(), now)
     assert not retry_is_due((now + timedelta(seconds=1)).isoformat(), now)
+
+
+def test_portable_storage_path_is_rebased_below_current_storage_root(tmp_path):
+    storage_root = tmp_path / "backend" / "storage"
+
+    resolved = resolve_storage_local_path(
+        storage_root,
+        "E-Learning Dosen/Tugas/mahasiswa/bukti.pdf",
+    )
+
+    assert resolved == (
+        storage_root / "E-Learning Dosen" / "Tugas" / "mahasiswa" / "bukti.pdf"
+    ).resolve()
+
+
+def test_portable_storage_path_rejects_absolute_and_parent_traversal(tmp_path):
+    storage_root = tmp_path / "backend" / "storage"
+
+    assert resolve_storage_local_path(storage_root, "/etc/passwd") is None
+    assert resolve_storage_local_path(storage_root, "../secrets.env") is None
+    assert resolve_storage_local_path(storage_root, "E-Learning Dosen/../../secrets.env") is None
+    assert resolve_storage_local_path(storage_root, "") is None
+
+
+def test_portable_storage_path_is_inferred_from_old_mac_or_windows_path():
+    assert portable_storage_path_from_local_path(
+        "/Users/operator/MyCerdika/backend/storage/E-Learning Dosen/Branding/logo.png"
+    ) == "E-Learning Dosen/Branding/logo.png"
+    assert portable_storage_path_from_local_path(
+        r"D:\apps\MyCerdika\backend\storage\pmb\branding\logo.png"
+    ) == "pmb/branding/logo.png"
+    assert portable_storage_path_from_local_path("/tmp/unrelated/logo.png") == ""

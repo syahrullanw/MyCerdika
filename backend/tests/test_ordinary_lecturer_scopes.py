@@ -10,7 +10,11 @@ import server
 from program_scope import resolve_program_identifiers
 from routers.akademik import _active_period_identifiers
 from routers.kurikulum import list_kurikulum
-from routers.master_data import _fetch_jadwal_mengajar
+from routers.master_data import (
+    CURRICULUM_LECTURER_SELECTION_CONTEXT,
+    _fetch_jadwal_mengajar,
+    list_dosen,
+)
 
 
 def _matches(document, query):
@@ -222,6 +226,51 @@ def test_kaprodi_lecturer_directory_only_contains_led_program(monkeypatch):
     rows = asyncio.run(server.list_lecturers(dict(KAPRODI)))
 
     assert [row["id"] for row in rows] == ["dosen-rkj"]
+
+
+def test_kaprodi_curriculum_mapping_can_select_lecturers_across_programs():
+    db = _database(
+        programs=PROGRAMS,
+        jabatan_assignments=[
+            {
+                "user_id": "kaprodi-1",
+                "jabatan_kode": "KAPRODI",
+                "prodi_id": "RKJ-D4",
+                "status": "active",
+            },
+        ],
+        users=[
+            {
+                "id": "dosen-rkj",
+                "name": "Dosen RKJ",
+                "role": "lecturer",
+                "prodi_id": "RKJ-D4",
+                "homebase": "RKJ-D4",
+            },
+            {
+                "id": "dosen-ppem",
+                "name": "Dosen PPEM",
+                "role": "lecturer",
+                "prodi_id": "PPEM-D4",
+                "homebase": "PPEM-D4",
+            },
+        ],
+    )
+
+    directory_rows = asyncio.run(
+        list_dosen(object(), db=db, user=dict(KAPRODI))
+    )
+    curriculum_rows = asyncio.run(
+        list_dosen(
+            object(),
+            selection_context=CURRICULUM_LECTURER_SELECTION_CONTEXT,
+            db=db,
+            user=dict(KAPRODI),
+        )
+    )
+
+    assert [row["id"] for row in directory_rows] == ["dosen-rkj"]
+    assert {row["id"] for row in curriculum_rows} == {"dosen-rkj", "dosen-ppem"}
 
 
 def test_kaprodi_report_scope_remains_only_classes_they_teach(monkeypatch):
