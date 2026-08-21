@@ -10,6 +10,7 @@ from fastapi import APIRouter, Depends, HTTPException, Request, Header
 from pydantic import BaseModel, Field
 
 from postgres_database import PostgresDatabase
+from academic_period_state import normalize_academic_period_state
 from routers.user_access import normalize_base_role, user_is_admin_or_access_role
 
 
@@ -167,6 +168,10 @@ async def create_or_update_academic_period(
         }
         await db.academic_periods.insert_one(period_doc)
 
+    await normalize_academic_period_state(
+        db,
+        preferred_period_code=payload.code if payload.is_active else None,
+    )
     result = await db.academic_periods.find_one({"id": period_id}, {"_id": 0})
     return {"ok": True, "period": result}
 

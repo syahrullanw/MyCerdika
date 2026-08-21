@@ -12,6 +12,7 @@ from fastapi.responses import HTMLResponse
 from pydantic import BaseModel, Field
 
 from postgres_database import PostgresDatabase
+from academic_period_state import normalize_academic_period_state
 from program_scope import (
     record_matches_program_scope,
     resolve_program_identifiers,
@@ -417,19 +418,16 @@ async def activate_semester(
     target = await db.tahun_ajaran.find_one({"id": ta_id}, {"_id": 0})
     if not target:
         raise HTTPException(status_code=404, detail="Tidak ditemukan")
-    all_ta = await db.tahun_ajaran.find({}, {"_id": 0}).to_list(None)
-    for ta in all_ta:
-        await db.tahun_ajaran.update_one({"id": ta["id"]}, {"$set": {"is_active": False}})
     await db.tahun_ajaran.update_one(
         {"id": ta_id},
-        {"$set": {"is_active": True, "status": "active", "activated_at": now_iso()}},
+        {"$set": {"activated_at": now_iso()}},
     )
-    if target:
-        await db.app_settings.update_one(
-            {"id": "main"},
-            {"$set": {"active_academic_year": target.get("tahun"), "active_semester": target.get("semester")}},
-            upsert=True,
-        )
+    await normalize_academic_period_state(
+        db,
+        preferred_tahun_ajaran_id=ta_id,
+        preferred_period_code=target.get("kode") or target.get("id"),
+    )
+    target = await db.tahun_ajaran.find_one({"id": ta_id}, {"_id": 0}) or target
     return {"ok": True, "active": {**target, "is_active": True}}
 
 
@@ -441,6 +439,14 @@ async def close_semester(
     _: Dict = Depends(require_admin),
 ):
     """Tutup / arsipkan semester ini."""
+    target = await db.tahun_ajaran.find_one({"id": ta_id}, {"_id": 0})
+    if not target:
+        raise HTTPException(status_code=404, detail="Tidak ditemukan")
+    if target.get("is_active") or target.get("status") == "active":
+        raise HTTPException(
+            status_code=409,
+            detail="Aktifkan tahun ajaran pengganti terlebih dahulu sebelum menutup tahun ajaran aktif",
+        )
     await db.tahun_ajaran.update_one(
         {"id": ta_id},
         {"$set": {"is_active": False, "status": "closed", "closed_at": now_iso()}},
@@ -2326,6 +2332,105 @@ class JadwalMengajarInput(BaseModel):
     jam_mulai: str
     jam_selesai: str
     ruangan_id: Optional[str] = None
+
+
+class AssignClassLecturerInput(BaseModel):
+    lecturer_id: str = Field(min_length=1, description="ID dosen baru untuk kelas")
+    reason: str = Field(min_length=3, max_length=500, description="Alasan pergantian dosen")
+
+
+@router.put("/kelas/{kelas_id}/dosen")
+async def assign_class_lecturer(
+    kelas_id: str,
+    body: AssignClassLecturerInput,
+    request: Request,
+    db: PostgresDatabase = Depends(get_db),
+    user: Dict = Depends(require_admin_or_kaprodi),
+):
+    """Ganti dosen penanggung jawab pada satu kelas tanpa mengubah master MK."""
+    class_doc = await db.classes.find_one(
+        {"id": kelas_id, "status": {"$ne": "deleted"}},
+        {"_id": 0},
+    )
+    if not class_doc:
+        raise HTTPException(status_code=404, detail="Kelas tidak ditemukan")
+    await _require_program_manager_record_scope(
+        db,
+        user,
+        class_doc,
+        detail="Kelas berada di luar prodi yang Anda kelola",
+    )
+    if class_doc.get("status") in {"finalized", "archived"}:
+        raise HTTPException(
+            status_code=409,
+            detail="Dosen tidak dapat diganti setelah nilai difinalisasi atau kelas diarsipkan.",
+        )
+    if class_doc.get("status") not in {"active", "ended"}:
+        raise HTTPException(status_code=409, detail="Status kelas tidak mengizinkan pergantian dosen.")
+
+    lecturer = await db.users.find_one(
+        {
+            "id": body.lecturer_id.strip(),
+            "role": {"$nin": ["student", "Mahasiswa", "mahasiswa", "staff", "tendik", "staf", "pegawai"]},
+            "status": {"$ne": "deleted"},
+        },
+        {"_id": 0, "id": 1, "name": 1, "nidn": 1, "employee_id": 1},
+    )
+    if not lecturer:
+        raise HTTPException(status_code=404, detail="Dosen baru tidak ditemukan atau tidak aktif")
+
+    lecturer_id = str(lecturer.get("id") or "").strip()
+    if lecturer_id == str(class_doc.get("lecturer_id") or "").strip():
+        raise HTTPException(status_code=409, detail="Dosen tersebut sudah menjadi dosen kelas ini")
+
+    current_day = class_doc.get("jadwal_hari")
+    current_start = _parse_jam(class_doc.get("jadwal_jam_mulai"))
+    current_end = _parse_jam(class_doc.get("jadwal_jam_selesai"))
+    if current_day and current_start >= 0 and current_end > current_start:
+        scheduled = await db.classes.find(
+            {
+                "id": {"$ne": kelas_id},
+                "status": {"$in": JADWAL_ACTIVE_STATUSES},
+                "academic_year": class_doc.get("academic_year", ""),
+                "semester": class_doc.get("semester", ""),
+                "lecturer_id": lecturer_id,
+                "jadwal_hari": current_day,
+            },
+            {"_id": 0, "id": 1, "course_name": 1, "name": 1, "jadwal_jam_mulai": 1, "jadwal_jam_selesai": 1},
+        ).to_list(1000)
+        for other in scheduled:
+            other_start = _parse_jam(other.get("jadwal_jam_mulai"))
+            other_end = _parse_jam(other.get("jadwal_jam_selesai"))
+            if other_start >= 0 and other_end > other_start and _times_overlap(current_start, current_end, other_start, other_end):
+                raise HTTPException(
+                    status_code=409,
+                    detail=(
+                        f"Dosen baru bentrok dengan jadwal {other.get('course_name') or other.get('name') or 'kelas lain'} "
+                        f"({other.get('jadwal_jam_mulai')}–{other.get('jadwal_jam_selesai')})."
+                    ),
+                )
+
+    changed_at = now_iso()
+    updates = {
+        "lecturer_id": lecturer_id,
+        "lecturer_name": str(lecturer.get("name") or "").strip(),
+        "lecturer_nidn": str(lecturer.get("nidn") or "").strip(),
+        "lecturer_changed_at": changed_at,
+        "lecturer_changed_by": user.get("id", ""),
+        "lecturer_changed_by_name": user.get("name", ""),
+        "lecturer_change_reason": body.reason.strip(),
+        "updated_at": changed_at,
+    }
+    await db.classes.update_one({"id": kelas_id}, {"$set": updates})
+    return {
+        "ok": True,
+        "class_id": kelas_id,
+        "previous_lecturer_id": class_doc.get("lecturer_id", ""),
+        "previous_lecturer_name": class_doc.get("lecturer_name", ""),
+        "lecturer_id": lecturer_id,
+        "lecturer_name": updates["lecturer_name"],
+        "changed_at": changed_at,
+    }
 
 
 @router.get("/jadwal-mengajar")

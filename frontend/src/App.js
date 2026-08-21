@@ -55,6 +55,7 @@ import {
   Copy,
   Download,
   Eye,
+  EyeOff,
   FileText,
   FileSpreadsheet,
   GraduationCap,
@@ -1531,6 +1532,7 @@ function LoginScreen({ onAuth, branding, ssoError = "", version }) {
   const resetQuery = useMemo(() => getResetPasswordQuery(), []);
   const [mode, setMode] = useState(resetQuery.active ? "forgot" : "login");
   const [login, setLogin] = useState({ identifier: "", password: "" });
+  const [showLoginPassword, setShowLoginPassword] = useState(false);
   const [forgot, setForgot] = useState({
     identifier: resetQuery.identifier,
     otp: "",
@@ -1830,15 +1832,27 @@ function LoginScreen({ onAuth, branding, ssoError = "", version }) {
                       />
                     </Field>
                     <Field id="login-password" label="Password">
-                      <Input
-                        id="login-password"
-                        type="password"
-                        data-testid="unified-login-password-input"
-                        value={login.password}
-                        onChange={(e) =>
-                          setLogin({ ...login, password: e.target.value })
-                        }
-                      />
+                      <div className="relative">
+                        <Input
+                          id="login-password"
+                          type={showLoginPassword ? "text" : "password"}
+                          data-testid="unified-login-password-input"
+                          value={login.password}
+                          onChange={(e) =>
+                            setLogin({ ...login, password: e.target.value })
+                          }
+                          className="pr-12"
+                        />
+                        <button
+                          type="button"
+                          onClick={() => setShowLoginPassword((visible) => !visible)}
+                          aria-label={showLoginPassword ? "Sembunyikan password" : "Tampilkan password"}
+                          title={showLoginPassword ? "Sembunyikan password" : "Tampilkan password"}
+                          className="absolute inset-y-0 right-0 flex w-11 items-center justify-center text-slate-400 transition hover:text-blue-600 focus:outline-none focus:ring-2 focus:ring-inset focus:ring-blue-200"
+                        >
+                          {showLoginPassword ? <EyeOff className="h-4 w-4" /> : <Eye className="h-4 w-4" />}
+                        </button>
+                      </div>
                     </Field>
                     <Button
                       className="w-full"

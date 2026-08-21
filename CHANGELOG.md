@@ -2,6 +2,37 @@
 
 Semua perubahan penting pada aplikasi ini dicatat di sini. Versi rilis utama disimpan di file [`VERSION`](./VERSION), sedangkan versi skema database yang sudah diterapkan dicatat oleh tabel `app_schema_migrations` di PostgreSQL.
 
+## [1.11.7] — 2026-08-21
+
+### Konsistensi Tahun Ajaran dan Kelas Migrasi
+
+- Menormalkan hasil restore/migrasi agar hanya satu Tahun Ajaran yang berstatus aktif pada satu waktu; Tahun Ajaran lain tetap tersedia untuk dibuka kembali tanpa menjadi aktif ganda.
+- Menetapkan kelas yang sudah terbawa migrasi pada Tahun Ajaran aktif menjadi **Aktif**, bukan **Berakhir**, sehingga dapat digunakan dalam proses pembelajaran.
+
+### Wizard Generate Kelas
+
+- Menjadikan MK baru yang sudah memiliki Dosen Pengampu otomatis tercentang untuk mengurangi MK yang terlewat.
+- Mengunci MK yang sudah memiliki kelas agar tidak dapat dibuatkan kelas duplikat pada periode yang sama.
+- Menonaktifkan tombol **Generate Kelas** apabila tidak ada MK yang valid untuk dibuat.
+- Menampilkan alert konfirmasi saat Generate ditekan apabila masih ada MK tanpa Dosen Pengampu, lengkap dengan daftar MK per Program Studi.
+- Menampilkan kegagalan API pada wizard dan hanya membuat kelas untuk MK yang dipilih serta memiliki Dosen Pengampu.
+
+### Lifecycle Mata Kuliah dan Kelas
+
+- Mengunci perubahan identitas MK (kode, nama, SKS, semester paket, Prodi, dan sifat) setelah MK dipakai oleh kelas atau KRS.
+- Mencegah penghapusan MK yang sudah memiliki referensi kelas/KRS; perubahan substantif diarahkan untuk membuat MK pengganti agar histori KRS, nilai, dan pembelajaran tetap utuh.
+- Memisahkan perubahan Dosen master sebagai default untuk penawaran kelas berikutnya dari perubahan Dosen pada kelas yang sedang berjalan.
+- Menambahkan alur **Ganti Dosen** pada Jadwal Mengajar untuk kelas aktif/berakhir, dengan alasan wajib, validasi Dosen aktif, pemeriksaan bentrok jadwal, dan pencatatan audit.
+- Mencegah pergantian Dosen pada kelas yang sudah difinalisasi atau diarsipkan.
+- Menambahkan penanganan pesan error lifecycle pada halaman Kurikulum dan menandai MK yang sudah memiliki kelas sebagai terkunci.
+
+### Login dan Validasi Rilis
+
+- Menambahkan ikon tampil/sembunyikan password pada login ringan dan login utama.
+- Menambahkan regression test untuk guard lifecycle MK dan referensi kelas/KRS.
+- Memastikan backend dapat reload, route pergantian Dosen terdaftar, frontend development server berjalan, dan production build berhasil.
+- Versi aplikasi dinaikkan dari `1.11.6` ke `1.11.7` pada `VERSION`, `frontend/package.json`, `frontend/package-lock.json`, dan `frontend-pmb/package.json`.
+
 ## [1.11.6] — 2026-08-21
 
 ### Backup dan restore database
@@ -48,6 +79,7 @@ Semua perubahan penting pada aplikasi ini dicatat di sini. Versi rilis utama dis
 - Menghapus pemilihan container PostgreSQL pertama secara sembarang; jika ada beberapa container, target harus dinyatakan secara eksplisit.
 - Menyesuaikan ulang path absolut file dan backup database secara otomatis saat backend startup, sehingga data dari komputer lokal dapat digunakan pada struktur direktori server baru.
 - Menambahkan panduan pemindahan data lokal-ke-server dan regression test untuk integritas bundle, penolakan path traversal, checksum, dan rebase path storage.
+- Menambahkan skrip pengiriman bundle ke server MyCerdika melalui SSH/SCP dengan upload atomik, validasi checksum remote, dry-run, dan preflight tanpa menjalankan restore otomatis.
 
 ### Validasi rilis
 

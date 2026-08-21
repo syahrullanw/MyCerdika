@@ -292,7 +292,6 @@ export function WizardSemesterBaru({ onDone }) {
   const [activeProdiTab, setActiveProdiTab] = useState("");
   const [loading, setLoading] = useState(false);
   const [errMsg, setErrMsg] = useState("");
-  const [genInfo, setGenInfo] = useState("");
   const [mkList, setMkList] = useState([]);
   const [selectedMk, setSelectedMk] = useState([]);
   const [genLog, setGenLog] = useState([]);
@@ -302,9 +301,13 @@ export function WizardSemesterBaru({ onDone }) {
     const d = await API(`/api/v1/master/kelas/mk-baru?tahun_ajaran_id=${taId}`);
     const list = Array.isArray(d) ? d : [];
     setMkList(list);
-    // Pra-pilih MK yang sudah punya kelas (terkunci) agar tetap tampil tercentang
-    const lockedIds = list.filter((m) => m.sudah_punya_kelas).map((m) => m.id);
-    setSelectedMk((prev) => Array.from(new Set([...prev, ...lockedIds])));
+    // Pra-pilih semua MK baru yang siap ditawarkan agar tidak ada yang terlewat.
+    // MK yang sudah punya kelas tetap ditandai dan dikunci, tetapi tidak dipilih
+    // karena tidak perlu digenerate ulang.
+    const defaultSelectedIds = list
+      .filter((m) => !m.sudah_punya_kelas && (m.has_dosen_pengampu || m.dosen_utama_id))
+      .map((m) => m.id);
+    setSelectedMk(defaultSelectedIds);
   }, []);
 
   useEffect(() => {
@@ -329,10 +332,9 @@ export function WizardSemesterBaru({ onDone }) {
         method: "PUT",
         body: JSON.stringify({ ...selectedTa, krs_buka: form.krs_buka, krs_tutup: form.krs_tutup }),
       });
-      await loadMkList(selectedTa.id);
       setGenLog([]);
       setSelectedMk([]);
-      setGenInfo("");
+      await loadMkList(selectedTa.id);
       setStep(2);
     } catch (e) {
       setErrMsg(e.message || "Gagal menyimpan periode KRS");
@@ -342,13 +344,36 @@ export function WizardSemesterBaru({ onDone }) {
   };
 
   const generateKelas = async () => {
-    setLoading(true);
     setErrMsg("");
-    setGenLog([]);
     const toGenerate = selectedMk.filter((id) => {
       const mk = mkList.find((m) => m.id === id);
       return mk && !mk.sudah_punya_kelas && (mk.has_dosen_pengampu || mk.dosen_utama_id);
     });
+    if (toGenerate.length === 0) {
+      setErrMsg("Pilih minimal satu MK yang belum memiliki kelas dan sudah memiliki dosen pengampu.");
+      return;
+    }
+    const missingLecturerByProdi = Object.entries(
+      mkList
+        .filter((m) => !m.sudah_punya_kelas && !(m.has_dosen_pengampu || m.dosen_utama_id))
+        .reduce((groups, mk) => {
+          const prodi = mk.prodi_name || mk.prodi_code || "Prodi belum teridentifikasi";
+          if (!groups[prodi]) groups[prodi] = [];
+          groups[prodi].push(mk);
+          return groups;
+        }, {}),
+    );
+    if (missingLecturerByProdi.length > 0) {
+      const missingSummary = missingLecturerByProdi
+        .map(([prodi, items]) => `${prodi} (${items.length} MK):\n${items.map((mk) => `- ${mk.name}${mk.code ? ` (${mk.code})` : ""}`).join("\n")}`)
+        .join("\n\n");
+      const shouldContinue = window.confirm(
+        `Peringatan: masih ada MK yang belum memiliki dosen pengampu.\n\n${missingSummary}\n\nMK tersebut tidak akan dibuatkan kelas. Klik OK untuk tetap membuat kelas bagi MK yang sudah dipilih, atau Cancel untuk membatalkan.`,
+      );
+      if (!shouldContinue) return;
+    }
+    setLoading(true);
+    setGenLog([]);
     const log = toGenerate.map((id) => {
       const mk = mkList.find((m) => m.id === id);
       return { id, name: mk?.name || "", status: "processing", message: "Membuat rombel..." };
@@ -579,11 +604,11 @@ export function WizardSemesterBaru({ onDone }) {
         const semList = Object.keys(activeProdiGroup);
 
         const totalMk = mkList.length;
-        const selectedCount = selectedMk.length;
         const toGenerateCount = selectedMk.filter((id) => {
           const mk = mkList.find((m) => m.id === id);
           return mk && !mk.sudah_punya_kelas && (mk.has_dosen_pengampu || mk.dosen_utama_id);
         }).length;
+        const selectedCount = toGenerateCount;
 
         return (
           <Card className="p-5 space-y-4">
@@ -603,9 +628,11 @@ export function WizardSemesterBaru({ onDone }) {
                       const selectableIds = mkList.filter((m) => !m.sudah_punya_kelas && (m.has_dosen_pengampu || m.dosen_utama_id)).map((m) => m.id);
                       const allSelected = selectableIds.length > 0 && selectableIds.every((id) => selectedMk.includes(id));
                       setSelectedMk((p) => {
-                        const locked = mkList.filter((m) => m.sudah_punya_kelas).map((m) => m.id);
                         if (allSelected) {
-                          return Array.from(new Set([...locked, ...p.filter((id) => !selectableIds.includes(id))]));
+                          return p.filter((id) => {
+                            const mk = mkList.find((item) => item.id === id);
+                            return mk && !mk.sudah_punya_kelas && !selectableIds.includes(id);
+                          });
                         }
                         return Array.from(new Set([...p, ...selectableIds]));
                       });
@@ -622,7 +649,8 @@ export function WizardSemesterBaru({ onDone }) {
 
             <InfoBox variant="info">
               Daftar MK diambil dari halaman <strong>Kurikulum</strong>. MK yang sudah punya kelas pada semester ini
-              otomatis tercentang & terkunci. Kelas baru memakai format nama rombel <strong>kode prodi + nomor</strong>,
+              ditandai <strong>Sudah punya kelas</strong> dan tidak bisa dipilih ulang. MK baru yang sudah memiliki dosen
+              otomatis tercentang. Kelas baru memakai format nama rombel <strong>kode prodi + nomor</strong>,
               misalnya <strong>RKJ01</strong> (maksimal 5 karakter untuk Neo Feeder). Centang MK yang ingin ditawarkan,
               lalu tekan <strong>Generate Kelas</strong>.
             </InfoBox>
@@ -722,9 +750,9 @@ export function WizardSemesterBaru({ onDone }) {
                           {/* Grid MK 3 Kolom */}
                           <div className="grid grid-cols-1 sm:grid-cols-2 md:grid-cols-3 gap-2">
                             {items.map((mk) => {
-                              const isSelected = selectedMk.includes(mk.id);
                               const locked = mk.sudah_punya_kelas;
                               const hasLecturer = mk.has_dosen_pengampu || mk.dosen_utama_id;
+                              const isSelected = !locked && selectedMk.includes(mk.id);
                               return (
                                 <label
                                   key={mk.id}
@@ -798,13 +826,17 @@ export function WizardSemesterBaru({ onDone }) {
             <div className="flex items-center justify-between pt-2 border-t border-slate-100 text-xs">
               <span className="font-semibold text-slate-700">
                 {selectedCount} dari {totalMk} MK dipilih
-                {toGenerateCount > 0 ? ` · ${toGenerateCount} rombel akan dibuat` : " · semua MK sudah punya kelas"}
+                {toGenerateCount > 0
+                  ? ` · ${toGenerateCount} rombel akan dibuat`
+                  : selectedCount > 0
+                    ? " · tidak ada MK baru yang siap dibuat"
+                    : " · pilih minimal satu MK untuk membuat kelas"}
               </span>
             </div>
 
             <div className="flex justify-between pt-1">
               <Btn variant="secondary" onClick={() => setStep(1)}>Kembali</Btn>
-              <Btn onClick={generateKelas} disabled={loading}>
+              <Btn onClick={generateKelas} disabled={loading || toGenerateCount === 0}>
                 {loading ? <Loader2 className="w-4 h-4 animate-spin" /> : <Sparkles className="w-4 h-4" />}
                 {loading ? "Membuat kelas..." : "Generate Kelas"}
                 {!loading && <ChevronRight className="w-4 h-4" />}
@@ -2798,6 +2830,9 @@ export function JadwalMengajarPage({ user, selectedSemester = "", tahunAjaran = 
 
   const [editing, setEditing] = useState(null);
   const [form, setForm] = useState({ hari: "1", jam_mulai: "08:00", jam_selesai: "09:40", ruangan_id: "", gedung_id: "" });
+  const [lecturerEditing, setLecturerEditing] = useState(null);
+  const [lecturerForm, setLecturerForm] = useState({ lecturer_id: "", reason: "" });
+  const [lecturerSaving, setLecturerSaving] = useState(false);
   const [saving, setSaving] = useState(false);
   const [printing, setPrinting] = useState(false);
   const [error, setError] = useState("");
@@ -2904,7 +2939,7 @@ export function JadwalMengajarPage({ user, selectedSemester = "", tahunAjaran = 
   const prodiOptions = isOrdinaryLecturer || isKaprodi
     ? [["", isKaprodi ? `Prodi dipimpin: ${scopeProgramLabel}` : `Homebase: ${scopeProgramLabel} + Jadwal Saya`]]
     : [["", "-- Semua Prodi --"], ...prodiList.map((p) => [p.id, p.nama])];
-  const dosenOptions = [["", "-- Semua Dosen --"], ...dosenList.map((d) => [d.id, d.nama])];
+  const dosenOptions = [["", "-- Semua Dosen --"], ...dosenList.map((d) => [d.id, d.nama || d.name || d.username || d.id])];
 
   const gedungOptions = [["", "-- Pilih Gedung --"], ...gedungList.filter((g) => g.status === "active").map((g) => [g.id, `${g.nama} (${g.kode})`])];
   const ruanganOptions = (gid) => {
@@ -2923,6 +2958,12 @@ export function JadwalMengajarPage({ user, selectedSemester = "", tahunAjaran = 
       ruangan_id: item.ruangan_id || "",
       gedung_id: "",
     });
+  };
+
+  const openLecturerEdit = (item) => {
+    setLecturerEditing(item);
+    setLecturerForm({ lecturer_id: item.dosen_id || "", reason: "" });
+    setError("");
   };
 
   const save = async () => {
@@ -2949,6 +2990,32 @@ export function JadwalMengajarPage({ user, selectedSemester = "", tahunAjaran = 
       setError(e.message || "Gagal menyimpan jadwal");
     } finally {
       setSaving(false);
+    }
+  };
+
+  const saveLecturer = async () => {
+    if (!lecturerEditing || !lecturerForm.lecturer_id || lecturerForm.reason.trim().length < 3) return;
+    setLecturerSaving(true);
+    setError("");
+    try {
+      const res = await API(`/api/v1/master/kelas/${lecturerEditing.class_id}/dosen`, {
+        method: "PUT",
+        body: JSON.stringify({
+          lecturer_id: lecturerForm.lecturer_id,
+          reason: lecturerForm.reason.trim(),
+        }),
+      });
+      if (res?.detail) {
+        setError(typeof res.detail === "string" ? res.detail : "Dosen kelas tidak dapat diganti.");
+        return;
+      }
+      setLecturerEditing(null);
+      setLecturerForm({ lecturer_id: "", reason: "" });
+      load();
+    } catch (e) {
+      setError(e.message || "Gagal mengganti dosen kelas");
+    } finally {
+      setLecturerSaving(false);
     }
   };
 
@@ -3358,9 +3425,16 @@ export function JadwalMengajarPage({ user, selectedSemester = "", tahunAjaran = 
                           {item.is_own_schedule ? "Jadwal Anda" : "Jadwal Prodi"}
                         </StatusBadge>
                       ) : (
-                        <Btn size="sm" variant={item.jadwal_hari ? "secondary" : "primary"} onClick={() => openEdit(item)}>
-                          <Clock className="w-3.5 h-3.5" /> {item.jadwal_hari ? "Ubah" : "Atur"}
-                        </Btn>
+                        <div className="flex flex-wrap gap-1.5">
+                          <Btn size="sm" variant={item.jadwal_hari ? "secondary" : "primary"} onClick={() => openEdit(item)}>
+                            <Clock className="w-3.5 h-3.5" /> {item.jadwal_hari ? "Ubah" : "Atur"}
+                          </Btn>
+                          {(["active", "ended"].includes(item.status)) && (
+                            <Btn size="sm" variant="ghost" onClick={() => openLecturerEdit(item)}>
+                              <UserCheck className="w-3.5 h-3.5" /> Ganti Dosen
+                            </Btn>
+                          )}
+                        </div>
                       )}
                     </td>
                   </tr>
@@ -3451,6 +3525,56 @@ export function JadwalMengajarPage({ user, selectedSemester = "", tahunAjaran = 
               <Btn onClick={save} disabled={saving || !form.hari || !form.jam_mulai || !form.jam_selesai}>
                 {saving ? <Loader2 className="w-3 h-3 animate-spin" /> : null}
                 {saving ? "Menyimpan..." : "Simpan Jadwal"}
+              </Btn>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {lecturerEditing && !isOrdinaryLecturer && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/50 p-4" onClick={() => setLecturerEditing(null)}>
+          <div className="w-full max-w-lg space-y-4 rounded-2xl bg-white p-6 shadow-2xl" onClick={(e) => e.stopPropagation()}>
+            <div className="flex items-start justify-between gap-3">
+              <div>
+                <h3 className="text-lg font-bold text-slate-900">Ganti Dosen Kelas</h3>
+                <p className="mt-1 text-sm text-slate-500">
+                  {lecturerEditing.course_name} · {lecturerEditing.class_name}
+                </p>
+              </div>
+              <button className="text-slate-400 hover:text-slate-600" onClick={() => setLecturerEditing(null)}>
+                <X className="h-5 w-5" />
+              </button>
+            </div>
+
+            {error && <InfoBox variant="warning">{error}</InfoBox>}
+            <InfoBox variant="info">
+              Pergantian ini hanya berlaku untuk kelas ini. Master Mata Kuliah dan kelas pada periode lain tetap tidak berubah.
+            </InfoBox>
+
+            <FieldSelect
+              label="Dosen Baru"
+              value={lecturerForm.lecturer_id}
+              onChange={(value) => setLecturerForm((previous) => ({ ...previous, lecturer_id: value }))}
+              options={dosenOptions}
+            />
+            <div className="flex flex-col gap-1">
+              <label className="text-sm font-medium text-slate-700">Alasan Pergantian <span className="text-red-500">*</span></label>
+              <textarea
+                value={lecturerForm.reason}
+                onChange={(event) => setLecturerForm((previous) => ({ ...previous, reason: event.target.value }))}
+                placeholder="Contoh: dosen berhalangan dan digantikan mulai minggu ke-5"
+                rows={3}
+                className="w-full rounded-lg border border-slate-300 px-3 py-2 text-sm focus:border-transparent focus:outline-none focus:ring-2 focus:ring-indigo-400"
+              />
+            </div>
+            <div className="flex justify-end gap-2">
+              <Btn variant="secondary" onClick={() => setLecturerEditing(null)}>Batal</Btn>
+              <Btn
+                onClick={saveLecturer}
+                disabled={lecturerSaving || !lecturerForm.lecturer_id || lecturerForm.reason.trim().length < 3}
+              >
+                {lecturerSaving ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : <UserCheck className="h-3.5 w-3.5" />}
+                {lecturerSaving ? "Menyimpan..." : "Simpan Pergantian"}
               </Btn>
             </div>
           </div>

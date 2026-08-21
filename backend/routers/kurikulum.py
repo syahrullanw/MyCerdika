@@ -10,6 +10,12 @@ from fastapi import APIRouter, Depends, HTTPException, Request, Header
 from pydantic import BaseModel, Field
 
 from postgres_database import PostgresDatabase
+from course_lifecycle import (
+    course_identity_changes,
+    course_identity_lock_detail,
+    course_usage_description,
+    course_usage_summary,
+)
 from program_scope import (
     record_matches_program_scope,
     resolve_program_identifiers,
@@ -360,7 +366,16 @@ async def get_kurikulum_courses(
         ):
             raise HTTPException(status_code=404, detail="Kurikulum tidak ditemukan pada prodi homebase Anda")
     courses = await db.courses.find({"kurikulum_id": kurikulum_id}, {"_id": 0}).to_list(None)
-    return courses
+    course_ids = [course.get("id") for course in courses if course.get("id")]
+    linked_classes = await db.classes.find(
+        {"course_id": {"$in": course_ids}, "status": {"$ne": "deleted"}},
+        {"_id": 0, "course_id": 1},
+    ).to_list(None) if course_ids else []
+    linked_course_ids = {item.get("course_id") for item in linked_classes}
+    return [
+        {**course, "lifecycle_locked": course.get("id") in linked_course_ids}
+        for course in courses
+    ]
 
 
 @router.post("/courses")
@@ -427,6 +442,13 @@ async def update_course_kurikulum(
     if body.prodi_id:
         await _require_program_manager_scope(db, user, {"prodi_id": body.prodi_id})
 
+    usage = await course_usage_summary(db, course_id)
+    identity_changes = course_identity_changes(ex, body)
+    if usage["locked"] and identity_changes:
+        raise HTTPException(
+            status_code=409,
+            detail=course_identity_lock_detail(usage, identity_changes),
+        )
     total_sks = body.sks_teori + body.sks_praktikum
     updates = {
         "code": body.kode,
@@ -462,6 +484,15 @@ async def delete_course_kurikulum(
     if not existing:
         raise HTTPException(status_code=404, detail="Mata Kuliah tidak ditemukan")
     await _require_program_manager_course_scope(db, user, existing)
+    usage = await course_usage_summary(db, course_id)
+    if usage["locked"]:
+        raise HTTPException(
+            status_code=409,
+            detail=(
+                f"Mata kuliah sudah digunakan oleh {course_usage_description(usage)} dan tidak dapat dihapus. "
+                "Selesaikan/arsipkan kelas untuk menjaga histori, atau buat Mata Kuliah pengganti."
+            ),
+        )
     await db.courses.delete_one({"id": course_id})
     return {"ok": True}
 

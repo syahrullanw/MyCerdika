@@ -79,7 +79,7 @@ const Btn = ({ children, onClick, variant = "primary", size = "md", disabled = f
   );
 };
 
-const FieldInput = ({ label, value, onChange, type = "text", placeholder = "", required = false, hint = "" }) => (
+const FieldInput = ({ label, value, onChange, type = "text", placeholder = "", required = false, hint = "", disabled = false }) => (
   <div className="flex flex-col gap-1">
     {label && (
       <label className="text-sm font-medium text-slate-700">
@@ -91,6 +91,7 @@ const FieldInput = ({ label, value, onChange, type = "text", placeholder = "", r
       value={value}
       onChange={(e) => onChange(e.target.value)}
       placeholder={placeholder}
+      disabled={disabled}
       className="min-w-0 w-full border border-slate-300 rounded-lg px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-indigo-400 focus:border-transparent transition"
     />
     {hint && <span className="text-xs text-slate-400">{hint}</span>}
@@ -134,6 +135,7 @@ const LecturerSearchField = ({
   multiple = false,
   excludeIds = [],
   hint = "",
+  disabled = false,
 }) => {
   const [query, setQuery] = useState("");
   const [focused, setFocused] = useState(false);
@@ -168,12 +170,14 @@ const LecturerSearchField = ({
   }, [excluded, lecturers, multiple, normalizedQuery, programs, selectedIds]);
 
   const chooseLecturer = (lecturerId) => {
+    if (disabled) return;
     onChange(multiple ? [...selectedIds, lecturerId] : [lecturerId]);
     setQuery("");
     if (!multiple) setFocused(false);
   };
 
   const removeLecturer = (lecturerId) => {
+    if (disabled) return;
     onChange(selectedIds.filter((id) => id !== lecturerId));
   };
 
@@ -194,6 +198,7 @@ const LecturerSearchField = ({
           value={query}
           onChange={(event) => setQuery(event.target.value)}
           onFocus={() => setFocused(true)}
+          disabled={disabled}
           onKeyDown={(event) => {
             if (event.key === "Escape") {
               setFocused(false);
@@ -205,7 +210,7 @@ const LecturerSearchField = ({
           role="combobox"
           aria-expanded={showResults}
           aria-autocomplete="list"
-          className="min-w-0 w-full rounded-lg border border-slate-300 bg-white py-2 pl-9 pr-3 text-sm transition placeholder:text-slate-400 focus:border-transparent focus:outline-none focus:ring-2 focus:ring-indigo-400"
+          className="min-w-0 w-full rounded-lg border border-slate-300 bg-white py-2 pl-9 pr-3 text-sm transition placeholder:text-slate-400 focus:border-transparent focus:outline-none focus:ring-2 focus:ring-indigo-400 disabled:cursor-not-allowed disabled:bg-slate-100 disabled:text-slate-500"
         />
 
         {showResults && (
@@ -283,14 +288,14 @@ const LecturerSearchField = ({
                 >
                   {homebase.code}
                 </span>
-                <button
+                {!disabled && <button
                   type="button"
                   onClick={() => removeLecturer(lecturer.id)}
                   className="shrink-0 rounded-full p-0.5 text-indigo-500 hover:bg-indigo-100 hover:text-indigo-800 focus:outline-none focus:ring-2 focus:ring-indigo-300"
                   aria-label={`Hapus ${lecturerName(lecturer)}`}
                 >
                   <X className="h-3 w-3" />
-                </button>
+                </button>}
               </span>
             );
           })}
@@ -361,6 +366,8 @@ export function KurikulumMasterPage({ user }) {
     dosen_anggota_ids: [],
   });
   const [courseLoading, setCourseLoading] = useState(false);
+  const [courseError, setCourseError] = useState("");
+  const [courseLifecycleLocked, setCourseLifecycleLocked] = useState(false);
 
   const loadData = useCallback(() => {
     API("/api/v1/kurikulum").then((d) => Array.isArray(d) && setKurikulumList(d));
@@ -398,6 +405,7 @@ export function KurikulumMasterPage({ user }) {
   const saveCourse = async () => {
     if (!activeKurikulum) return;
     setCourseLoading(true);
+    setCourseError("");
 
     const dosenUtama = dosenList.find((d) => d.id === courseForm.dosen_utama_id);
     const dosenAnggota = dosenList.filter((d) => courseForm.dosen_anggota_ids.includes(d.id));
@@ -417,15 +425,26 @@ export function KurikulumMasterPage({ user }) {
       dosen_anggota_namas: dosenAnggota.map((d) => d.name),
     };
 
-    if (editingCourseId) {
-      await API(`/api/v1/kurikulum/courses/${editingCourseId}`, { method: "PUT", body: JSON.stringify(payload) });
-    } else {
-      await API("/api/v1/kurikulum/courses", { method: "POST", body: JSON.stringify(payload) });
+    let response;
+    try {
+      response = editingCourseId
+        ? await API(`/api/v1/kurikulum/courses/${editingCourseId}`, { method: "PUT", body: JSON.stringify(payload) })
+        : await API("/api/v1/kurikulum/courses", { method: "POST", body: JSON.stringify(payload) });
+    } catch (error) {
+      setCourseError(error.message || "Gagal menyimpan Mata Kuliah");
+      setCourseLoading(false);
+      return;
+    }
+    if (response?.detail) {
+      setCourseError(typeof response.detail === "string" ? response.detail : "Perubahan Mata Kuliah tidak dapat disimpan.");
+      setCourseLoading(false);
+      return;
     }
 
     setCourseLoading(false);
     setShowCourseForm(false);
     setEditingCourseId(null);
+    setCourseLifecycleLocked(false);
     setCourseForm({
       kode: "",
       nama: "",
@@ -441,7 +460,11 @@ export function KurikulumMasterPage({ user }) {
 
   const deleteCourse = async (cid) => {
     if (!window.confirm("Hapus Mata Kuliah ini dari Kurikulum?")) return;
-    await API(`/api/v1/kurikulum/courses/${cid}`, { method: "DELETE" });
+    const response = await API(`/api/v1/kurikulum/courses/${cid}`, { method: "DELETE" });
+    if (response?.detail) {
+      window.alert(typeof response.detail === "string" ? response.detail : "Mata Kuliah tidak dapat dihapus.");
+      return;
+    }
     if (activeKurikulum) loadKurikulumCourses(activeKurikulum.id);
   };
 
@@ -457,6 +480,8 @@ export function KurikulumMasterPage({ user }) {
       dosen_utama_id: course.dosen_utama_id || "",
       dosen_anggota_ids: course.dosen_anggota_ids || [],
     });
+    setCourseError("");
+    setCourseLifecycleLocked(Boolean(course.lifecycle_locked));
     setShowCourseForm(true);
   };
 
@@ -527,6 +552,8 @@ export function KurikulumMasterPage({ user }) {
             </div>
             {!isOrdinaryLecturer && <Btn onClick={() => {
               setEditingCourseId(null);
+              setCourseError("");
+              setCourseLifecycleLocked(false);
               setCourseForm({
                 kode: "",
                 nama: "",
@@ -573,18 +600,31 @@ export function KurikulumMasterPage({ user }) {
               <h3 className="font-semibold text-slate-800">
                 {editingCourseId ? "Edit Mata Kuliah & Dosen Pengampu" : `Tambah MK (Semester Paket ${activeSemesterTab})`}
               </h3>
+              {courseError && (
+                <div className="rounded-lg border border-amber-200 bg-amber-50 p-3 text-sm leading-5 text-amber-900">
+                  {courseError}
+                </div>
+              )}
+              {courseLifecycleLocked && (
+                <div className="rounded-lg border border-indigo-200 bg-indigo-50 p-3 text-sm leading-5 text-indigo-900">
+                  MK ini sudah dipakai kelas/KRS sehingga identitasnya dikunci. Dosen master di bawah ini menjadi
+                  default untuk penawaran kelas berikutnya; untuk kelas yang sedang berjalan, gunakan menu
+                  <strong> Jadwal Mengajar → Ganti Dosen</strong> agar riwayat pembelajaran tetap aman.
+                </div>
+              )}
               <div className="grid grid-cols-1 gap-4 sm:grid-cols-2">
-                <FieldInput label="Kode MK" value={courseForm.kode} onChange={(v) => setCourseForm((p) => ({ ...p, kode: v }))} placeholder="IF201" required />
-                <FieldInput label="Nama Mata Kuliah" value={courseForm.nama} onChange={(v) => setCourseForm((p) => ({ ...p, nama: v }))} placeholder="Pemrograman Web" required />
+                <FieldInput label="Kode MK" value={courseForm.kode} onChange={(v) => setCourseForm((p) => ({ ...p, kode: v }))} placeholder="IF201" required disabled={courseLifecycleLocked} />
+                <FieldInput label="Nama Mata Kuliah" value={courseForm.nama} onChange={(v) => setCourseForm((p) => ({ ...p, nama: v }))} placeholder="Pemrograman Web" required disabled={courseLifecycleLocked} />
                 
-                <FieldInput label="SKS Teori / Tatap Muka" type="number" value={courseForm.sks_teori} onChange={(v) => setCourseForm((p) => ({ ...p, sks_teori: v }))} required />
-                <FieldInput label="SKS Praktikum / Lab" type="number" value={courseForm.sks_praktikum} onChange={(v) => setCourseForm((p) => ({ ...p, sks_praktikum: v }))} required />
+                <FieldInput label="SKS Teori / Tatap Muka" type="number" value={courseForm.sks_teori} onChange={(v) => setCourseForm((p) => ({ ...p, sks_teori: v }))} required disabled={courseLifecycleLocked} />
+                <FieldInput label="SKS Praktikum / Lab" type="number" value={courseForm.sks_praktikum} onChange={(v) => setCourseForm((p) => ({ ...p, sks_praktikum: v }))} required disabled={courseLifecycleLocked} />
 
                 <FieldSelect
                   label="Semester Paket"
                   value={courseForm.semester_paket}
                   onChange={(v) => setCourseForm((p) => ({ ...p, semester_paket: v }))}
                   options={[1, 2, 3, 4, 5, 6, 7, 8].map((s) => [s, `Semester Paket ${s}`])}
+                  disabled={courseLifecycleLocked}
                 />
 
                 <FieldSelect
@@ -592,6 +632,7 @@ export function KurikulumMasterPage({ user }) {
                   value={courseForm.sifat}
                   onChange={(v) => setCourseForm((p) => ({ ...p, sifat: v }))}
                   options={[["wajib", "Wajib"], ["pilihan", "Pilihan"]]}
+                  disabled={courseLifecycleLocked}
                 />
 
                 <LecturerSearchField

@@ -1,4 +1,5 @@
 import { lazy, Suspense, useEffect, useMemo, useState } from "react";
+import { Eye, EyeOff } from "lucide-react";
 
 const FullApp = lazy(() => import("@/App"));
 
@@ -100,6 +101,7 @@ function LightweightLogin({ onOpenFullApp }) {
     local_login_enabled: true,
   });
   const [login, setLogin] = useState({ identifier: "", password: "" });
+  const [showPassword, setShowPassword] = useState(false);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState("");
   const isDesktop = useMemo(
@@ -308,19 +310,30 @@ function LightweightLogin({ onOpenFullApp }) {
                   <span className="mb-2 block text-sm font-semibold text-slate-700">
                     Password
                   </span>
-                  <input
-                    type="password"
-                    value={login.password}
-                    onChange={(event) =>
-                      setLogin((current) => ({
-                        ...current,
-                        password: event.target.value,
-                      }))
-                    }
-                    autoComplete="current-password"
-                    required
-                    className="h-11 w-full rounded-md border border-slate-300 px-3 text-sm outline-none transition focus:border-blue-500 focus:ring-2 focus:ring-blue-100"
-                  />
+                  <div className="relative">
+                    <input
+                      type={showPassword ? "text" : "password"}
+                      value={login.password}
+                      onChange={(event) =>
+                        setLogin((current) => ({
+                          ...current,
+                          password: event.target.value,
+                        }))
+                      }
+                      autoComplete="current-password"
+                      required
+                      className="h-11 w-full rounded-md border border-slate-300 px-3 pr-12 text-sm outline-none transition focus:border-blue-500 focus:ring-2 focus:ring-blue-100"
+                    />
+                    <button
+                      type="button"
+                      onClick={() => setShowPassword((visible) => !visible)}
+                      aria-label={showPassword ? "Sembunyikan password" : "Tampilkan password"}
+                      title={showPassword ? "Sembunyikan password" : "Tampilkan password"}
+                      className="absolute inset-y-0 right-0 flex w-11 items-center justify-center text-slate-400 transition hover:text-blue-600 focus:outline-none focus:ring-2 focus:ring-inset focus:ring-blue-200"
+                    >
+                      {showPassword ? <EyeOff className="h-4 w-4" /> : <Eye className="h-4 w-4" />}
+                    </button>
+                  </div>
                 </label>
                 {error && (
                   <p

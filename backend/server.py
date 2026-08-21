@@ -56,6 +56,12 @@ try:
         student_identity_values,
     )
     from .program_scope import record_matches_program_scope, resolve_program_identifiers
+    from .course_lifecycle import (
+        course_identity_changes,
+        course_identity_lock_detail,
+        course_usage_description,
+        course_usage_summary,
+    )
     from .storage_policy import (
         DRIVE_LOCAL_RETENTION_DAYS,
         DRIVE_SYNC_MAX_ATTEMPTS_PER_DAY,
@@ -79,6 +85,12 @@ except ImportError:  # Supports `uvicorn server:app` from the backend directory.
         student_identity_values,
     )
     from program_scope import record_matches_program_scope, resolve_program_identifiers
+    from course_lifecycle import (
+        course_identity_changes,
+        course_identity_lock_detail,
+        course_usage_description,
+        course_usage_summary,
+    )
     from storage_policy import (
         DRIVE_LOCAL_RETENTION_DAYS,
         DRIVE_SYNC_MAX_ATTEMPTS_PER_DAY,
@@ -120,6 +132,7 @@ from routers.master_data import (
     _active_pejabat,
     _recommended_rombel_name,
 )
+from academic_period_state import normalize_academic_period_state
 from routers.kurikulum import router as kurikulum_router
 from routers.feeder import router as feeder_router
 from routers.user_access import (
@@ -8181,11 +8194,20 @@ async def run_old_siap_migration(background_tasks: BackgroundTasks, _: Dict[str,
             migration_progress_state["progress_percent"] = 90
             migration_progress_state["logs"].append(f"Memigrasikan {len(raw_jadwal)} kelas kuliah...")
 
-            active_semesters = {str(t.get("TahunID") or "").strip() for t in raw_tahun if t.get("NA") == "N"}
-            active_tahun_id = max(
-                (str(j.get("TahunID") or "").strip() for j in raw_jadwal if str(j.get("TahunID") or "").strip()),
+            active_semesters = {
+                str(t.get("TahunID") or "").strip()
+                for t in raw_tahun
+                if str(t.get("NA") or "").strip().upper() == "N"
+                and str(t.get("TahunID") or "").strip()
+            }
+            active_tahun_id = max(active_semesters) if active_semesters else max(
+                (
+                    str(j.get("TahunID") or "").strip()
+                    for j in raw_jadwal
+                    if str(j.get("TahunID") or "").strip()
+                ),
                 default="20252",
-            ) if raw_jadwal else "20252"
+            )
 
             class_students_map = {}
             for krs in raw_krs:
@@ -8222,7 +8244,9 @@ async def run_old_siap_migration(background_tasks: BackgroundTasks, _: Dict[str,
                     "schedule": f"Hari {j.get('HariID','')} {j.get('JamMulai','')}-{j.get('JamSelesai','')}".strip(),
                     "class_code": f"KLS{jid.zfill(4)}", "lecturer_id": d_id,
                     "lecturer_name": dosen_map.get(d_id, {}).get("name", ""),
-                    "status": class_status, "rombel_id": rombel_id,
+                    "status": class_status, "period_code": tahun_id,
+                    "tahun_ajaran_id": tahun_id, "rombel_id": rombel_id,
+                    "migration_source": "OLD-SIAP legacy import",
                     "student_ids": st_ids, "program_id": p_id,
                     "program_name": prodi_map.get(p_id, {}).get("nama", ""), "created_at": now_iso()
                 }
@@ -8253,6 +8277,12 @@ async def run_old_siap_migration(background_tasks: BackgroundTasks, _: Dict[str,
                 if not ex: await db.tahun_ajaran.insert_one(doc)
                 else: await db.tahun_ajaran.update_one({"id": tid}, {"$set": doc})
                 ta_count += 1
+
+            academic_state = await normalize_academic_period_state(
+                db,
+                preferred_tahun_ajaran_id=active_tahun_id,
+                preferred_period_code=active_tahun_id,
+            )
 
             # 8. Predikat Nilai
             migration_progress_state["step"] = "Memigrasikan Predikat Nilai..."
@@ -8384,6 +8414,7 @@ async def run_old_siap_migration(background_tasks: BackgroundTasks, _: Dict[str,
                 "fakultas": f_count, "prodi": p_count, "kurikulum": kur_count, "dosen": d_count,
                 "mahasiswa": m_count, "mk": mk_count, "kelas": j_count, "tahun_ajaran": ta_count,
                 "predikat_nilai": len(predicates_list), "khs": khs_count, "krs": krs_count,
+                "academic_state": academic_state,
                 "evaluasi_kelas": asgn_count, "submissions_nilai": sub_count,
             }
         except Exception as err:
@@ -8521,6 +8552,15 @@ async def restore_database_backup(
                 detail="Restore gagal. Data database tidak diubah.",
             ) from exc
 
+        try:
+            academic_state = await normalize_academic_period_state(db)
+        except Exception as exc:
+            logger.exception("Rekonsiliasi tahun ajaran setelah restore gagal: %s", exc)
+            raise HTTPException(
+                status_code=500,
+                detail="Restore selesai tetapi rekonsiliasi tahun ajaran gagal",
+            ) from exc
+
         safety_record_saved = True
         try:
             await db.database_backups.insert_one(safety_backup)
@@ -8540,6 +8580,7 @@ async def restore_database_backup(
         "source_created_at": parsed.get("created_at", ""),
         "restored_collections": len(restored_counts),
         "restored_documents": sum(restored_counts.values()),
+        "academic_state": academic_state,
         "storage_rebased": storage_reconciliation.get("rebased", 0),
         "storage_missing": storage_reconciliation.get("missing", 0),
         "safety_backup": {
@@ -8824,6 +8865,13 @@ async def update_course(course_id: str, payload: CourseInput, _: Dict[str, Any] 
     existing = await db.courses.find_one({"id": course_id, "status": {"$ne": "deleted"}}, {"_id": 0})
     if not existing:
         raise HTTPException(status_code=404, detail="Mata kuliah tidak ditemukan")
+    usage = await course_usage_summary(db, course_id)
+    identity_changes = course_identity_changes(existing, payload)
+    if usage["locked"] and identity_changes:
+        raise HTTPException(
+            status_code=409,
+            detail=course_identity_lock_detail(usage, identity_changes),
+        )
     selected_program_id = payload.program_id or existing.get("program_id", "")
     program = await db.programs.find_one({"id": selected_program_id, "status": {"$ne": "deleted"}}, {"_id": 0})
     if not program:
@@ -8843,6 +8891,15 @@ async def update_course(course_id: str, payload: CourseInput, _: Dict[str, Any] 
 
 @api_router.delete("/courses/{course_id}")
 async def delete_course(course_id: str, _: Dict[str, Any] = Depends(require_admin)):
+    usage = await course_usage_summary(db, course_id)
+    if usage["locked"]:
+        raise HTTPException(
+            status_code=409,
+            detail=(
+                f"Mata kuliah sudah digunakan oleh {course_usage_description(usage)} dan tidak dapat dihapus. "
+                "Selesaikan/arsipkan kelas untuk menjaga histori, atau buat Mata Kuliah pengganti."
+            ),
+        )
     linked_class = await db.classes.find_one({"course_id": course_id, "status": {"$ne": "deleted"}}, {"_id": 0, "id": 1})
     if linked_class:
         raise HTTPException(status_code=400, detail="Mata kuliah masih dipakai kelas. Hapus kelas dulu.")
@@ -14207,6 +14264,16 @@ async def on_startup():
     await ensure_program_course_links()
     await ensure_multi_lecturer_schema()
     await ensure_class_lifecycle_schema()
+    academic_state = await normalize_academic_period_state(db)
+    if any(
+        academic_state.get(key)
+        for key in (
+            "changed_tahun_ajaran",
+            "changed_academic_periods",
+            "changed_classes",
+        )
+    ):
+        logger.info("Rekonsiliasi tahun ajaran saat startup: %s", academic_state)
     # Init tabel master data SIAKAD
     for _col in ["fakultas", "tahun_ajaran", "academic_config", "kurikulum", "gedung", "ruangan"]:
         try:

@@ -40,6 +40,7 @@ sys.path.insert(0, str(BACKEND_DIR))
 load_dotenv(BACKEND_DIR / ".env")
 
 from postgres_database import PostgresDatabase, matches  # noqa: E402
+from academic_period_state import normalize_academic_period_state  # noqa: E402
 from program_scope import split_program_identifiers  # noqa: E402
 from routers.feeder import (  # noqa: E402
     feeder_response_token,
@@ -1422,6 +1423,7 @@ def build_plan(
                     "class_code": f"KLS{target_id.zfill(4)}",
                     "lecturer_id": primary_lecturer_id,
                     "lecturer_name": values.get("lecturer_name", ""),
+                    "tahun_ajaran_id": period_code,
                     "status": "active" if period_code == period else "ended",
                     "rombel_id": f"RLM-{rombel_source_id}" if rombel_source_id else "",
                     "student_ids": sorted(source_students_by_class.get(class_id, set())),
@@ -2036,6 +2038,10 @@ async def run(args: argparse.Namespace) -> None:
             period=args.period,
             run_id=run_id,
         )
+        academic_state = await normalize_academic_period_state(
+            db,
+            preferred_period_code=args.period,
+        )
         run_document = {
             "id": run_id,
             "period": args.period,
@@ -2055,6 +2061,7 @@ async def run(args: argparse.Namespace) -> None:
                 ]
             },
             "result": dict(result),
+            "academic_state": academic_state,
             "executed_by": "safe_cli",
             "executed_at": now_iso(),
             "feeder_write_count": 0,

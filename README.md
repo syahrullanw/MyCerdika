@@ -45,6 +45,9 @@ bash scripts/restore_db.sh backups/mycerdika-transfer-latest.tar.gz
 
 # Jalankan hanya setelah preflight berhasil dan backend server dihentikan
 bash scripts/restore_db.sh backups/mycerdika-transfer-latest.tar.gz --execute
+
+# Kirim bundle ke server MyCerdika melalui SSH
+bash scripts/send_backup_to_server.sh --user USER_SSH
 ```
 
 Panduan lengkap dan opsi Docker/PostgreSQL native tersedia di

@@ -39,6 +39,32 @@ penyimpanan cloud dengan akses terbatas. Contoh:
 scp backups/mycerdika-transfer-latest.tar.gz user@server:/srv/MyCerdika/backups/
 ```
 
+Untuk server MyCerdika `139.180.140.243` dengan root aplikasi
+`/var/www/mycerdika`, gunakan skrip yang sudah dikonfigurasi:
+
+```bash
+# Ganti USER_SSH dengan akun SSH server, misalnya root atau deploy
+bash scripts/send_backup_to_server.sh --user USER_SSH
+
+# Jika menggunakan private key atau port SSH khusus
+bash scripts/send_backup_to_server.sh \
+  --user USER_SSH \
+  --identity ~/.ssh/id_ed25519 \
+  --port 22
+```
+
+Skrip tersebut memvalidasi bundle lokal, mengunggah ke file sementara,
+mencocokkan checksum SHA-256 lokal dan server, lalu mengganti file tujuan
+secara atomik. Setelah upload, skrip hanya menjalankan preflight bundle di
+server; database dan storage server tidak diubah dan restore tetap harus
+dijalankan secara eksplisit.
+
+Untuk melihat rencana tanpa membuka koneksi SSH:
+
+```bash
+bash scripts/send_backup_to_server.sh --user USER_SSH --dry-run
+```
+
 Jangan commit atau push bundle ke repository GitHub. Selain dapat melampaui
 batas GitHub, bundle memuat data pribadi akademik yang tidak semestinya masuk
 ke histori Git permanen.
