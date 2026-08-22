@@ -29,6 +29,7 @@ import {
   Sparkles,
   Home,
   CalendarClock,
+  BarChart3,
   Clock,
   MapPin,
   X,
@@ -305,7 +306,7 @@ export function WizardSemesterBaru({ onDone }) {
     // MK yang sudah punya kelas tetap ditandai dan dikunci, tetapi tidak dipilih
     // karena tidak perlu digenerate ulang.
     const defaultSelectedIds = list
-      .filter((m) => !m.sudah_punya_kelas && (m.has_dosen_pengampu || m.dosen_utama_id))
+      .filter((m) => m.prodi_ready_for_class !== false && !m.sudah_punya_kelas && (m.has_dosen_pengampu || m.dosen_utama_id))
       .map((m) => m.id);
     setSelectedMk(defaultSelectedIds);
   }, []);
@@ -347,7 +348,7 @@ export function WizardSemesterBaru({ onDone }) {
     setErrMsg("");
     const toGenerate = selectedMk.filter((id) => {
       const mk = mkList.find((m) => m.id === id);
-      return mk && !mk.sudah_punya_kelas && (mk.has_dosen_pengampu || mk.dosen_utama_id);
+      return mk && mk.prodi_ready_for_class !== false && !mk.sudah_punya_kelas && (mk.has_dosen_pengampu || mk.dosen_utama_id);
     });
     if (toGenerate.length === 0) {
       setErrMsg("Pilih minimal satu MK yang belum memiliki kelas dan sudah memiliki dosen pengampu.");
@@ -355,7 +356,7 @@ export function WizardSemesterBaru({ onDone }) {
     }
     const missingLecturerByProdi = Object.entries(
       mkList
-        .filter((m) => !m.sudah_punya_kelas && !(m.has_dosen_pengampu || m.dosen_utama_id))
+        .filter((m) => m.prodi_ready_for_class !== false && !m.sudah_punya_kelas && !(m.has_dosen_pengampu || m.dosen_utama_id))
         .reduce((groups, mk) => {
           const prodi = mk.prodi_name || mk.prodi_code || "Prodi belum teridentifikasi";
           if (!groups[prodi]) groups[prodi] = [];
@@ -606,7 +607,7 @@ export function WizardSemesterBaru({ onDone }) {
         const totalMk = mkList.length;
         const toGenerateCount = selectedMk.filter((id) => {
           const mk = mkList.find((m) => m.id === id);
-          return mk && !mk.sudah_punya_kelas && (mk.has_dosen_pengampu || mk.dosen_utama_id);
+          return mk && mk.prodi_ready_for_class !== false && !mk.sudah_punya_kelas && (mk.has_dosen_pengampu || mk.dosen_utama_id);
         }).length;
         const selectedCount = toGenerateCount;
 
@@ -625,13 +626,13 @@ export function WizardSemesterBaru({ onDone }) {
                   <button
                     type="button"
                     onClick={() => {
-                      const selectableIds = mkList.filter((m) => !m.sudah_punya_kelas && (m.has_dosen_pengampu || m.dosen_utama_id)).map((m) => m.id);
+                      const selectableIds = mkList.filter((m) => m.prodi_ready_for_class !== false && !m.sudah_punya_kelas && (m.has_dosen_pengampu || m.dosen_utama_id)).map((m) => m.id);
                       const allSelected = selectableIds.length > 0 && selectableIds.every((id) => selectedMk.includes(id));
                       setSelectedMk((p) => {
                         if (allSelected) {
                           return p.filter((id) => {
                             const mk = mkList.find((item) => item.id === id);
-                            return mk && !mk.sudah_punya_kelas && !selectableIds.includes(id);
+                            return mk && mk.prodi_ready_for_class !== false && !mk.sudah_punya_kelas && !selectableIds.includes(id);
                           });
                         }
                         return Array.from(new Set([...p, ...selectableIds]));
@@ -639,7 +640,7 @@ export function WizardSemesterBaru({ onDone }) {
                     }}
                     className="text-xs font-semibold px-2.5 py-1 rounded-md bg-indigo-50 text-indigo-700 hover:bg-indigo-100 transition"
                   >
-                    {mkList.filter((m) => !m.sudah_punya_kelas && (m.has_dosen_pengampu || m.dosen_utama_id)).every((m) => selectedMk.includes(m.id)) && mkList.some((m) => !m.sudah_punya_kelas && (m.has_dosen_pengampu || m.dosen_utama_id))
+                    {mkList.filter((m) => m.prodi_ready_for_class !== false && !m.sudah_punya_kelas && (m.has_dosen_pengampu || m.dosen_utama_id)).every((m) => selectedMk.includes(m.id)) && mkList.some((m) => m.prodi_ready_for_class !== false && !m.sudah_punya_kelas && (m.has_dosen_pengampu || m.dosen_utama_id))
                       ? "Batalkan Semua"
                       : "Pilih Semua (Semua Prodi)"}
                   </button>
@@ -718,7 +719,7 @@ export function WizardSemesterBaru({ onDone }) {
                   <div className="space-y-3 max-h-[420px] overflow-y-auto pr-1">
                     {semList.map((semLabel) => {
                       const items = activeProdiGroup[semLabel];
-                      const selectable = items.filter((m) => !m.sudah_punya_kelas && (m.has_dosen_pengampu || m.dosen_utama_id));
+                      const selectable = items.filter((m) => m.prodi_ready_for_class !== false && !m.sudah_punya_kelas && (m.has_dosen_pengampu || m.dosen_utama_id));
                       const allSemSelected = selectable.length > 0 && selectable.every((m) => selectedMk.includes(m.id));
 
                       return (
@@ -752,14 +753,15 @@ export function WizardSemesterBaru({ onDone }) {
                             {items.map((mk) => {
                               const locked = mk.sudah_punya_kelas;
                               const hasLecturer = mk.has_dosen_pengampu || mk.dosen_utama_id;
-                              const isSelected = !locked && selectedMk.includes(mk.id);
+                              const prodiReady = mk.prodi_ready_for_class !== false;
+                              const isSelected = !locked && prodiReady && selectedMk.includes(mk.id);
                               return (
                                 <label
                                   key={mk.id}
                                   className={`flex items-start gap-2 p-2.5 rounded-lg border transition text-xs ${
                                     locked
                                       ? "bg-emerald-50/50 border-emerald-200 cursor-default"
-                                      : !hasLecturer
+                                      : !prodiReady || !hasLecturer
                                         ? "bg-amber-50/60 border-amber-200 cursor-not-allowed"
                                       : isSelected
                                         ? "bg-white border-indigo-500 bg-indigo-50/60 ring-1 ring-indigo-300 shadow-2xs cursor-pointer"
@@ -770,7 +772,7 @@ export function WizardSemesterBaru({ onDone }) {
                                     type="checkbox"
                                     className="mt-0.5 rounded border-slate-300 text-indigo-600 focus:ring-indigo-500"
                                     checked={isSelected}
-                                    disabled={locked || !hasLecturer}
+                                    disabled={locked || !prodiReady || !hasLecturer}
                                     onChange={(e) =>
                                       setSelectedMk((p) => (e.target.checked ? [...p, mk.id] : p.filter((x) => x !== mk.id)))
                                     }
@@ -808,6 +810,10 @@ export function WizardSemesterBaru({ onDone }) {
                                     ) : !hasLecturer ? (
                                       <div className="text-[10px] font-semibold text-amber-700 mt-1">
                                         Dosen pengampu belum ditetapkan
+                                      </div>
+                                    ) : !prodiReady ? (
+                                      <div className="text-[10px] font-semibold text-amber-700 mt-1">
+                                        {mk.prodi_readiness_reasons?.join("; ") || "Prodi belum siap membuat kelas"}
                                       </div>
                                     ) : null}
                                   </div>
@@ -910,6 +916,352 @@ export function WizardSemesterBaru({ onDone }) {
 }
 
 // ─── Fakultas Page ─────────────────────────────────────────────────────────────
+
+export function PembuatanKelasPage({ user, selectedSemester = "", tahunAjaran = [] }) {
+  const [periodId, setPeriodId] = useState("");
+  const [readiness, setReadiness] = useState(null);
+  const [loading, setLoading] = useState(false);
+  const [error, setError] = useState("");
+  const [selectedCourseIds, setSelectedCourseIds] = useState([]);
+  const [generating, setGenerating] = useState(false);
+  const [generationResult, setGenerationResult] = useState(null);
+  const [prodiFilter, setProdiFilter] = useState("");
+  const [semesterFilter, setSemesterFilter] = useState("");
+  const [statusFilter, setStatusFilter] = useState("all");
+  const [searchQuery, setSearchQuery] = useState("");
+
+  const isKaprodi = Boolean(
+    user
+    && ["lecturer", "dosen"].includes(String(user.role || "").toLowerCase())
+    && isKaprodiUser(user),
+  );
+
+  const periods = useMemo(
+    () => (Array.isArray(tahunAjaran) ? tahunAjaran : []).filter((period) => period?.id),
+    [tahunAjaran],
+  );
+
+  useEffect(() => {
+    const requested = selectedSemester && selectedSemester !== "all"
+      ? String(selectedSemester)
+      : "";
+    const fallback = periods.find((period) => period.is_active)?.id || periods[0]?.id || "";
+    setPeriodId(requested || String(fallback));
+  }, [periods, selectedSemester]);
+
+  const loadReadiness = useCallback(async () => {
+    if (!periodId) {
+      setReadiness(null);
+      setSelectedCourseIds([]);
+      return;
+    }
+    setLoading(true);
+    setError("");
+    try {
+      const response = await API(`/api/v1/master/kelas/kesiapan?tahun_ajaran_id=${encodeURIComponent(periodId)}`);
+      if (response?.detail) throw new Error(response.detail);
+      setReadiness(response);
+    } catch (e) {
+      setReadiness(null);
+      setSelectedCourseIds([]);
+      setError(e.message || "Kesiapan mata kuliah gagal dimuat");
+    } finally {
+      setLoading(false);
+    }
+  }, [periodId]);
+
+  useEffect(() => {
+    loadReadiness();
+  }, [loadReadiness]);
+
+  const programItems = readiness?.items || [];
+  const courses = useMemo(
+    () => programItems.flatMap((program) => (program.courses || []).map((course) => ({
+      ...course,
+      prodi_id: program.prodi_id,
+      prodi_nama: program.prodi_nama,
+      prodi_kode: program.prodi_kode,
+      curriculum_progress: program.curriculum_progress,
+      lecturer_progress: program.lecturer_progress,
+      overall_progress: program.overall_progress,
+    }))),
+    [programItems],
+  );
+
+  const selectableCourses = useMemo(
+    () => courses.filter((course) => course.course_ready_for_class && !course.sudah_punya_kelas),
+    [courses],
+  );
+
+  useEffect(() => {
+    setSelectedCourseIds(selectableCourses.map((course) => course.id));
+  }, [selectableCourses]);
+
+  const prodiOptions = useMemo(
+    () => programItems.map((program) => [program.prodi_id, program.prodi_nama]).filter(([id]) => id),
+    [programItems],
+  );
+  const semesterOptions = useMemo(
+    () => [...new Set(courses.map((course) => String(course.semester_paket || "").trim()).filter(Boolean))]
+      .sort((a, b) => Number(a) - Number(b)),
+    [courses],
+  );
+
+  const filteredCourses = useMemo(() => {
+    const query = searchQuery.trim().toLowerCase();
+    return courses.filter((course) => {
+      if (prodiFilter && String(course.prodi_id) !== String(prodiFilter)) return false;
+      if (semesterFilter && String(course.semester_paket || "") !== String(semesterFilter)) return false;
+      if (statusFilter === "ready" && (!course.course_ready_for_class || course.sudah_punya_kelas)) return false;
+      if (statusFilter === "pending" && (course.course_ready_for_class || course.sudah_punya_kelas)) return false;
+      if (statusFilter === "exists" && !course.sudah_punya_kelas) return false;
+      if (query) {
+        const haystack = `${course.code} ${course.name} ${course.prodi_nama} ${course.dosen_utama_nama}`.toLowerCase();
+        if (!haystack.includes(query)) return false;
+      }
+      return true;
+    });
+  }, [courses, prodiFilter, searchQuery, semesterFilter, statusFilter]);
+
+  const toggleCourse = (courseId, checked) => {
+    setSelectedCourseIds((current) => (
+      checked
+        ? Array.from(new Set([...current, courseId]))
+        : current.filter((id) => id !== courseId)
+    ));
+  };
+
+  const generateClasses = async () => {
+    if (!periodId || selectedCourseIds.length === 0) return;
+    setGenerating(true);
+    setError("");
+    setGenerationResult(null);
+    try {
+      const response = await API("/api/v1/master/kelas/generate-rombel", {
+        method: "POST",
+        body: JSON.stringify({ tahun_ajaran_id: periodId, course_ids: selectedCourseIds }),
+      });
+      if (response?.detail) throw new Error(response.detail);
+      setGenerationResult(response);
+      await loadReadiness();
+    } catch (e) {
+      setError(e.message || "Kelas gagal dibuat");
+    } finally {
+      setGenerating(false);
+    }
+  };
+
+  const selectedPeriod = periods.find((period) => String(period.id) === String(periodId));
+  const periodLabel = readiness?.period?.label
+    || selectedPeriod?.nama
+    || [selectedPeriod?.semester, selectedPeriod?.tahun].filter(Boolean).join(" ")
+    || "Periode belum dipilih";
+  const readyCount = selectableCourses.length;
+  const pendingCount = courses.filter((course) => !course.course_ready_for_class && !course.sudah_punya_kelas).length;
+  const existingCount = courses.filter((course) => course.sudah_punya_kelas).length;
+  const statusColor = (course) => {
+    if (course.sudah_punya_kelas) return "green";
+    if (course.course_ready_for_class) return "blue";
+    return "yellow";
+  };
+  const statusLabel = (course) => {
+    if (course.sudah_punya_kelas) return "Sudah ada kelas";
+    return course.course_ready_for_class ? "Siap dibuat" : "Belum siap";
+  };
+
+  return (
+    <div className="w-full space-y-6">
+      <div className="flex flex-col gap-3 lg:flex-row lg:items-center lg:justify-between">
+        <div className="flex items-center gap-3">
+          <div className="flex h-10 w-10 items-center justify-center rounded-xl bg-indigo-100">
+            <School className="h-5 w-5 text-indigo-700" />
+          </div>
+          <div>
+            <h1 className="text-xl font-bold text-slate-900">Pembuatan Kelas</h1>
+            <p className="text-sm text-slate-500">
+              Pilih MK yang sudah siap untuk dibuatkan kelas pada periode tertentu.
+              {isKaprodi ? " Anda hanya dapat mengelola MK prodi sendiri." : ""}
+            </p>
+          </div>
+        </div>
+        <div className="flex flex-col gap-2 sm:flex-row sm:items-center">
+          <label className="text-xs font-semibold text-slate-500" htmlFor="class-period-select">Periode akademik</label>
+          <select
+            id="class-period-select"
+            value={periodId}
+            onChange={(event) => {
+              setPeriodId(event.target.value);
+              setGenerationResult(null);
+            }}
+            className="rounded-lg border border-slate-300 bg-white px-3 py-2 text-sm font-semibold text-slate-800 focus:outline-none focus:ring-2 focus:ring-indigo-400"
+          >
+            <option value="">-- Pilih periode --</option>
+            {periods.map((period) => (
+              <option key={period.id} value={period.id}>
+                {period.nama || `${period.semester || ""} ${period.tahun || ""}`.trim()}{period.is_active ? " ★ Aktif" : ""}
+              </option>
+            ))}
+          </select>
+        </div>
+      </div>
+
+      {error && <InfoBox variant="warning">{error}</InfoBox>}
+      {loading && (
+        <div className="flex items-center gap-2 rounded-lg border border-indigo-100 bg-indigo-50 px-3 py-3 text-sm text-indigo-700">
+          <Loader2 className="h-4 w-4 animate-spin" /> Memeriksa kesiapan mata kuliah...
+        </div>
+      )}
+
+      {!loading && periodId && readiness && (
+        <>
+          <Card className="border-indigo-200 bg-indigo-50/40 p-4">
+            <div className="flex flex-col gap-2 sm:flex-row sm:items-center sm:justify-between">
+              <div>
+                <p className="text-xs font-semibold uppercase tracking-wide text-indigo-700">Periode target</p>
+                <p className="mt-1 text-lg font-bold text-slate-900">{periodLabel}</p>
+                <p className="mt-1 text-xs text-slate-600">
+                  Kesiapan dihitung per mata kuliah. MK yang belum lengkap tidak menghambat MK lain yang sudah siap.
+                </p>
+              </div>
+              <StatusBadge color={String(readiness.period?.status || "").toLowerCase() === "closed" ? "gray" : "purple"}>
+                {readiness.period?.status || "draft"}
+              </StatusBadge>
+            </div>
+          </Card>
+
+          <div className="grid grid-cols-2 gap-3 lg:grid-cols-4">
+            <Card className="p-4"><p className="text-xs text-slate-500">Prodi terpantau</p><p className="mt-1 text-2xl font-bold text-slate-900">{programItems.length}</p></Card>
+            <Card className="p-4"><p className="text-xs text-slate-500">MK siap dibuat</p><p className="mt-1 text-2xl font-bold text-blue-700">{readyCount}</p></Card>
+            <Card className="p-4"><p className="text-xs text-slate-500">MK belum siap</p><p className="mt-1 text-2xl font-bold text-amber-700">{pendingCount}</p></Card>
+            <Card className="p-4"><p className="text-xs text-slate-500">Sudah punya kelas</p><p className="mt-1 text-2xl font-bold text-emerald-700">{existingCount}</p></Card>
+          </div>
+
+          <Card className="p-4 space-y-4">
+            <div className="flex flex-col gap-3 lg:flex-row lg:items-end">
+              <FieldInput label="Cari MK / dosen / prodi" value={searchQuery} onChange={setSearchQuery} placeholder="Ketik nama atau kode..." />
+              <FieldSelect label="Prodi" value={prodiFilter} onChange={setProdiFilter} options={[["", "Semua Prodi"], ...prodiOptions]} />
+              <FieldSelect label="Semester paket" value={semesterFilter} onChange={setSemesterFilter} options={[["", "Semua Semester"], ...semesterOptions.map((value) => [value, `Semester ${value}`])]} />
+              <FieldSelect label="Status" value={statusFilter} onChange={setStatusFilter} options={[["all", "Semua Status"], ["ready", "Siap dibuat"], ["pending", "Belum siap"], ["exists", "Sudah ada kelas"]]} />
+            </div>
+
+            <div className="flex flex-col gap-2 border-y border-slate-100 py-3 sm:flex-row sm:items-center sm:justify-between">
+              <div className="text-xs text-slate-600">
+                Menampilkan <strong>{filteredCourses.length}</strong> dari {courses.length} MK · <strong>{selectedCourseIds.length}</strong> dipilih
+              </div>
+              <div className="flex flex-wrap gap-2">
+                <Btn
+                  variant="secondary"
+                  size="sm"
+                  onClick={() => setSelectedCourseIds(selectableCourses.map((course) => course.id))}
+                  disabled={selectableCourses.length === 0}
+                >
+                  Pilih Semua MK Siap
+                </Btn>
+                <Btn
+                  size="sm"
+                  onClick={generateClasses}
+                  disabled={generating || loading || selectedCourseIds.length === 0}
+                >
+                  {generating ? <Loader2 className="h-4 w-4 animate-spin" /> : <School className="h-4 w-4" />}
+                  {generating ? "Membuat kelas..." : `Buat Kelas (${selectedCourseIds.length})`}
+                </Btn>
+              </div>
+            </div>
+
+            {filteredCourses.length === 0 ? (
+              <EmptyState Icon={School} title="Tidak ada mata kuliah" desc="Ubah filter atau lengkapi data kurikulum dan dosen pengampu." />
+            ) : (
+              <div className="grid grid-cols-1 gap-3 xl:grid-cols-2">
+                {filteredCourses.map((course) => {
+                  const ready = Boolean(course.course_ready_for_class);
+                  const selected = selectedCourseIds.includes(course.id);
+                  const disabled = course.sudah_punya_kelas || !ready;
+                  return (
+                    <label
+                      key={course.id}
+                      className={`flex items-start gap-3 rounded-xl border p-3 transition ${
+                        course.sudah_punya_kelas
+                          ? "border-emerald-200 bg-emerald-50/50"
+                          : ready
+                            ? selected ? "border-indigo-400 bg-indigo-50/50 ring-1 ring-indigo-200" : "border-slate-200 bg-white hover:border-indigo-300"
+                            : "border-amber-200 bg-amber-50/50"
+                      } ${disabled ? "cursor-default" : "cursor-pointer"}`}
+                    >
+                      <input
+                        type="checkbox"
+                        className="mt-1 rounded border-slate-300 text-indigo-600 focus:ring-indigo-500"
+                        checked={selected}
+                        disabled={disabled}
+                        onChange={(event) => toggleCourse(course.id, event.target.checked)}
+                      />
+                      <span className="min-w-0 flex-1">
+                        <span className="flex flex-wrap items-start justify-between gap-2">
+                          <span className="min-w-0">
+                            <span className="block truncate font-bold text-slate-900">{course.name || "Mata kuliah tanpa nama"}</span>
+                            <span className="mt-1 block text-[11px] text-slate-500">
+                              {course.code || "Tanpa kode"} · {course.sks || 0} SKS · Semester {course.semester_paket || "-"}
+                            </span>
+                          </span>
+                          <StatusBadge color={statusColor(course)}>{statusLabel(course)}</StatusBadge>
+                        </span>
+                        <span className="mt-2 flex flex-wrap gap-x-3 gap-y-1 text-[11px] text-slate-600">
+                          <span><strong>Prodi:</strong> {course.prodi_nama || "-"}</span>
+                          <span><strong>Dosen:</strong> {course.dosen_utama_nama || "Belum ditetapkan"}</span>
+                        </span>
+                        {!ready && !course.sudah_punya_kelas && (
+                          <span className="mt-2 block rounded-lg bg-amber-100/70 px-2 py-1.5 text-[11px] font-medium text-amber-800">
+                            {course.course_readiness_reasons?.join("; ") || "Data mata kuliah belum lengkap"}
+                          </span>
+                        )}
+                        {course.sudah_punya_kelas && (
+                          <span className="mt-2 block text-[11px] font-semibold text-emerald-700">Kelas untuk periode ini sudah tersedia.</span>
+                        )}
+                      </span>
+                    </label>
+                  );
+                })}
+              </div>
+            )}
+          </Card>
+
+          <Card className="p-4 space-y-3">
+            <div className="flex items-center gap-2">
+              <BarChart3 className="h-4 w-4 text-indigo-600" />
+              <h2 className="text-sm font-bold text-slate-900">Ringkasan kesiapan per prodi</h2>
+            </div>
+            <div className="grid grid-cols-1 gap-2 md:grid-cols-2">
+              {programItems.map((program) => (
+                <div key={program.prodi_id || program.prodi_nama} className="rounded-lg border border-slate-200 bg-slate-50 p-3">
+                  <div className="flex items-start justify-between gap-2">
+                    <div>
+                      <p className="text-sm font-bold text-slate-800">{program.prodi_nama}</p>
+                      <p className="mt-1 text-[11px] text-slate-500">Kurikulum {program.curriculum_progress || 0}% · Dosen {program.lecturer_progress || 0}%</p>
+                    </div>
+                    <StatusBadge color={program.ready_for_class ? "blue" : "yellow"}>{program.ready_course_count || 0} MK siap</StatusBadge>
+                  </div>
+                  {program.pending_course_count > 0 && (
+                    <p className="mt-2 text-[11px] text-amber-700">{program.pending_course_count} MK belum siap dan dapat dilengkapi kemudian.</p>
+                  )}
+                </div>
+              ))}
+            </div>
+          </Card>
+
+          {generationResult && (
+            <InfoBox variant="success">
+              {generationResult.created?.length || 0} kelas berhasil dibuat.
+              {(generationResult.blocked?.length || 0) > 0 && ` ${generationResult.blocked.length} MK belum dibuat karena datanya belum lengkap.`}
+            </InfoBox>
+          )}
+        </>
+      )}
+
+      {!loading && !periodId && (
+        <Card className="p-6"><InfoBox variant="warning">Belum ada periode akademik. Buat atau aktifkan periode terlebih dahulu.</InfoBox></Card>
+      )}
+    </div>
+  );
+}
 
 export function FakultasPage() {
   const [list, setList] = useState([]);

@@ -112,7 +112,7 @@ async def get_krs_offering(
     calc_semester = max(1, min(8, calc_semester))  # Default max semester 8
 
     # Ambil daftar MK sesuai prodi mahasiswa (atau semua jika prodi belum di-set)
-    query = {}
+    query = {"status": {"$nin": ["deleted", "inactive", "retired"]}}
     if user.get("prodi_id"):
         query["$or"] = [{"prodi_id": user["prodi_id"]}, {"prodi_id": None}, {"prodi_id": ""}]
     

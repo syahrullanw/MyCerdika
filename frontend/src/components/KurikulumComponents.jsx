@@ -13,6 +13,9 @@ import {
   Pencil,
   Trash2,
   CheckCircle2,
+  RefreshCw,
+  Wifi,
+  WifiOff,
   Users,
   Award,
   Layers,
@@ -23,6 +26,7 @@ import {
   Inbox,
   AlertCircle,
   FileSpreadsheet,
+  BarChart3,
   UserCheck,
   Search,
   X,
@@ -368,6 +372,26 @@ export function KurikulumMasterPage({ user }) {
   const [courseLoading, setCourseLoading] = useState(false);
   const [courseError, setCourseError] = useState("");
   const [courseLifecycleLocked, setCourseLifecycleLocked] = useState(false);
+  const [retiringCourse, setRetiringCourse] = useState(null);
+  const [retireReason, setRetireReason] = useState("");
+  const [replacementCourseId, setReplacementCourseId] = useState("");
+  const [retireEffectiveFrom, setRetireEffectiveFrom] = useState("");
+  const [retireLoading, setRetireLoading] = useState(false);
+  const [retireError, setRetireError] = useState("");
+
+  useEffect(() => {
+    if (!showCourseForm) return undefined;
+    const closeOnEscape = (event) => {
+      if (event.key === "Escape" && !courseLoading) setShowCourseForm(false);
+    };
+    const previousBodyOverflow = document.body.style.overflow;
+    document.body.style.overflow = "hidden";
+    document.addEventListener("keydown", closeOnEscape);
+    return () => {
+      document.body.style.overflow = previousBodyOverflow;
+      document.removeEventListener("keydown", closeOnEscape);
+    };
+  }, [courseLoading, showCourseForm]);
 
   const loadData = useCallback(() => {
     API("/api/v1/kurikulum").then((d) => Array.isArray(d) && setKurikulumList(d));
@@ -458,15 +482,57 @@ export function KurikulumMasterPage({ user }) {
     loadKurikulumCourses(activeKurikulum.id);
   };
 
-  const deleteCourse = async (cid) => {
-    if (!window.confirm("Hapus Mata Kuliah ini dari Kurikulum?")) return;
-    const response = await API(`/api/v1/kurikulum/courses/${cid}`, { method: "DELETE" });
+  const openRetireCourse = (course) => {
+    setRetiringCourse(course);
+    setRetireReason("");
+    setReplacementCourseId("");
+    setRetireEffectiveFrom("");
+    setRetireError("");
+  };
+
+  const retireCourse = async () => {
+    if (!retiringCourse || retireReason.trim().length < 3) {
+      setRetireError("Alasan minimal 3 karakter wajib diisi.");
+      return;
+    }
+    setRetireLoading(true);
+    setRetireError("");
+    try {
+      const response = await API(`/api/v1/kurikulum/courses/${retiringCourse.id}/retire`, {
+        method: "POST",
+        body: JSON.stringify({
+          reason: retireReason.trim(),
+          replacement_course_id: replacementCourseId || null,
+          effective_from: retireEffectiveFrom.trim() || null,
+        }),
+      });
+      if (response?.detail) throw new Error(typeof response.detail === "string" ? response.detail : "MK tidak dapat diarsipkan.");
+      setRetiringCourse(null);
+      if (activeKurikulum) loadKurikulumCourses(activeKurikulum.id);
+    } catch (error) {
+      setRetireError(error.message || "MK tidak dapat diarsipkan.");
+    } finally {
+      setRetireLoading(false);
+    }
+  };
+
+  const restoreCourse = async (course) => {
+    if (!window.confirm(`Aktifkan kembali ${course.name || course.nama || "Mata Kuliah"}? MK akan tersedia kembali untuk penawaran periode baru.`)) return;
+    const response = await API(`/api/v1/kurikulum/courses/${course.id}/restore`, { method: "POST" });
     if (response?.detail) {
-      window.alert(typeof response.detail === "string" ? response.detail : "Mata Kuliah tidak dapat dihapus.");
+      window.alert(typeof response.detail === "string" ? response.detail : "Mata Kuliah tidak dapat diaktifkan kembali.");
       return;
     }
     if (activeKurikulum) loadKurikulumCourses(activeKurikulum.id);
   };
+
+  const replacementOptions = useMemo(
+    () => courses.filter((course) =>
+      course.id !== retiringCourse?.id
+      && !["deleted", "inactive", "retired"].includes(String(course.status || "active").toLowerCase())
+    ),
+    [courses, retiringCourse],
+  );
 
   const editCourse = (course) => {
     setEditingCourseId(course.id);
@@ -596,94 +662,199 @@ export function KurikulumMasterPage({ user }) {
 
           {/* Form Modal Add / Edit Course */}
           {showCourseForm && (
-            <Card className="space-y-4 border-indigo-200 bg-indigo-50/30 p-4 sm:p-5">
-              <h3 className="font-semibold text-slate-800">
-                {editingCourseId ? "Edit Mata Kuliah & Dosen Pengampu" : `Tambah MK (Semester Paket ${activeSemesterTab})`}
-              </h3>
-              {courseError && (
-                <div className="rounded-lg border border-amber-200 bg-amber-50 p-3 text-sm leading-5 text-amber-900">
-                  {courseError}
+            <div
+              className="fixed inset-0 z-[70] overflow-y-auto bg-slate-950/55 p-2 sm:p-4"
+              role="dialog"
+              aria-modal="true"
+              aria-labelledby="course-form-title"
+              onMouseDown={(event) => {
+                if (event.target === event.currentTarget && !courseLoading) setShowCourseForm(false);
+              }}
+            >
+              <div className="flex min-h-full items-start justify-center sm:items-center">
+                <div
+                  className="my-0 flex max-h-[calc(100dvh-1rem)] w-full max-w-4xl flex-col overflow-hidden rounded-2xl border border-indigo-200 bg-white shadow-2xl sm:my-4 sm:max-h-[calc(100dvh-2rem)]"
+                  onMouseDown={(event) => event.stopPropagation()}
+                >
+                  <div className="flex shrink-0 items-start justify-between gap-3 border-b border-slate-200 bg-white px-4 py-3 sm:px-6 sm:py-4">
+                    <div className="min-w-0">
+                      <p className="text-[11px] font-semibold uppercase tracking-[0.16em] text-indigo-600">
+                        {editingCourseId ? "Perbarui data" : `Semester Paket ${activeSemesterTab}`}
+                      </p>
+                      <h3 id="course-form-title" className="mt-1 break-words text-lg font-bold leading-tight text-slate-800 sm:text-xl">
+                        {editingCourseId ? "Edit Mata Kuliah & Dosen Pengampu" : "Tambah Mata Kuliah"}
+                      </h3>
+                    </div>
+                    <button
+                      type="button"
+                      onClick={() => setShowCourseForm(false)}
+                      disabled={courseLoading}
+                      className="shrink-0 rounded-lg p-2 text-slate-500 transition hover:bg-slate-100 hover:text-slate-800 disabled:cursor-not-allowed disabled:opacity-50"
+                      aria-label="Tutup formulir mata kuliah"
+                    >
+                      <X className="h-5 w-5" />
+                    </button>
+                  </div>
+
+                  <div className="min-h-0 flex-1 overflow-y-auto overscroll-contain p-3 sm:p-6">
+                    <div className="space-y-4">
+                      {courseError && (
+                        <div className="rounded-lg border border-amber-200 bg-amber-50 p-3 text-sm leading-5 text-amber-900">
+                          {courseError}
+                        </div>
+                      )}
+                      {courseLifecycleLocked && (
+                        <div className="rounded-lg border border-indigo-200 bg-indigo-50 p-3 text-sm leading-5 text-indigo-900">
+                          MK ini sudah dipakai kelas/KRS sehingga identitasnya dikunci. Dosen master di bawah ini menjadi
+                          default untuk penawaran kelas berikutnya; untuk kelas yang sedang berjalan, gunakan menu
+                          <strong> Jadwal Mengajar → Ganti Dosen</strong> agar riwayat pembelajaran tetap aman.
+                        </div>
+                      )}
+                      <div className="grid grid-cols-1 gap-4 sm:grid-cols-2">
+                        <FieldInput label="Kode MK" value={courseForm.kode} onChange={(v) => setCourseForm((p) => ({ ...p, kode: v }))} placeholder="IF201" required disabled={courseLifecycleLocked} />
+                        <FieldInput label="Nama Mata Kuliah" value={courseForm.nama} onChange={(v) => setCourseForm((p) => ({ ...p, nama: v }))} placeholder="Pemrograman Web" required disabled={courseLifecycleLocked} />
+
+                        <FieldInput label="SKS Teori / Tatap Muka" type="number" value={courseForm.sks_teori} onChange={(v) => setCourseForm((p) => ({ ...p, sks_teori: v }))} required disabled={courseLifecycleLocked} />
+                        <FieldInput label="SKS Praktikum / Lab" type="number" value={courseForm.sks_praktikum} onChange={(v) => setCourseForm((p) => ({ ...p, sks_praktikum: v }))} required disabled={courseLifecycleLocked} />
+
+                        <FieldSelect
+                          label="Semester Paket"
+                          value={courseForm.semester_paket}
+                          onChange={(v) => setCourseForm((p) => ({ ...p, semester_paket: v }))}
+                          options={[1, 2, 3, 4, 5, 6, 7, 8].map((s) => [s, `Semester Paket ${s}`])}
+                          disabled={courseLifecycleLocked}
+                        />
+
+                        <FieldSelect
+                          label="Sifat Mata Kuliah"
+                          value={courseForm.sifat}
+                          onChange={(v) => setCourseForm((p) => ({ ...p, sifat: v }))}
+                          options={[["wajib", "Wajib"], ["pilihan", "Pilihan"]]}
+                          disabled={courseLifecycleLocked}
+                        />
+
+                        <LecturerSearchField
+                          label="Dosen Pengampu Utama (Koordinator)"
+                          lecturers={dosenList}
+                          programs={prodiList}
+                          selectedIds={courseForm.dosen_utama_id ? [courseForm.dosen_utama_id] : []}
+                          onChange={(ids) => setCourseForm((previous) => ({
+                            ...previous,
+                            dosen_utama_id: ids[0] || "",
+                            dosen_anggota_ids: previous.dosen_anggota_ids.filter(
+                              (id) => id !== ids[0],
+                            ),
+                          }))}
+                          hint="Dosen penanggung jawab mata kuliah"
+                        />
+
+                        <LecturerSearchField
+                          label="Team Teaching (Dosen Anggota)"
+                          lecturers={dosenList}
+                          programs={prodiList}
+                          selectedIds={courseForm.dosen_anggota_ids}
+                          onChange={(ids) => setCourseForm((previous) => ({
+                            ...previous,
+                            dosen_anggota_ids: ids,
+                          }))}
+                          multiple
+                          excludeIds={[courseForm.dosen_utama_id]}
+                          hint="Cari dan pilih satu atau beberapa dosen pendamping"
+                        />
+                      </div>
+
+                      <div className="flex flex-col items-start gap-1 rounded-lg border border-indigo-200 bg-indigo-100/60 p-3 text-sm sm:flex-row sm:items-center sm:justify-between">
+                        <span className="font-medium text-indigo-800">Beban Total Mata Kuliah:</span>
+                        <span className="break-words text-base font-bold text-indigo-900 sm:text-right">
+                          {(parseInt(courseForm.sks_teori) || 0) + (parseInt(courseForm.sks_praktikum) || 0)} SKS
+                          <span className="ml-1.5 text-xs font-normal text-indigo-600">
+                            ({courseForm.sks_teori || 0} Teori + {courseForm.sks_praktikum || 0} Prak)
+                          </span>
+                        </span>
+                      </div>
+                    </div>
+                  </div>
+
+                  <div className="grid shrink-0 grid-cols-2 gap-2 border-t border-slate-200 bg-white px-3 py-3 pb-[calc(0.75rem+env(safe-area-inset-bottom))] sm:flex sm:justify-end sm:px-6 sm:py-4">
+                    <Btn variant="secondary" onClick={() => setShowCourseForm(false)} disabled={courseLoading} className="w-full sm:w-auto">Batal</Btn>
+                    <Btn onClick={saveCourse} disabled={courseLoading || !courseForm.kode || !courseForm.nama} className="w-full sm:w-auto">
+                      {courseLoading ? <Loader2 className="h-4 w-4 animate-spin" /> : null}
+                      {courseLoading ? "Menyimpan..." : "Simpan MK"}
+                    </Btn>
+                  </div>
                 </div>
-              )}
-              {courseLifecycleLocked && (
-                <div className="rounded-lg border border-indigo-200 bg-indigo-50 p-3 text-sm leading-5 text-indigo-900">
-                  MK ini sudah dipakai kelas/KRS sehingga identitasnya dikunci. Dosen master di bawah ini menjadi
-                  default untuk penawaran kelas berikutnya; untuk kelas yang sedang berjalan, gunakan menu
-                  <strong> Jadwal Mengajar → Ganti Dosen</strong> agar riwayat pembelajaran tetap aman.
+              </div>
+            </div>
+          )}
+
+          {retiringCourse && (
+            <div
+              className="fixed inset-0 z-[75] flex items-end justify-center bg-slate-950/55 p-0 sm:items-center sm:p-4"
+              role="dialog"
+              aria-modal="true"
+              aria-labelledby="retire-course-title"
+              onMouseDown={(event) => {
+                if (event.target === event.currentTarget && !retireLoading) setRetiringCourse(null);
+              }}
+            >
+              <div className="max-h-[92dvh] w-full overflow-y-auto rounded-t-2xl border border-amber-200 bg-white p-4 shadow-2xl sm:max-w-xl sm:rounded-2xl sm:p-6">
+                <div className="flex items-start justify-between gap-3">
+                  <div>
+                    <p className="text-[11px] font-semibold uppercase tracking-[0.16em] text-amber-700">Arsipkan mata kuliah</p>
+                    <h3 id="retire-course-title" className="mt-1 text-lg font-bold text-slate-900">{retiringCourse.name || retiringCourse.nama}</h3>
+                    <p className="mt-1 text-xs text-slate-500">{retiringCourse.code || retiringCourse.kode} · Histori akademik tidak akan dihapus.</p>
+                  </div>
+                  <button
+                    type="button"
+                    onClick={() => setRetiringCourse(null)}
+                    disabled={retireLoading}
+                    className="rounded-lg p-2 text-slate-500 hover:bg-slate-100"
+                    aria-label="Tutup arsip mata kuliah"
+                  >
+                    <X className="h-5 w-5" />
+                  </button>
                 </div>
-              )}
-              <div className="grid grid-cols-1 gap-4 sm:grid-cols-2">
-                <FieldInput label="Kode MK" value={courseForm.kode} onChange={(v) => setCourseForm((p) => ({ ...p, kode: v }))} placeholder="IF201" required disabled={courseLifecycleLocked} />
-                <FieldInput label="Nama Mata Kuliah" value={courseForm.nama} onChange={(v) => setCourseForm((p) => ({ ...p, nama: v }))} placeholder="Pemrograman Web" required disabled={courseLifecycleLocked} />
-                
-                <FieldInput label="SKS Teori / Tatap Muka" type="number" value={courseForm.sks_teori} onChange={(v) => setCourseForm((p) => ({ ...p, sks_teori: v }))} required disabled={courseLifecycleLocked} />
-                <FieldInput label="SKS Praktikum / Lab" type="number" value={courseForm.sks_praktikum} onChange={(v) => setCourseForm((p) => ({ ...p, sks_praktikum: v }))} required disabled={courseLifecycleLocked} />
 
-                <FieldSelect
-                  label="Semester Paket"
-                  value={courseForm.semester_paket}
-                  onChange={(v) => setCourseForm((p) => ({ ...p, semester_paket: v }))}
-                  options={[1, 2, 3, 4, 5, 6, 7, 8].map((s) => [s, `Semester Paket ${s}`])}
-                  disabled={courseLifecycleLocked}
-                />
+                <div className="mt-4 space-y-4">
+                  <InfoBox variant="warning">
+                    MK akan dikeluarkan dari penawaran kelas dan KRS baru, tetapi kelas lama, KRS, presensi, nilai, dan laporan BKD tetap tersimpan.
+                  </InfoBox>
+                  {retireError && <InfoBox variant="warning">{retireError}</InfoBox>}
+                  <div className="space-y-1">
+                    <label className="text-sm font-medium text-slate-700" htmlFor="retire-course-reason">Alasan tidak lagi digunakan<span className="ml-0.5 text-red-500">*</span></label>
+                    <textarea
+                      id="retire-course-reason"
+                      value={retireReason}
+                      onChange={(event) => setRetireReason(event.target.value)}
+                      placeholder="Contoh: Digantikan oleh MK baru pada revisi kurikulum 2026"
+                      rows={3}
+                      className="w-full resize-y rounded-lg border border-slate-300 px-3 py-2 text-sm focus:border-transparent focus:outline-none focus:ring-2 focus:ring-amber-400"
+                    />
+                  </div>
+                  <FieldInput
+                    label="Mulai periode (opsional)"
+                    value={retireEffectiveFrom}
+                    onChange={setRetireEffectiveFrom}
+                    placeholder="Contoh: Ganjil 2026/2027"
+                  />
+                  <FieldSelect
+                    label="MK pengganti (opsional)"
+                    value={replacementCourseId}
+                    onChange={setReplacementCourseId}
+                    options={[["", "Tidak ada MK pengganti"], ...replacementOptions.map((course) => [course.id, `${course.code || course.kode || "Tanpa kode"} — ${course.name || course.nama}`])]}
+                    hint="MK pengganti harus berada pada prodi yang sama."
+                  />
+                </div>
 
-                <FieldSelect
-                  label="Sifat Mata Kuliah"
-                  value={courseForm.sifat}
-                  onChange={(v) => setCourseForm((p) => ({ ...p, sifat: v }))}
-                  options={[["wajib", "Wajib"], ["pilihan", "Pilihan"]]}
-                  disabled={courseLifecycleLocked}
-                />
-
-                <LecturerSearchField
-                  label="Dosen Pengampu Utama (Koordinator)"
-                  lecturers={dosenList}
-                  programs={prodiList}
-                  selectedIds={courseForm.dosen_utama_id ? [courseForm.dosen_utama_id] : []}
-                  onChange={(ids) => setCourseForm((previous) => ({
-                    ...previous,
-                    dosen_utama_id: ids[0] || "",
-                    dosen_anggota_ids: previous.dosen_anggota_ids.filter(
-                      (id) => id !== ids[0],
-                    ),
-                  }))}
-                  hint="Dosen penanggung jawab mata kuliah"
-                />
-
-                <LecturerSearchField
-                  label="Team Teaching (Dosen Anggota)"
-                  lecturers={dosenList}
-                  programs={prodiList}
-                  selectedIds={courseForm.dosen_anggota_ids}
-                  onChange={(ids) => setCourseForm((previous) => ({
-                    ...previous,
-                    dosen_anggota_ids: ids,
-                  }))}
-                  multiple
-                  excludeIds={[courseForm.dosen_utama_id]}
-                  hint="Cari dan pilih satu atau beberapa dosen pendamping"
-                />
+                <div className="mt-5 grid grid-cols-2 gap-2 sm:flex sm:justify-end">
+                  <Btn variant="secondary" onClick={() => setRetiringCourse(null)} disabled={retireLoading} className="w-full sm:w-auto">Batal</Btn>
+                  <Btn variant="danger" onClick={retireCourse} disabled={retireLoading || retireReason.trim().length < 3} className="w-full sm:w-auto">
+                    {retireLoading ? <Loader2 className="h-4 w-4 animate-spin" /> : null}
+                    {retireLoading ? "Mengarsipkan..." : "Arsipkan MK"}
+                  </Btn>
+                </div>
               </div>
-
-              {/* SKS Total Preview Badge */}
-              <div className="flex flex-col items-start gap-1 rounded-lg border border-indigo-200 bg-indigo-100/60 p-3 text-sm sm:flex-row sm:items-center sm:justify-between">
-                <span className="text-indigo-800 font-medium">Beban Total Mata Kuliah:</span>
-                <span className="break-words font-bold text-indigo-900 text-base sm:text-right">
-                  {(parseInt(courseForm.sks_teori) || 0) + (parseInt(courseForm.sks_praktikum) || 0)} SKS
-                  <span className="text-xs font-normal text-indigo-600 ml-1.5">
-                    ({courseForm.sks_teori || 0} Teori + {courseForm.sks_praktikum || 0} Prak)
-                  </span>
-                </span>
-              </div>
-
-              <div className="grid grid-cols-2 gap-2 sm:flex sm:justify-end">
-                <Btn variant="secondary" onClick={() => setShowCourseForm(false)} className="w-full sm:w-auto">Batal</Btn>
-                <Btn onClick={saveCourse} disabled={courseLoading || !courseForm.kode || !courseForm.nama} className="w-full sm:w-auto">
-                  {courseLoading ? <Loader2 className="w-4 h-4 animate-spin" /> : null}
-                  {courseLoading ? "Menyimpan..." : "Simpan MK"}
-                </Btn>
-              </div>
-            </Card>
+            </div>
           )}
 
           {/* Semester Tabs (Semester 1 s.d. 8) */}
@@ -724,9 +895,12 @@ export function KurikulumMasterPage({ user }) {
                             <p className="font-mono text-xs font-bold text-indigo-700">{c.code || c.kode}</p>
                             <h3 className="mt-0.5 break-words text-sm font-semibold leading-5 text-slate-900">{c.name || c.nama}</h3>
                           </div>
-                          <StatusBadge color={c.sifat === "wajib" ? "green" : "purple"}>
-                            {c.sifat === "wajib" ? "Wajib" : "Pilihan"}
-                          </StatusBadge>
+                          <div className="flex flex-wrap justify-end gap-1">
+                            <StatusBadge color={c.sifat === "wajib" ? "green" : "purple"}>
+                              {c.sifat === "wajib" ? "Wajib" : "Pilihan"}
+                            </StatusBadge>
+                            {c.status === "retired" && <StatusBadge color="gray">Tidak Aktif</StatusBadge>}
+                          </div>
                         </div>
 
                         <div className="grid grid-cols-2 gap-2 rounded-lg bg-slate-50 p-3 text-xs">
@@ -775,7 +949,11 @@ export function KurikulumMasterPage({ user }) {
                           {!isOrdinaryLecturer && (
                             <>
                               <Btn size="sm" variant="ghost" onClick={() => editCourse(c)} className="w-full px-2">Edit</Btn>
-                              <Btn size="sm" variant="ghost" onClick={() => deleteCourse(c.id)} className="w-full px-2 text-red-600 hover:bg-red-50">Hapus</Btn>
+                              {c.status === "retired" ? (
+                                <Btn size="sm" variant="ghost" onClick={() => restoreCourse(c)} className="w-full px-2 text-emerald-700 hover:bg-emerald-50">Aktifkan</Btn>
+                              ) : (
+                                <Btn size="sm" variant="ghost" onClick={() => openRetireCourse(c)} className="w-full px-2 text-amber-700 hover:bg-amber-50">Nonaktifkan</Btn>
+                              )}
                             </>
                           )}
                         </div>
@@ -810,9 +988,12 @@ export function KurikulumMasterPage({ user }) {
                             </td>
                             <td className="px-4 py-3 text-center font-bold text-slate-900">{totalSks} SKS</td>
                             <td className="px-4 py-3">
-                              <StatusBadge color={c.sifat === "wajib" ? "green" : "purple"}>
-                                {c.sifat === "wajib" ? "Wajib" : "Pilihan"}
-                              </StatusBadge>
+                              <div className="flex flex-wrap gap-1">
+                                <StatusBadge color={c.sifat === "wajib" ? "green" : "purple"}>
+                                  {c.sifat === "wajib" ? "Wajib" : "Pilihan"}
+                                </StatusBadge>
+                                {c.status === "retired" && <StatusBadge color="gray">Tidak Aktif</StatusBadge>}
+                              </div>
                             </td>
                             <td className="px-4 py-3 font-medium text-slate-800">
                               {c.dosen_utama_nama ? (
@@ -844,7 +1025,11 @@ export function KurikulumMasterPage({ user }) {
                                 {!isOrdinaryLecturer && (
                                   <>
                                     <Btn size="sm" variant="ghost" onClick={() => editCourse(c)}>Edit</Btn>
-                                    <Btn size="sm" variant="ghost" onClick={() => deleteCourse(c.id)} className="text-red-600 hover:bg-red-50">Hapus</Btn>
+                                    {c.status === "retired" ? (
+                                      <Btn size="sm" variant="ghost" onClick={() => restoreCourse(c)} className="text-emerald-700 hover:bg-emerald-50">Aktifkan</Btn>
+                                    ) : (
+                                      <Btn size="sm" variant="ghost" onClick={() => openRetireCourse(c)} className="text-amber-700 hover:bg-amber-50">Nonaktifkan</Btn>
+                                    )}
                                   </>
                                 )}
                               </div>
@@ -1054,6 +1239,219 @@ export function KurikulumMasterPage({ user }) {
           </div>
         </div>
       )}
+    </div>
+  );
+}
+
+function progressBarColor(value) {
+  if (value >= 100) return "bg-emerald-500";
+  if (value >= 70) return "bg-indigo-500";
+  if (value > 0) return "bg-amber-500";
+  return "bg-slate-300";
+}
+
+function progressStatusColor(status) {
+  if (status === "Lengkap") return "green";
+  if (status === "Belum dimulai") return "gray";
+  if (status === "Dosen pengampu belum lengkap") return "yellow";
+  return "blue";
+}
+
+function formatProgressDate(value) {
+  if (!value) return "Belum ada perubahan";
+  const date = new Date(value);
+  if (Number.isNaN(date.getTime())) return "Belum ada perubahan";
+  return date.toLocaleString("id-ID", {
+    day: "2-digit",
+    month: "short",
+    year: "numeric",
+    hour: "2-digit",
+    minute: "2-digit",
+  });
+}
+
+function progressWebSocketUrl(token) {
+  const configuredBase = (process.env.REACT_APP_BACKEND_URL || "").replace(/\/+$/, "");
+  const base = configuredBase || window.location.origin;
+  return `${base.replace(/^http/, "ws")}/api/v1/kurikulum/progress/ws?token=${encodeURIComponent(token || "")}`;
+}
+
+export function KurikulumProgressPage() {
+  const [payload, setPayload] = useState({ summary: {}, items: [] });
+  const [loading, setLoading] = useState(true);
+  const [error, setError] = useState("");
+  const [search, setSearch] = useState("");
+  const [onlyIncomplete, setOnlyIncomplete] = useState(false);
+  const [liveConnected, setLiveConnected] = useState(false);
+
+  const loadProgress = useCallback(async (silent = false) => {
+    if (!silent) setLoading(true);
+    try {
+      const response = await API("/api/v1/kurikulum/progress");
+      if (response?.detail) throw new Error(response.detail);
+      setPayload({ summary: response?.summary || {}, items: Array.isArray(response?.items) ? response.items : [] });
+      setError("");
+    } catch (loadError) {
+      setError(loadError.message || "Progres kurikulum gagal dimuat.");
+    } finally {
+      if (!silent) setLoading(false);
+    }
+  }, []);
+
+  useEffect(() => {
+    loadProgress();
+    const interval = window.setInterval(() => loadProgress(true), 30000);
+    return () => window.clearInterval(interval);
+  }, [loadProgress]);
+
+  useEffect(() => {
+    const token = localStorage.getItem("elearn_token");
+    if (!token || typeof WebSocket === "undefined") return undefined;
+    let disposed = false;
+    let retryTimer;
+    let socket;
+
+    const connect = () => {
+      if (disposed) return;
+      socket = new WebSocket(progressWebSocketUrl(token));
+      socket.onopen = () => setLiveConnected(true);
+      socket.onmessage = (event) => {
+        try {
+          const message = JSON.parse(event.data);
+          if (message.type === "curriculum_progress_updated") loadProgress(true);
+        } catch (parseError) {
+          // Ignore malformed heartbeat data and keep the polling fallback active.
+        }
+      };
+      socket.onerror = () => setLiveConnected(false);
+      socket.onclose = () => {
+        setLiveConnected(false);
+        if (!disposed) retryTimer = window.setTimeout(connect, 3000);
+      };
+    };
+
+    connect();
+    return () => {
+      disposed = true;
+      window.clearTimeout(retryTimer);
+      socket?.close();
+    };
+  }, [loadProgress]);
+
+  const filteredItems = useMemo(() => {
+    const normalizedSearch = search.trim().toLocaleLowerCase("id-ID");
+    return payload.items.filter((item) => {
+      const searchable = `${item.prodi_nama || ""} ${item.prodi_kode || ""}`.toLocaleLowerCase("id-ID");
+      const matchesSearch = !normalizedSearch || searchable.includes(normalizedSearch);
+      const matchesStatus = !onlyIncomplete || item.overall_progress < 100;
+      return matchesSearch && matchesStatus;
+    });
+  }, [onlyIncomplete, payload.items, search]);
+
+  const summary = payload.summary || {};
+
+  return (
+    <div className="mx-auto w-full max-w-7xl space-y-5" data-testid="kurikulum-progress-page">
+      <div className="flex flex-col gap-4 lg:flex-row lg:items-start lg:justify-between">
+        <div className="flex items-start gap-3">
+          <div className="flex h-11 w-11 shrink-0 items-center justify-center rounded-xl bg-indigo-100">
+            <BarChart3 className="h-6 w-6 text-indigo-600" />
+          </div>
+          <div>
+            <h1 className="text-xl font-bold text-slate-900 sm:text-2xl">Progres Kurikulum &amp; Dosen Pengampu</h1>
+            <p className="mt-1 max-w-3xl text-sm leading-6 text-slate-500">
+              Pantau kelengkapan input kurikulum dan penugasan dosen pengampu pada setiap Program Studi.
+              Data diperbarui otomatis ketika ada perubahan.
+            </p>
+          </div>
+        </div>
+        <div className="flex items-center gap-2 self-start rounded-full border border-slate-200 bg-white px-3 py-2 text-xs font-semibold text-slate-600 shadow-sm">
+          {liveConnected ? <Wifi className="h-3.5 w-3.5 text-emerald-600" /> : <WifiOff className="h-3.5 w-3.5 text-amber-600" />}
+          {liveConnected ? "Realtime aktif" : "Mode polling"}
+          <button type="button" onClick={() => loadProgress()} className="ml-1 rounded-full p-1 text-slate-500 hover:bg-slate-100 hover:text-indigo-600" title="Muat ulang progres">
+            <RefreshCw className={`h-3.5 w-3.5 ${loading ? "animate-spin" : ""}`} />
+          </button>
+        </div>
+      </div>
+
+      {error && <div className="rounded-xl border border-red-200 bg-red-50 px-4 py-3 text-sm text-red-800">{error}</div>}
+
+      <div className="grid grid-cols-2 gap-3 lg:grid-cols-4">
+        {[
+          ["Rata-rata progres", `${summary.average_progress || 0}%`, "Kurikulum + dosen pengampu", "bg-indigo-50 text-indigo-700"],
+          ["Progres kurikulum", `${summary.average_curriculum_progress || 0}%`, "Berdasarkan capaian SKS", "bg-blue-50 text-blue-700"],
+          ["Progres dosen", `${summary.average_lecturer_progress || 0}%`, "MK sudah memiliki pengampu", "bg-amber-50 text-amber-700"],
+          ["Prodi lengkap", `${summary.completed_program_count || 0}/${summary.program_count || 0}`, "Kurikulum dan dosen 100%", "bg-emerald-50 text-emerald-700"],
+        ].map(([label, value, hint, tone]) => (
+          <Card key={label} className={`border-transparent p-4 ${tone}`}>
+            <p className="text-xs font-semibold uppercase tracking-wide opacity-80">{label}</p>
+            <p className="mt-1 text-2xl font-bold">{value}</p>
+            <p className="mt-1 text-xs opacity-80">{hint}</p>
+          </Card>
+        ))}
+      </div>
+
+      <Card className="overflow-hidden">
+        <div className="flex flex-col gap-3 border-b border-slate-200 bg-slate-50/80 p-4 sm:flex-row sm:items-center sm:justify-between">
+          <div>
+            <h2 className="font-semibold text-slate-900">Detail progres per Program Studi</h2>
+            <p className="mt-1 text-xs text-slate-500">Terakhir dihitung: {formatProgressDate(summary.last_updated_at)}</p>
+          </div>
+          <div className="flex flex-col gap-2 sm:flex-row">
+            <input
+              type="search"
+              value={search}
+              onChange={(event) => setSearch(event.target.value)}
+              placeholder="Cari prodi atau kode..."
+              className="w-full rounded-lg border border-slate-300 bg-white px-3 py-2 text-sm outline-none focus:border-indigo-500 focus:ring-2 focus:ring-indigo-200 sm:w-56"
+            />
+            <label className="inline-flex items-center gap-2 rounded-lg border border-slate-300 bg-white px-3 py-2 text-xs font-medium text-slate-600">
+              <input type="checkbox" checked={onlyIncomplete} onChange={(event) => setOnlyIncomplete(event.target.checked)} className="rounded border-slate-300 text-indigo-600 focus:ring-indigo-500" />
+              Hanya belum lengkap
+            </label>
+          </div>
+        </div>
+
+        {loading ? (
+          <div className="flex min-h-52 items-center justify-center gap-2 text-sm text-slate-500"><Loader2 className="h-5 w-5 animate-spin" /> Memuat progres...</div>
+        ) : filteredItems.length === 0 ? (
+          <EmptyState Icon={CheckCircle2} title="Tidak ada data progres" desc={search || onlyIncomplete ? "Sesuaikan filter untuk melihat Program Studi lain." : "Belum ada Program Studi aktif yang dapat dipantau."} />
+        ) : (
+          <div className="divide-y divide-slate-100">
+            {filteredItems.map((item) => (
+              <div key={item.prodi_id} className="grid gap-4 p-4 lg:grid-cols-[minmax(180px,1.15fr)_minmax(180px,1fr)_minmax(180px,1fr)_minmax(180px,1fr)_auto] lg:items-center">
+                <div className="min-w-0">
+                  <div className="flex flex-wrap items-center gap-2">
+                    <span className="rounded bg-slate-100 px-2 py-0.5 font-mono text-xs font-bold text-slate-600">{item.prodi_kode || "-"}</span>
+                    <StatusBadge color={progressStatusColor(item.status_label)}>{item.status_label}</StatusBadge>
+                  </div>
+                  <p className="mt-2 truncate font-semibold text-slate-900" title={item.prodi_nama}>{item.prodi_nama}</p>
+                  <p className="mt-1 truncate text-xs text-slate-500" title={item.kurikulum_nama || ""}>{item.kurikulum_nama || "Belum ada kurikulum"}</p>
+                </div>
+                <div>
+                  <div className="flex items-center justify-between text-xs font-semibold text-slate-600"><span>Total</span><span>{item.overall_progress}%</span></div>
+                  <div className="mt-1.5 h-2 overflow-hidden rounded-full bg-slate-100"><div className={`h-full rounded-full transition-all ${progressBarColor(item.overall_progress)}`} style={{ width: `${item.overall_progress}%` }} /></div>
+                  <p className="mt-1 text-[11px] text-slate-400">Kombinasi dua indikator</p>
+                </div>
+                <div>
+                  <div className="flex items-center justify-between text-xs font-semibold text-slate-600"><span>Kurikulum</span><span>{item.curriculum_progress}%</span></div>
+                  <div className="mt-1.5 h-2 overflow-hidden rounded-full bg-slate-100"><div className={`h-full rounded-full transition-all ${progressBarColor(item.curriculum_progress)}`} style={{ width: `${item.curriculum_progress}%` }} /></div>
+                  <p className="mt-1 text-[11px] text-slate-400">{item.entered_sks} / {item.target_sks} SKS · {item.course_count} MK</p>
+                </div>
+                <div>
+                  <div className="flex items-center justify-between text-xs font-semibold text-slate-600"><span>Dosen pengampu</span><span>{item.lecturer_progress}%</span></div>
+                  <div className="mt-1.5 h-2 overflow-hidden rounded-full bg-slate-100"><div className={`h-full rounded-full transition-all ${progressBarColor(item.lecturer_progress)}`} style={{ width: `${item.lecturer_progress}%` }} /></div>
+                  <p className="mt-1 text-[11px] text-slate-400">{item.assigned_course_count} / {item.course_count} MK terisi</p>
+                </div>
+                <div className="text-left text-xs text-slate-400 lg:text-right">
+                  <p>{formatProgressDate(item.last_updated_at)}</p>
+                  <p className="mt-1 text-[11px]">{item.kurikulum_kode || "Tanpa kode kurikulum"}</p>
+                </div>
+              </div>
+            ))}
+          </div>
+        )}
+      </Card>
     </div>
   );
 }

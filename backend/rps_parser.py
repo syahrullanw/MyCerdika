@@ -27,6 +27,7 @@ class RPSPdfParseError(ValueError):
 
 
 RPS_FORM_FIELDS = (
+    "course_name",
     "course_code",
     "semester",
     "sks",
@@ -37,10 +38,15 @@ RPS_FORM_FIELDS = (
     "cpl_keterampilan_umum",
     "cpl_pengetahuan",
     "cpl_keterampilan_khusus",
+    "cpl_prodi",
     "keterangan",
     "cpmk",
     "description",
+    "materials",
+    "prerequisites",
     "references",
+    "activity",
+    "output",
 )
 
 
@@ -132,6 +138,24 @@ def _extract_section(
 
 def _date_to_iso(value: str) -> str:
     raw = _normalise_space(value)
+    month_names = {
+        "januari": 1,
+        "februari": 2,
+        "maret": 3,
+        "april": 4,
+        "mei": 5,
+        "juni": 6,
+        "juli": 7,
+        "agustus": 8,
+        "september": 9,
+        "oktober": 10,
+        "november": 11,
+        "desember": 12,
+    }
+    named_match = re.search(r"(\d{1,2})\s+([A-Za-z]+)\s+(\d{4})", raw, re.IGNORECASE)
+    if named_match and named_match.group(2).casefold() in month_names:
+        day, month, year = named_match.groups()
+        return f"{year}-{month_names[month.casefold()]:02d}-{int(day):02d}"
     match = re.search(r"(\d)\s*(\d)\s*[-/.]\s*(\d{1,2})\s*[-/.]\s*(\d{4})", raw)
     if match:
         day = f"{match.group(1)}{match.group(2)}"
@@ -304,28 +328,53 @@ def _parse_meeting_cells(number: int, cells: Sequence[str]) -> Dict[str, Any]:
     first_cell = values[0] if values else ""
     if re.fullmatch(r"(?:1[0-6]|[1-9])\s*[.)]?", first_cell):
         values = values[1:]
+    non_empty_values = [value for value in values if value]
     if number in {8, 16} and len(values) <= 5:
         title = values[0] if values else f"Pertemuan {number}"
-        waktu = values[1] if len(values) > 1 else ""
-        method = values[2] if len(values) > 2 else ""
-        weight = values[3] if len(values) > 3 else ""
         return {
             "meeting_number": number,
             "topic": title,
             "sub_topic": title,
             "learning_outcome": title,
-            "method": method,
+            "method": values[2] if len(values) > 2 else "",
             "materials": title,
             "assignments": "",
-            "waktu": waktu,
+            "waktu": values[1] if len(values) > 1 else "",
+            "learning_experience": "",
+            "penilaian_bentuk_kriteria": "",
             "penilaian_teknik": "",
             "penilaian_indikator": "",
             "penilaian_kriteria": "",
-            "penilaian_bobot": weight,
+            "penilaian_bobot": values[3] if len(values) > 3 else "",
+            "is_exam": True,
+        }
+    if number in {8, 16} and len(non_empty_values) <= 3:
+        title = non_empty_values[0] if non_empty_values else f"Pertemuan {number}"
+        return {
+            "meeting_number": number,
+            "topic": title,
+            "sub_topic": title,
+            "learning_outcome": title,
+            "method": "",
+            "materials": title,
+            "assignments": "",
+            "waktu": "",
+            "learning_experience": "",
+            "penilaian_bentuk_kriteria": "",
+            "penilaian_teknik": "",
+            "penilaian_indikator": "",
+            "penilaian_kriteria": "",
+            "penilaian_bobot": "",
             "is_exam": True,
         }
     padded = list(values) + [""] * max(0, 8 - len(values))
-    outcome, materials, method, waktu, technique, indicator, criteria, weight = padded[:8]
+    if len(values) <= 8:
+        outcome, materials, method, waktu, experience, assessment, indicator, weight = padded[:8]
+        technique = assessment
+        criteria = ""
+    else:
+        outcome, materials, method, waktu, technique, weight, indicator, criteria, assignments = (padded + [""])[:9]
+        experience = assignments
     is_exam = number in {8, 16} or bool(
         re.search(r"\b(uts|uas|ujian tengah|ujian akhir)\b", " ".join(values), re.IGNORECASE)
     )
@@ -337,8 +386,10 @@ def _parse_meeting_cells(number: int, cells: Sequence[str]) -> Dict[str, Any]:
         "learning_outcome": outcome,
         "method": method,
         "materials": materials,
-        "assignments": "",
+        "assignments": experience,
         "waktu": waktu,
+        "learning_experience": experience,
+        "penilaian_bentuk_kriteria": assessment if len(values) <= 8 else technique,
         "penilaian_teknik": technique,
         "penilaian_indikator": indicator,
         "penilaian_kriteria": criteria,
@@ -527,6 +578,372 @@ def _extract_pdf_meetings(reader: Any) -> List[Dict[str, Any]]:
     return [deduplicated[number] for number in sorted(deduplicated)]
 
 
+def _official_between(text: str, start: str, stops: Sequence[str]) -> str:
+    """Extract a section from the flattened text of the approved RPS template."""
+
+    source = _normalise_space(text)
+    start_match = re.search(re.escape(start), source, flags=re.IGNORECASE)
+    if not start_match:
+        return ""
+    value_start = start_match.end()
+    stop_positions = []
+    for stop in stops:
+        match = re.search(re.escape(stop), source[value_start:], flags=re.IGNORECASE)
+        if match:
+            stop_positions.append(value_start + match.start())
+    value_end = min(stop_positions) if stop_positions else len(source)
+    return _clean_section([source[value_start:value_end]], max_chars=30000)
+
+
+def _official_pdf_number(group: Dict[str, Any]) -> Optional[int]:
+    """Read the week number from the left-most column of the approved PDF.
+
+    The supplied template is a Word-exported landscape PDF whose text matrix is
+    scaled beyond the visible page width.  Its week column is nevertheless
+    stable around x=244..255, while numeric fragments in the time column begin
+    around x=1700.  Restricting the probe to the left-most band avoids treating
+    every ``4`` in ``1x4x45`` as a new meeting.
+    """
+
+    number_text = "".join(
+        text for x, _y, text in group["fragments"] if x < 350
+    )
+    compact = re.sub(r"\s+", "", number_text)
+    match = re.fullmatch(r"(1[0-6]|[1-9])\.?", compact)
+    return int(match.group(1)) if match else None
+
+
+_OFFICIAL_PDF_COLUMN_STARTS = (0.0, 350.0, 800.0, 1200.0, 1650.0, 1880.0, 2300.0, 2600.0, 3100.0)
+
+
+def _official_pdf_column_index(x: float) -> int:
+    for index in range(len(_OFFICIAL_PDF_COLUMN_STARTS) - 1, -1, -1):
+        if x >= _OFFICIAL_PDF_COLUMN_STARTS[index]:
+            return index
+    return 0
+
+
+def _official_meeting_from_columns(number: int, columns: Sequence[str]) -> Dict[str, Any]:
+    def repair_pdf_word_splits(value: str) -> str:
+        repaired = _normalise_space(value)
+        previous = ""
+        while repaired != previous:
+            previous = repaired
+            repaired = re.sub(r"\b([A-Za-z])\s+([a-z]{2,})\b", r"\1\2", repaired)
+        return re.sub(r"(\d)\s+%", r"\1%", repaired)
+
+    values = [repair_pdf_word_splits(value) for value in columns]
+    if number in {8, 16}:
+        title = next((value for value in values[1:] if value), f"Pertemuan {number}")
+        return {
+            "meeting_number": number,
+            "topic": title,
+            "sub_topic": title,
+            "learning_outcome": title,
+            "method": "",
+            "materials": title,
+            "assignments": "",
+            "waktu": "",
+            "learning_experience": "",
+            "penilaian_bentuk_kriteria": "",
+            "penilaian_teknik": "",
+            "penilaian_indikator": "",
+            "penilaian_kriteria": "",
+            "penilaian_bobot": "",
+            "is_exam": True,
+        }
+
+    padded = list(values[1:]) + [""] * 8
+    outcome, materials, method, waktu, experience, assessment, indicator, weight = padded[:8]
+    return {
+        "meeting_number": number,
+        "topic": materials or outcome or f"Pertemuan {number}",
+        "sub_topic": materials,
+        "learning_outcome": outcome,
+        "method": method,
+        "materials": materials,
+        "assignments": experience,
+        "waktu": waktu,
+        "learning_experience": experience,
+        "penilaian_bentuk_kriteria": assessment,
+        "penilaian_teknik": assessment,
+        "penilaian_indikator": indicator,
+        "penilaian_kriteria": "",
+        "penilaian_bobot": weight,
+        "is_exam": False,
+    }
+
+
+def _extract_official_pdf_meetings(reader: Any) -> List[Dict[str, Any]]:
+    """Extract the nine visual columns used by the approved RPS template."""
+
+    weekly_started = False
+    first_row_seen = False
+    finished_after_uas = False
+    current: Optional[Dict[str, Any]] = None
+    meetings: List[Dict[str, Any]] = []
+
+    def finish_current() -> None:
+        nonlocal current
+        if not current:
+            return
+        meetings.append(_official_meeting_from_columns(current["number"], current["columns"]))
+        current = None
+
+    for page in reader.pages:
+        if finished_after_uas:
+            break
+        try:
+            page_text = page.extract_text() or ""
+        except Exception:
+            page_text = ""
+        page_lower = _normalise_space(page_text).casefold()
+        if not weekly_started and "minggu ke" not in page_lower:
+            continue
+
+        fragments: List[Tuple[float, float, str]] = []
+
+        def visitor_text(text: str, _cm: Any, tm: Sequence[float], _font: Any, _size: float) -> None:
+            if not text or len(tm) < 6:
+                return
+            try:
+                x, y = float(tm[4]), float(tm[5])
+            except (TypeError, ValueError):
+                return
+            value = str(text).replace("\n", " ").strip()
+            if value:
+                fragments.append((x, y, value))
+
+        try:
+            page.extract_text(visitor_text=visitor_text)
+        except Exception:
+            continue
+
+        for group in _pdf_line_groups(fragments):
+            group_text = _normalise_space(" ".join(item[2] for item in group["fragments"]))
+            lowered = group_text.casefold()
+            if finished_after_uas:
+                if "catatan" in lowered:
+                    break
+                if current is not None:
+                    for x, _y, text in group["fragments"]:
+                        if x < _OFFICIAL_PDF_COLUMN_STARTS[1]:
+                            continue
+                        column = _official_pdf_column_index(x)
+                        current["columns"][column] = _normalise_space(
+                            f"{current['columns'][column]} {text}"
+                        )
+                continue
+            if not weekly_started:
+                # The multi-line header is split into several baselines in
+                # Word's PDF export.  The `Bobot` fragment is the last stable
+                # header anchor before the first week row.
+                if "bobot" in lowered or ("ming" in lowered and "materi" in lowered):
+                    weekly_started = True
+                continue
+
+            number = _official_pdf_number(group)
+            if number is not None:
+                if current and number == current["number"]:
+                    continue
+                finish_current()
+                current = {"number": number, "columns": [""] * 9}
+                first_row_seen = True
+                if number == 16:
+                    finished_after_uas = True
+
+            if not first_row_seen or current is None:
+                continue
+            for x, _y, text in group["fragments"]:
+                if x < _OFFICIAL_PDF_COLUMN_STARTS[1]:
+                    continue
+                column = _official_pdf_column_index(x)
+                current["columns"][column] = _normalise_space(
+                    f"{current['columns'][column]} {text}"
+                )
+
+    finish_current()
+    deduplicated = {
+        meeting["meeting_number"]: meeting
+        for meeting in meetings
+        if 1 <= meeting["meeting_number"] <= 16
+    }
+    return [deduplicated[number] for number in sorted(deduplicated)]
+
+
+def _is_official_rps_pdf(page_texts: Sequence[str]) -> bool:
+    flattened = _normalise_space(" ".join(page_texts[:3] + page_texts[9:]))
+    return (
+        "Rencana Tugas Mahasiswa".casefold() in flattened.casefold()
+        and "CPL-PRODI".casefold() in flattened.casefold()
+        and "Bobot Penilaian (%)".casefold() in flattened.casefold()
+    )
+
+
+def _official_rtm_schedule(schedule_text: str) -> List[Dict[str, Any]]:
+    weeks = (2, 3, 7, 9, 11, 12, 15, 16)
+    matches = list(re.finditer(r"(?<!\d)(16|15|12|11|9|7|3|2)(?=\s)", schedule_text))
+    rows: List[Dict[str, Any]] = []
+    seen: set[int] = set()
+    for index, match in enumerate(matches):
+        week = int(match.group(1))
+        if week not in weeks or week in seen:
+            continue
+        seen.add(week)
+        end = matches[index + 1].start() if index + 1 < len(matches) else len(schedule_text)
+        detail = _normalise_space(schedule_text[match.end():end])
+        rows.append({"meeting_number": week, "activity": detail, "output": ""})
+    return rows
+
+
+def _official_rtm_assessment(assessment_text: str) -> List[Dict[str, str]]:
+    aspects = (
+        "Identifikasi masalah & peluang",
+        "Kreativitas & inovasi",
+        "Analisis peluang & SWOT",
+        "Value proposition & business model",
+        "Marketing plan",
+        "Manajemen, etika & operasional",
+        "Kelayakan & keberlanjutan",
+        "Kualitas Business Plan",
+        "Pitching & komunikasi",
+    )
+    lowered = assessment_text.casefold()
+    positions = [(lowered.find(aspect.casefold()), aspect) for aspect in aspects]
+    positions = sorted((position, aspect) for position, aspect in positions if position >= 0)
+    rows: List[Dict[str, str]] = []
+    for index, (position, aspect) in enumerate(positions):
+        end = positions[index + 1][0] if index + 1 < len(positions) else len(assessment_text)
+        segment = _normalise_space(assessment_text[position + len(aspect):end])
+        weight_match = re.search(r"(\d{1,3})\s*%", segment)
+        weight = f"{weight_match.group(1)}%" if weight_match else ""
+        criteria = _normalise_space(segment[:weight_match.start()] if weight_match else segment)
+        rows.append({"aspect": aspect, "criteria": criteria, "weight": weight})
+    return rows
+
+
+def _parse_official_rps_pdf(
+    page_texts: Sequence[str],
+    reader: Any,
+    class_doc: Optional[Dict[str, Any]] = None,
+) -> Dict[str, Any]:
+    first_page = _normalise_space(page_texts[0] if page_texts else "")
+    main_text = _normalise_space(" ".join(page_texts[:3]))
+    rtm_text = _normalise_space(" ".join(page_texts[9:]))
+    page_lines = _normalise_lines(page_texts[0] if page_texts else "")
+
+    metadata_tail = _official_between(first_page, "Tgl Penyusunan", ["Otorisasi"])
+    code_match = re.search(r"\b\d{5,}\b", metadata_tail)
+    course_name = _normalise_space(metadata_tail[:code_match.start()]) if code_match else ""
+    course_code = code_match.group(0) if code_match else ""
+    after_code = _normalise_space(metadata_tail[code_match.end():]) if code_match else ""
+    sks_match = re.search(r"(\d+\s*sks\s+\d+\s+jam\s+per\s+minggu)\s+(\d+)\s+(.+)$", after_code, re.IGNORECASE)
+    sks = _normalise_space(sks_match.group(1)) if sks_match else ""
+    semester = _normalise_space(sks_match.group(2)) if sks_match else ""
+    compiled_at = _date_to_iso(sks_match.group(3)) if sks_match else ""
+    cpmk_value = _official_between(
+        main_text,
+        "Capaian Pembelajaran Mata Kuliah (CPMK)",
+        ["Diskripsi Singkat MK"],
+    )
+    cpmk_value = re.sub(
+        r"^Tujuan Pembelajaran \(Capaian Pembelajaran Mata kuliah\)\s*",
+        "",
+        cpmk_value,
+        flags=re.IGNORECASE,
+    ).strip()
+    official_values = {
+        "course_name": course_name,
+        "course_code": course_code,
+        "sks": sks,
+        "semester": semester,
+        "program_name": _official_between(first_page, "PROGRAM STUDI", ["RENCANA PEMBELAJARAN SEMESTER"]),
+        "compiled_at": compiled_at,
+        "cpl_prodi": _official_between(
+            main_text,
+            "CPL-PRODI (Capaian Pembelajaran Lulusan Program Studi) Yang Dibebankan Pada Mata Kuliah",
+            ["Capaian Pembelajaran Mata Kuliah (CPMK)"],
+        ),
+        "cpmk": cpmk_value,
+        "description": _official_between(main_text, "Deskripsi Mata Kuliah", ["Materi Pembelajaran"]),
+        "materials": _official_between(main_text, "Materi Pembelajaran", ["Daftar Referensi"]),
+        "references": _official_between(main_text, "Daftar Referensi", ["Matakuliah prasyarat"]),
+        "prerequisites": _official_between(main_text, "Matakuliah prasyarat (Jika ada)", ["Minggu Ke"]),
+        "activity": _official_between(" ".join(page_texts[8:9]), "KEGIATAN", ["OUTPUT"]),
+        "output": _official_between(" ".join(page_texts[8:9]), "OUTPUT", ["RENCANA TUGAS MAHASISWA"]),
+    }
+    lecturer_name = ""
+    for index, line in enumerate(page_lines):
+        if "Otorisasi" in line:
+            for candidate in page_lines[index + 1 : index + 4]:
+                candidate = _normalise_space(candidate)
+                if candidate and "Capaian Pembelajaran" not in candidate:
+                    lecturer_name = candidate
+                    break
+            if lecturer_name:
+                break
+    official_values["lecturer_name"] = lecturer_name
+
+    rtm_assessment_text = _official_between(
+        rtm_text,
+        "INDIKATOR, KRITERIA, DAN BOBOT PENILAIAN",
+        ["JADWAL PELAKSANAAN"],
+    )
+    schedule_text = _official_between(rtm_text, "JADWAL PELAKSANAAN", ["LAIN-LAIN YANG DIPERLUKAN"])
+    official_values["rtm"] = {
+        "assignment_type": _official_between(rtm_text, "BENTUK TUGAS", ["JUDUL PENILAIAN"]),
+        "assessment_titles": _official_between(rtm_text, "JUDUL PENILAIAN", ["SUB CAPAIAN PEMBELAJARAN MATA KULIAH"]),
+        "sub_cpmk": _official_between(rtm_text, "SUB CAPAIAN PEMBELAJARAN MATA KULIAH", ["DESKRIPSI"]),
+        "description": _official_between(rtm_text, "DESKRIPSI", ["METODE PENGERJAAN"]),
+        "method": _official_between(rtm_text, "METODE PENGERJAAN", ["BENTUK FORMAT LUARAN"]),
+        "output_formats": _official_between(rtm_text, "BENTUK FORMAT LUARAN", ["INDIKATOR, KRITERIA, DAN BOBOT PENILAIAN"]),
+        "assessment_items": _official_rtm_assessment(rtm_assessment_text),
+        "assessment_text": rtm_assessment_text,
+        "schedule": _official_rtm_schedule(schedule_text),
+        "schedule_text": schedule_text,
+        "requirements": _official_between(rtm_text, "LAIN-LAIN YANG DIPERLUKAN", ["PUSTAKA"]),
+        "references": _official_between(rtm_text, "PUSTAKA", []),
+    }
+
+    fallback_source = class_doc if isinstance(class_doc, dict) else {}
+    fallback = {
+        "course_name": fallback_source.get("course_name", ""),
+        "course_code": fallback_source.get("course_code", ""),
+        "semester": fallback_source.get("semester", ""),
+        "sks": str(fallback_source.get("sks") or ""),
+        "program_name": fallback_source.get("program_name", ""),
+        "lecturer_name": fallback_source.get("lecturer_name", ""),
+    }
+    fallback = {key: value for key, value in fallback.items() if not official_values.get(key) and value}
+    meetings = _extract_official_pdf_meetings(reader)
+    warnings: List[str] = []
+    if len(meetings) < 16:
+        warnings.append(f"Hanya {len(meetings)} dari 16 pertemuan yang terbaca. Periksa kembali hasil ekstraksi.")
+    for key, label in (
+        ("course_name", "Nama Mata Kuliah"),
+        ("course_code", "Kode Mata Kuliah"),
+        ("program_name", "Program Studi"),
+        ("lecturer_name", "Dosen Pengampu"),
+        ("cpmk", "CPMK"),
+        ("description", "Deskripsi Mata Kuliah"),
+        ("references", "Daftar Referensi"),
+    ):
+        if not official_values.get(key) and key not in fallback:
+            warnings.append(f"{label} tidak ditemukan dan perlu diisi manual.")
+    extracted_fields = [key for key in RPS_FORM_FIELDS if official_values.get(key)]
+    return {
+        "extracted": official_values,
+        "fallback": fallback,
+        "meetings": meetings,
+        "warnings": warnings,
+        "stats": {
+            "fields_found": len(extracted_fields),
+            "fields_total": len(RPS_FORM_FIELDS),
+            "meetings_found": len(meetings),
+        },
+    }
+
+
 _DOCX_NS = {"w": "http://schemas.openxmlformats.org/wordprocessingml/2006/main"}
 
 
@@ -599,6 +1016,7 @@ def parse_rps_text(text: str, class_doc: Optional[Dict[str, Any]] = None) -> Dic
         raise RPSPdfParseError("PDF tidak memiliki teks yang bisa diekstrak. PDF scan membutuhkan OCR terlebih dahulu.")
 
     course_doc = class_doc or {}
+    course_name, _ = _find_label_value(lines, ["Nama Mata Kuliah", "Mata Kuliah"])
     course_code, _ = _find_label_value(lines, ["Kode Mata Kuliah", "Kode MK"])
     semester, _ = _find_label_value(lines, ["Semester"])
     sks, _ = _find_label_value(lines, ["SKS"])
@@ -644,9 +1062,30 @@ def parse_rps_text(text: str, class_doc: Optional[Dict[str, Any]] = None) -> Dic
         ["Keterangan", "Minggu ke-", "Pertemuan ke-", "Tabel Pembelajaran"],
         cpl_header_index + 1 if cpl_header_index is not None else 0,
     )
+    materials = _extract_section(
+        lines,
+        ["Materi Pembelajaran"],
+        ["Daftar Referensi", "Referensi", "Matakuliah prasyarat", "Minggu ke-", "Pertemuan ke-", "Tabel Pembelajaran"],
+        cpl_header_index + 1 if cpl_header_index is not None else 0,
+    )
+    prerequisites = _extract_section(
+        lines,
+        ["Matakuliah prasyarat", "Mata Kuliah Prasyarat"],
+        ["Minggu ke-", "Pertemuan ke-", "Tabel Pembelajaran", "Rencana Tugas Mahasiswa"],
+        cpl_header_index + 1 if cpl_header_index is not None else 0,
+    )
+    cpl_prodi = _extract_section(
+        lines,
+        ["CPL-PRODI", "CPL Prodi"],
+        ["Capaian Pembelajaran Mata Kuliah", "CPMK"],
+        cpl_header_index if cpl_header_index is not None else 0,
+    )
+    activity = _extract_section(lines, ["KEGIATAN", "Kegiatan"], ["OUTPUT", "Output"], 0)
+    output = _extract_section(lines, ["OUTPUT", "Output"], ["RENCANA TUGAS MAHASISWA", "Keterangan"], 0)
     meetings = _extract_meetings(lines)
 
     extracted: Dict[str, Any] = {
+        "course_name": course_name,
         "course_code": course_code,
         "semester": semester,
         "sks": sks,
@@ -654,6 +1093,7 @@ def parse_rps_text(text: str, class_doc: Optional[Dict[str, Any]] = None) -> Dic
         "lecturer_name": lecturer_name,
         "compiled_at": _date_to_iso(compiled_at) if compiled_at else "",
         **cpl_fields,
+        "cpl_prodi": cpl_prodi,
         "keterangan": _extract_section(
             lines,
             ["Keterangan"],
@@ -662,13 +1102,19 @@ def parse_rps_text(text: str, class_doc: Optional[Dict[str, Any]] = None) -> Dic
         ),
         "cpmk": cpmk,
         "description": description,
+        "materials": materials,
+        "prerequisites": prerequisites,
         "references": references,
+        "activity": activity,
+        "output": output,
+        "rtm": {},
     }
 
     # Keep class identity available when the official PDF leaves it blank.
     # The values are marked as fallbacks so the frontend can avoid treating
     # them as extracted content while still making the draft useful.
     fallback_fields = {
+        "course_name": course_doc.get("course_name", ""),
         "course_code": course_doc.get("course_code", ""),
         "semester": course_doc.get("semester", ""),
         "sks": str(course_doc.get("sks") or ""),
@@ -683,6 +1129,7 @@ def parse_rps_text(text: str, class_doc: Optional[Dict[str, Any]] = None) -> Dic
     elif len(meetings) < 16:
         warnings.append(f"Hanya {len(meetings)} dari 16 pertemuan yang terbaca. Periksa kembali hasil ekstraksi.")
     for key, label in (
+        ("course_name", "Nama Mata Kuliah"),
         ("course_code", "Kode Mata Kuliah"),
         ("program_name", "Program Studi"),
         ("lecturer_name", "Dosen Pengampu"),
@@ -729,6 +1176,8 @@ def parse_rps_pdf(content: bytes, class_doc: Optional[Dict[str, Any]] = None) ->
     text = "\n".join(page_text).strip()
     if not text:
         raise RPSPdfParseError("PDF tidak memiliki teks yang bisa diekstrak. PDF scan membutuhkan OCR terlebih dahulu.")
+    if _is_official_rps_pdf(page_text):
+        return _parse_official_rps_pdf(page_text, reader, class_doc)
     result = parse_rps_text(text, class_doc)
     structured_meetings = _extract_pdf_meetings(reader)
     if structured_meetings:

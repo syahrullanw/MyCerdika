@@ -54,6 +54,8 @@ export const ADMIN_PAGE_MODULES = Object.freeze({
   master_gedung: ADMIN_ONLY,
   master_ruangan: ADMIN_ONLY,
   master_kurikulum: "curriculum_schedule",
+  progress_kurikulum: "curriculum_schedule",
+  master_pembuatan_kelas: "curriculum_schedule",
   master_jadwal_mengajar: "curriculum_schedule",
   progres_nilai_prodi: "progres_nilai_prodi",
   analisis_mahasiswa_prodi: "analisis_mahasiswa_prodi",

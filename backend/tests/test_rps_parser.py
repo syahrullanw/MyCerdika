@@ -128,3 +128,22 @@ def test_pdf_layout_reads_all_sixteen_rows_and_preserves_columns():
     assert result["meetings"][0]["learning_outcome"].startswith("Memahami konsep")
     assert result["meetings"][0]["method"] == "Presentasi dan diskusi"
     assert result["meetings"][-1]["topic"] == "Ujian Akhir Semester"
+
+
+def test_parse_approved_manajemen_bisnis_rps_template_includes_rtm():
+    source = Path(__file__).parents[2] / "RPS Manajemen Bisnis dan Kewirausahaan.pdf"
+    if not source.exists():
+        return
+
+    result = parse_rps_pdf(source.read_bytes())
+
+    assert result["stats"]["meetings_found"] == 16
+    assert result["extracted"]["course_name"] == "Manajemen Bisnis dan Kewirausahaan"
+    assert result["extracted"]["course_code"] == "2330109"
+    assert result["extracted"]["sks"] == "4 sks 4 jam per minggu"
+    assert result["extracted"]["compiled_at"] == "2026-08-15"
+    assert result["extracted"]["materials"].startswith("1. Orientasi perkuliahan")
+    assert len(result["extracted"]["rtm"]["assessment_items"]) == 9
+    assert len(result["extracted"]["rtm"]["schedule"]) == 8
+    assert result["meetings"][0]["penilaian_bobot"] == "3%"
+    assert result["meetings"][-1]["topic"] == "UAS (Pitching)"

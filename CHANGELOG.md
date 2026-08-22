@@ -2,6 +2,49 @@
 
 Semua perubahan penting pada aplikasi ini dicatat di sini. Versi rilis utama disimpan di file [`VERSION`](./VERSION), sedangkan versi skema database yang sudah diterapkan dicatat oleh tabel `app_schema_migrations` di PostgreSQL.
 
+## [1.12.0] — 2026-08-22
+
+### Monitoring Progres Kurikulum dan Dosen Pengampu
+
+- Menambahkan halaman **Progres Kurikulum Prodi** untuk Admin dan user akademik yang merangkum progres per Program Studi: kurikulum aktif, target/total SKS, jumlah Mata Kuliah, dan kelengkapan Dosen Pengampu.
+- Menambahkan pembaruan progres berbasis WebSocket dengan fallback polling agar perubahan input Kurikulum, Mata Kuliah, dan Dosen Pengampu dapat dipantau hampir realtime.
+- Menampilkan status yang dapat ditindaklanjuti seperti **Kurikulum belum diisi**, **Kurikulum belum mencapai target SKS**, dan **Dosen pengampu belum lengkap**.
+
+### Kurikulum, Mata Kuliah, dan Dosen Pengampu
+
+- Mengubah halaman **Edit Mata Kuliah & Dosen Pengampu** menjadi popup responsif; konten memiliki area scroll internal, dukungan layar mobile, tombol aman-area, dan penutupan melalui tombol/Escape tanpa memotong form.
+- Mempertahankan penguncian identitas Mata Kuliah yang sudah dipakai kelas/KRS, sekaligus memisahkan perubahan Dosen master dari pergantian Dosen pada kelas berjalan.
+- Menambahkan pengelolaan **Team Teaching** dan pencarian Dosen berdasarkan nama, NIDN, NIP, atau NUPTK dengan informasi homebase.
+- Menambahkan mekanisme **Nonaktifkan/Arsipkan MK** dengan alasan wajib, periode mulai tidak digunakan, dan pilihan MK pengganti.
+- Mengganti penghapusan fisik MK menjadi soft archive berstatus `retired`; histori kelas, KRS, presensi, nilai, dan laporan BKD tetap dipertahankan. MK arsip dikeluarkan dari pembuatan kelas, penawaran baru, dan KRS baru, serta dapat diaktifkan kembali.
+
+### Pembuatan Kelas dan Kesiapan Periode
+
+- Menambahkan halaman khusus **Pembuatan Kelas** agar proses pembuatan kelas lebih fokus.
+- Menghitung kesiapan secara per Mata Kuliah dan per periode akademik, sehingga MK yang belum lengkap tidak menghambat MK lain yang sudah siap.
+- Memberikan Kaprodi wewenang membuat kelas hanya untuk Prodi yang dipimpinnya; Admin tetap dapat memantau dan mengelola seluruh Prodi.
+- Menambahkan filter Prodi, semester paket, status, pencarian MK/Dosen, pemilihan MK siap, serta informasi MK yang belum siap beserta alasannya.
+- Menjaga pencegahan kelas duplikat pada periode yang sama dan mensyaratkan kurikulum aktif, data MK lengkap, serta Dosen Pengampu Utama aktif.
+
+### RPS Resmi, Import, dan Laporan BKD
+
+- Menyesuaikan form RPS dengan format RPS resmi yang disetujui, termasuk identitas Mata Kuliah, CPL-Prodi, CPMK, materi, prasyarat, referensi, pengalaman belajar, bentuk/kriteria penilaian, dan bagian RTM.
+- Menambahkan parser import PDF/DOCX/Word yang memetakan format RPS resmi menjadi draft form yang dapat ditinjau dan dikoreksi sebelum disimpan.
+- Menyelaraskan export RPS ke Excel, Word, dan PDF dengan struktur tabel pembelajaran serta menambahkan worksheet RTM agar data import dan output membawa informasi yang sama.
+- Menampilkan data RPS yang sama pada bundle/laporan **BKD & Portofolio Pembelajaran**, termasuk identitas, CPL/CPMK, RTM, jadwal tugas, dan informasi penilaian.
+
+### Login, Branding, dan Stabilitas Akses
+
+- Mengganti gambar pada bagian identitas login dengan logo resmi kampus yang berasal dari branding kampus, dengan fallback ke logo aplikasi apabila logo kampus belum tersedia.
+- Menjaga perubahan branding hanya pada bagian yang diminta dan mempertahankan elemen login lainnya.
+- Memperbaiki alur pemuatan halaman, akses menu, dan bootstrap frontend agar aplikasi dapat diakses kembali ketika sebelumnya tidak berjalan.
+
+### Validasi Rilis
+
+- Versi aplikasi dinaikkan dari `1.11.7` ke `1.12.0` pada `VERSION`, `frontend/package.json`, `frontend/package-lock.json`, dan `frontend-pmb/package.json`.
+- Tidak ada migration SQL baru; perubahan status Mata Kuliah memakai field lifecycle pada collection/tabel yang sudah ada.
+- Pemeriksaan sintaks backend, regression test progres akademik dan parser RPS, route smoke test, `git diff --check`, koneksi frontend/backend lokal, dan production build frontend berhasil dijalankan.
+
 ## [1.11.7] — 2026-08-21
 
 ### Konsistensi Tahun Ajaran dan Kelas Migrasi

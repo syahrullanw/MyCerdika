@@ -59,7 +59,6 @@ try:
     from .course_lifecycle import (
         course_identity_changes,
         course_identity_lock_detail,
-        course_usage_description,
         course_usage_summary,
     )
     from .storage_policy import (
@@ -88,7 +87,6 @@ except ImportError:  # Supports `uvicorn server:app` from the backend directory.
     from course_lifecycle import (
         course_identity_changes,
         course_identity_lock_detail,
-        course_usage_description,
         course_usage_summary,
     )
     from storage_policy import (
@@ -8796,7 +8794,7 @@ async def delete_program(program_id: str, _: Dict[str, Any] = Depends(require_ad
 
 @api_router.get("/courses")
 async def list_courses(_: Dict[str, Any] = Depends(get_current_user)):
-    courses = await db.courses.find({"status": {"$ne": "deleted"}}, {"_id": 0}).sort("created_at", -1).to_list(500)
+    courses = await db.courses.find({"status": {"$nin": ["deleted", "inactive", "retired"]}}, {"_id": 0}).sort("created_at", -1).to_list(500)
     return [await enrich_course_payload(item) for item in courses]
 
 
@@ -8891,22 +8889,28 @@ async def update_course(course_id: str, payload: CourseInput, _: Dict[str, Any] 
 
 @api_router.delete("/courses/{course_id}")
 async def delete_course(course_id: str, _: Dict[str, Any] = Depends(require_admin)):
+    """Kompatibilitas aman: arsipkan MK tanpa menghapus histori akademik."""
     usage = await course_usage_summary(db, course_id)
-    if usage["locked"]:
-        raise HTTPException(
-            status_code=409,
-            detail=(
-                f"Mata kuliah sudah digunakan oleh {course_usage_description(usage)} dan tidak dapat dihapus. "
-                "Selesaikan/arsipkan kelas untuk menjaga histori, atau buat Mata Kuliah pengganti."
-            ),
-        )
-    linked_class = await db.classes.find_one({"course_id": course_id, "status": {"$ne": "deleted"}}, {"_id": 0, "id": 1})
-    if linked_class:
-        raise HTTPException(status_code=400, detail="Mata kuliah masih dipakai kelas. Hapus kelas dulu.")
-    result = await db.courses.update_one({"id": course_id}, {"$set": {"status": "deleted", "deleted_at": now_iso()}})
+    now = now_iso()
+    result = await db.courses.update_one(
+        {"id": course_id},
+        {
+            "$set": {
+                "status": "retired",
+                "retired_at": now,
+                "retired_reason": "Diarsipkan melalui aksi kompatibilitas Hapus MK",
+                "updated_at": now,
+            }
+        },
+    )
     if result.matched_count == 0:
         raise HTTPException(status_code=404, detail="Mata kuliah tidak ditemukan")
-    return {"ok": True}
+    return {
+        "ok": True,
+        "status": "retired",
+        "usage": usage,
+        "message": "Mata kuliah diarsipkan. Histori kelas, KRS, dan nilai tetap dipertahankan.",
+    }
 
 
 @api_router.get("/classes")
@@ -8925,7 +8929,7 @@ async def list_classes(user: Dict[str, Any] = Depends(get_current_user)):
 
 @api_router.post("/classes")
 async def create_class(payload: ClassInput, user: Dict[str, Any] = Depends(require_admin)):
-    course = await db.courses.find_one({"id": payload.course_id, "status": {"$ne": "deleted"}}, {"_id": 0})
+    course = await db.courses.find_one({"id": payload.course_id, "status": {"$nin": ["deleted", "inactive", "retired"]}}, {"_id": 0})
     if not course:
         raise HTTPException(status_code=404, detail="Mata kuliah tidak ditemukan")
     dosen_id, dosen_nama = await require_course_lecturer(course)
@@ -12346,6 +12350,8 @@ def generate_default_16_meetings(course_name: str) -> List[Dict[str, Any]]:
                 "materials": "Kisi-kisi & modul seluruh pertemuan",
                 "assignments": "Ujian Evaluasi",
                 "waktu": "90 menit",
+                "learning_experience": "Pengerjaan evaluasi sesuai instruksi dosen",
+                "penilaian_bentuk_kriteria": "Ujian tertulis / praktik",
                 "penilaian_teknik": "Ujian tertulis / praktik",
                 "penilaian_indikator": "Ketepatan jawaban terhadap kisi-kisi",
                 "penilaian_kriteria": "Nilai ujian",
@@ -12362,6 +12368,8 @@ def generate_default_16_meetings(course_name: str) -> List[Dict[str, Any]]:
                 "materials": f"Slide & Modul Pertemuan {i}",
                 "assignments": "Kuis singkat & Latihan mandiri",
                 "waktu": "KPB 3x50",
+                "learning_experience": "Diskusi, latihan, dan penugasan mandiri",
+                "penilaian_bentuk_kriteria": "Penugasan dan partisipasi",
                 "penilaian_teknik": "FGD / penugasan",
                 "penilaian_indikator": "Pemahaman terhadap materi",
                 "penilaian_kriteria": "Kehadiran, penguasaan materi",
@@ -12380,6 +12388,8 @@ class RPSMeetingItem(BaseModel):
     materials: str = ""
     assignments: str = ""
     waktu: str = ""
+    learning_experience: str = ""
+    penilaian_bentuk_kriteria: str = ""
     penilaian_teknik: str = ""
     penilaian_indikator: str = ""
     penilaian_kriteria: str = ""
@@ -12388,6 +12398,7 @@ class RPSMeetingItem(BaseModel):
 
 
 class RPSInput(BaseModel):
+    course_name: str = ""
     course_code: str = ""
     semester: str = ""
     sks: str = ""
@@ -12398,10 +12409,16 @@ class RPSInput(BaseModel):
     cpl_keterampilan_umum: str = ""
     cpl_pengetahuan: str = ""
     cpl_keterampilan_khusus: str = ""
+    cpl_prodi: str = ""
     keterangan: str = ""
     cpmk: str = ""
     description: str = ""
+    materials: str = ""
+    prerequisites: str = ""
     references: str = ""
+    activity: str = ""
+    output: str = ""
+    rtm: Dict[str, Any] = Field(default_factory=dict)
     document_url: str = ""
     meetings: List[RPSMeetingItem] = []
 
@@ -12846,6 +12863,7 @@ async def _load_rps_doc(class_doc: Dict[str, Any]) -> Dict[str, Any]:
             "updated_at": now_iso()
         }
     rps.setdefault("course_code", class_doc.get("course_code", ""))
+    rps.setdefault("course_name", class_doc.get("course_name", ""))
     rps.setdefault("semester", class_doc.get("semester", ""))
     rps.setdefault("sks", str(class_doc.get("sks") or ""))
     rps.setdefault("program_name", class_doc.get("program_name", ""))
@@ -12855,6 +12873,12 @@ async def _load_rps_doc(class_doc: Dict[str, Any]) -> Dict[str, Any]:
     rps.setdefault("cpl_keterampilan_umum", "")
     rps.setdefault("cpl_pengetahuan", "")
     rps.setdefault("cpl_keterampilan_khusus", "")
+    rps.setdefault("cpl_prodi", "")
+    rps.setdefault("materials", "")
+    rps.setdefault("prerequisites", "")
+    rps.setdefault("activity", "")
+    rps.setdefault("output", "")
+    rps.setdefault("rtm", {})
     rps.setdefault("keterangan", "Kegiatan Proses Belajar (KPB); Kegiatan Penanganan Terstruktur (KPT); dan Kegiatan Mandiri (KM); Seminar (S); Praktikum/Praktik Lapangan (P/PL).")
     return rps
 
@@ -13027,21 +13051,25 @@ async def generate_class_rps_meetings(class_id: str, user: Dict[str, Any] = Depe
 # ---------------------------------------------------------------------------
 
 _RPS_MEETING_COLUMNS = [
-    ("Minggu/Pertemuan ke", 900),
-    ("Kemampuan yang Diharapkan", 2600),
+    ("Minggu Ke", 700),
+    ("Kemampuan Akhir Yang Direncanakan (SUB-CPMK)", 2600),
     ("Materi Pembelajaran", 2200),
-    ("Bentuk/Metode/Pengalaman Belajar", 2000),
-    ("Waktu", 900),
-    ("Penilaian (Teknik)", 1400),
-    ("Penilaian (Bobot)", 800),
-    ("Penilaian (Indikator)", 1700),
-    ("Penilaian (Kriteria)", 1700),
-    ("Tugas/Aktivitas", 1700),
+    ("Modalitas, Bentuk, Strategi, dan Metode Pembelajaran (Media & Sumber belajar)", 3000),
+    ("Estimasi Waktu", 1300),
+    ("Pengalaman Belajar Mahasiswa", 2200),
+    ("Bentuk & Kriteria Penilaian", 1900),
+    ("Indikator Penilaian", 2200),
+    ("Bobot Penilaian (%)", 900),
 ]
 
 
 def _rps_export_value(rps: Dict[str, Any], key: str) -> str:
     return str(rps.get(key) or "").strip()
+
+
+def _rps_credit_label(rps: Dict[str, Any]) -> str:
+    value = _rps_export_value(rps, "sks")
+    return value if "sks" in value.casefold() else (f"{value} SKS" if value else "")
 
 
 def _rps_export_filename(class_doc: Dict[str, Any], ext: str) -> str:
@@ -13065,36 +13093,38 @@ def build_rps_xlsx(rps: Dict[str, Any], class_doc: Dict[str, Any], settings: Dic
     sub_font = Font(bold=True, size=11)
     normal = Alignment(vertical="top", wrap_text=True)
     center = Alignment(horizontal="center", vertical="center", wrap_text=True)
+    column_count = len(_RPS_MEETING_COLUMNS)
 
     header = (settings.get("kop_letterhead") or "").splitlines() or ["RENCANA PEMBELAJARAN SEMESTER (RPS)"]
     for line in header[:2]:
-        sheet.append([line])
-        sheet.merge_cells(start_row=sheet.max_row, start_column=1, end_row=sheet.max_row, end_column=10)
+        sheet.append([line] + [""] * (column_count - 1))
+        sheet.merge_cells(start_row=sheet.max_row, start_column=1, end_row=sheet.max_row, end_column=column_count)
         cell = sheet.cell(row=sheet.max_row, column=1)
         cell.font = Font(bold=True, size=12)
         cell.alignment = center
         sheet.row_dimensions[sheet.max_row].height = 20
 
-    sheet.append(["RENCANA PEMBELAJARAN SEMESTER (RPS)"])
-    sheet.merge_cells(start_row=sheet.max_row, start_column=1, end_row=sheet.max_row, end_column=10)
+    sheet.append(["RENCANA PEMBELAJARAN SEMESTER (RPS)"] + [""] * (column_count - 1))
+    sheet.merge_cells(start_row=sheet.max_row, start_column=1, end_row=sheet.max_row, end_column=column_count)
     sheet.cell(row=sheet.max_row, column=1).font = title_font
     sheet.cell(row=sheet.max_row, column=1).alignment = center
-    sheet.append([f"{_rps_export_value(rps, 'course_code')} - {_rps_export_value(rps, 'program_name') or class_doc.get('program_name', '')} - {class_doc.get('course_name', '')}"])
-    sheet.merge_cells(start_row=sheet.max_row, start_column=1, end_row=sheet.max_row, end_column=10)
+    sheet.append([f"{_rps_export_value(rps, 'course_code')} - {_rps_export_value(rps, 'program_name') or class_doc.get('program_name', '')} - {_rps_export_value(rps, 'course_name') or class_doc.get('course_name', '')}"] + [""] * (column_count - 1))
+    sheet.merge_cells(start_row=sheet.max_row, start_column=1, end_row=sheet.max_row, end_column=column_count)
     sheet.cell(row=sheet.max_row, column=1).alignment = center
     sheet.append([])
 
     identity = [
         ("Kode Mata Kuliah", _rps_export_value(rps, "course_code")),
-        ("Semester / SKS", f"{_rps_export_value(rps, 'semester')} / {_rps_export_value(rps, 'sks')} SKS"),
+        ("Nama Mata Kuliah", _rps_export_value(rps, "course_name") or class_doc.get("course_name", "")),
+        ("Semester / SKS", f"{_rps_export_value(rps, 'semester')} / {_rps_credit_label(rps)}"),
         ("Program Studi", _rps_export_value(rps, "program_name") or class_doc.get("program_name", "")),
         ("Dosen Pengampu", _rps_export_value(rps, "lecturer_name") or class_doc.get("lecturer_name", "")),
         ("Tanggal Penyusunan", _rps_export_value(rps, "compiled_at")),
         ("Rombongan Belajar", f"{class_doc.get('course_name', '')} - {class_doc.get('name', '')}"),
     ]
     for label, value in identity:
-        sheet.append([label, value, "", "", "", "", "", "", "", ""])
-        sheet.merge_cells(start_row=sheet.max_row, start_column=2, end_row=sheet.max_row, end_column=10)
+        sheet.append([label, value] + [""] * (column_count - 2))
+        sheet.merge_cells(start_row=sheet.max_row, start_column=2, end_row=sheet.max_row, end_column=column_count)
         sheet.cell(row=sheet.max_row, column=1).font = Font(bold=True)
         sheet.cell(row=sheet.max_row, column=1).fill = label_fill
         sheet.cell(row=sheet.max_row, column=1).alignment = normal
@@ -13103,26 +13133,29 @@ def build_rps_xlsx(rps: Dict[str, Any], class_doc: Dict[str, Any], settings: Dic
     sheet.append([])
 
     def append_section(title: str, text: str) -> None:
-        sheet.append([title, "", "", "", "", "", "", "", "", ""])
-        sheet.merge_cells(start_row=sheet.max_row, start_column=1, end_row=sheet.max_row, end_column=10)
+        sheet.append([title] + [""] * (column_count - 1))
+        sheet.merge_cells(start_row=sheet.max_row, start_column=1, end_row=sheet.max_row, end_column=column_count)
         sheet.cell(row=sheet.max_row, column=1).font = sub_font
         sheet.cell(row=sheet.max_row, column=1).fill = header_fill
-        sheet.append([text, "", "", "", "", "", "", "", "", ""])
-        sheet.merge_cells(start_row=sheet.max_row, start_column=1, end_row=sheet.max_row, end_column=10)
+        sheet.append([text] + [""] * (column_count - 1))
+        sheet.merge_cells(start_row=sheet.max_row, start_column=1, end_row=sheet.max_row, end_column=column_count)
         sheet.cell(row=sheet.max_row, column=1).alignment = normal
         sheet.cell(row=sheet.max_row, column=1).border = border
 
+    append_section("CPL-PRODI (Capaian Pembelajaran Lulusan Program Studi)", _rps_export_value(rps, "cpl_prodi"))
     append_section("CAPAIAN PEMBELAJARAN LULUSAN (CPL) - Sikap", _rps_export_value(rps, "cpl_sikap"))
     append_section("CPL - Keterampilan Umum", _rps_export_value(rps, "cpl_keterampilan_umum"))
     append_section("CPL - Pengetahuan", _rps_export_value(rps, "cpl_pengetahuan"))
     append_section("CPL - Keterampilan Khusus", _rps_export_value(rps, "cpl_keterampilan_khusus"))
     append_section("CPMK", _rps_export_value(rps, "cpmk"))
     append_section("Deskripsi Mata Kuliah", _rps_export_value(rps, "description"))
+    append_section("Materi Pembelajaran", _rps_export_value(rps, "materials"))
+    append_section("Matakuliah Prasyarat (Jika ada)", _rps_export_value(rps, "prerequisites"))
     append_section("Daftar Referensi", _rps_export_value(rps, "references"))
 
     sheet.append([])
-    sheet.append(["TABEL PEMBELAJARAN (16 PERTEMUAN)", "", "", "", "", "", "", "", "", ""])
-    sheet.merge_cells(start_row=sheet.max_row, start_column=1, end_row=sheet.max_row, end_column=10)
+    sheet.append(["TABEL PEMBELAJARAN (16 PERTEMUAN)"] + [""] * (column_count - 1))
+    sheet.merge_cells(start_row=sheet.max_row, start_column=1, end_row=sheet.max_row, end_column=column_count)
     sheet.cell(row=sheet.max_row, column=1).font = sub_font
     sheet.cell(row=sheet.max_row, column=1).fill = header_fill
 
@@ -13142,14 +13175,13 @@ def build_rps_xlsx(rps: Dict[str, Any], class_doc: Dict[str, Any], settings: Dic
             meeting.get("materials") or "",
             meeting.get("method") or "",
             meeting.get("waktu") or "",
-            meeting.get("penilaian_teknik") or "",
-            meeting.get("penilaian_bobot") or "",
+            meeting.get("learning_experience") or meeting.get("assignments") or "",
+            meeting.get("penilaian_bentuk_kriteria") or meeting.get("penilaian_teknik") or "",
             meeting.get("penilaian_indikator") or "",
-            meeting.get("penilaian_kriteria") or "",
-            meeting.get("assignments") or "",
+            meeting.get("penilaian_bobot") or "",
         ]
         sheet.append(row_vals)
-        for col_idx in range(1, 11):
+        for col_idx in range(1, column_count + 1):
             cell = sheet.cell(row=sheet.max_row, column=col_idx)
             cell.font = Font(size=9)
             cell.alignment = normal
@@ -13157,18 +13189,96 @@ def build_rps_xlsx(rps: Dict[str, Any], class_doc: Dict[str, Any], settings: Dic
 
     if (rps.get("keterangan") or "").strip():
         sheet.append([])
-        sheet.append(["KETERANGAN", "", "", "", "", "", "", "", "", ""])
-        sheet.merge_cells(start_row=sheet.max_row, start_column=1, end_row=sheet.max_row, end_column=10)
+        sheet.append(["KETERANGAN"] + [""] * (column_count - 1))
+        sheet.merge_cells(start_row=sheet.max_row, start_column=1, end_row=sheet.max_row, end_column=column_count)
         sheet.cell(row=sheet.max_row, column=1).font = sub_font
         sheet.cell(row=sheet.max_row, column=1).fill = header_fill
-        sheet.append([str(rps.get("keterangan") or ""), "", "", "", "", "", "", "", "", ""])
-        sheet.merge_cells(start_row=sheet.max_row, start_column=1, end_row=sheet.max_row, end_column=10)
+        sheet.append([str(rps.get("keterangan") or "")] + [""] * (column_count - 1))
+        sheet.merge_cells(start_row=sheet.max_row, start_column=1, end_row=sheet.max_row, end_column=column_count)
         sheet.cell(row=sheet.max_row, column=1).alignment = normal
 
-    widths = [18, 32, 30, 28, 12, 20, 12, 24, 24, 22]
+    widths = [12, 38, 32, 42, 18, 34, 30, 34, 14]
     for col_idx, width in enumerate(widths, start=1):
         sheet.column_dimensions[chr(64 + col_idx)].width = width
     sheet.freeze_panes = sheet.cell(row=header_row + 1, column=1)
+
+    # The approved format continues with a dedicated Rencana Tugas Mahasiswa
+    # (RTM) section. Keep it as a second worksheet so the structured import
+    # and the human-readable workbook carry the same information.
+    rtm = rps.get("rtm") or {}
+    rtm_sheet = workbook.create_sheet("RTM")
+    rtm_sheet.sheet_view.showGridLines = False
+    for column, width in (("A", 34), ("B", 90), ("C", 18)):
+        rtm_sheet.column_dimensions[column].width = width
+    rtm_sheet.append(["RENCANA TUGAS MAHASISWA (RTM)", "", ""])
+    rtm_sheet.merge_cells("A1:C1")
+    rtm_sheet["A1"].font = title_font
+    rtm_sheet["A1"].alignment = center
+    for label, value in (
+        ("Mata Kuliah", _rps_export_value(rps, "course_name") or class_doc.get("course_name", "")),
+        ("Kode", _rps_export_value(rps, "course_code")),
+        ("Bobot (sks) / jam", _rps_export_value(rps, "sks")),
+        ("Semester", _rps_export_value(rps, "semester")),
+        ("Dosen Pengampu", _rps_export_value(rps, "lecturer_name") or class_doc.get("lecturer_name", "")),
+    ):
+        rtm_sheet.append([label, value, ""])
+        rtm_sheet.merge_cells(start_row=rtm_sheet.max_row, start_column=2, end_row=rtm_sheet.max_row, end_column=3)
+        rtm_sheet.cell(row=rtm_sheet.max_row, column=1).font = Font(bold=True)
+        rtm_sheet.cell(row=rtm_sheet.max_row, column=1).fill = label_fill
+        rtm_sheet.cell(row=rtm_sheet.max_row, column=1).border = border
+        rtm_sheet.cell(row=rtm_sheet.max_row, column=2).alignment = normal
+        rtm_sheet.cell(row=rtm_sheet.max_row, column=2).border = border
+
+    def rtm_section(title: str, value: Any) -> None:
+        rtm_sheet.append([title, str(value or ""), ""])
+        row_index = rtm_sheet.max_row
+        rtm_sheet.merge_cells(start_row=row_index, start_column=2, end_row=row_index, end_column=3)
+        rtm_sheet.cell(row=row_index, column=1).font = Font(bold=True)
+        rtm_sheet.cell(row=row_index, column=1).fill = header_fill
+        rtm_sheet.cell(row=row_index, column=1).border = border
+        rtm_sheet.cell(row=row_index, column=2).alignment = normal
+        rtm_sheet.cell(row=row_index, column=2).border = border
+
+    rtm_section("Bentuk Tugas", rtm.get("assignment_type"))
+    rtm_section("Judul Penilaian", rtm.get("assessment_titles"))
+    rtm_section("Sub-CPMK", rtm.get("sub_cpmk"))
+    rtm_section("Deskripsi", rtm.get("description"))
+    rtm_section("Metode Pengerjaan", rtm.get("method"))
+    rtm_section("Bentuk Format Luaran", rtm.get("output_formats"))
+    rtm_sheet.append(["INDIKATOR, KRITERIA, DAN BOBOT PENILAIAN", "", ""])
+    rtm_sheet.merge_cells(start_row=rtm_sheet.max_row, start_column=1, end_row=rtm_sheet.max_row, end_column=3)
+    for cell in rtm_sheet[rtm_sheet.max_row]:
+        cell.fill = header_fill
+        cell.font = sub_font
+    rtm_sheet.append(["Aspek Penilaian", "Kriteria", "Bobot (%)"])
+    for cell in rtm_sheet[rtm_sheet.max_row]:
+        cell.fill = header_fill
+        cell.font = Font(bold=True)
+        cell.alignment = center
+        cell.border = border
+    for item in rtm.get("assessment_items") or []:
+        rtm_sheet.append([item.get("aspect", ""), item.get("criteria", ""), item.get("weight", "")])
+        for cell in rtm_sheet[rtm_sheet.max_row]:
+            cell.alignment = normal
+            cell.border = border
+    rtm_sheet.append(["JADWAL PELAKSANAAN", "", ""])
+    rtm_sheet.merge_cells(start_row=rtm_sheet.max_row, start_column=1, end_row=rtm_sheet.max_row, end_column=3)
+    for cell in rtm_sheet[rtm_sheet.max_row]:
+        cell.fill = header_fill
+        cell.font = sub_font
+    rtm_sheet.append(["Minggu ke-", "Kegiatan/Tugas", "Luaran"])
+    for cell in rtm_sheet[rtm_sheet.max_row]:
+        cell.fill = header_fill
+        cell.font = Font(bold=True)
+        cell.alignment = center
+        cell.border = border
+    for item in rtm.get("schedule") or []:
+        rtm_sheet.append([item.get("meeting_number", ""), item.get("activity", ""), item.get("output", "")])
+        for cell in rtm_sheet[rtm_sheet.max_row]:
+            cell.alignment = normal
+            cell.border = border
+    rtm_section("Lain-lain yang diperlukan", rtm.get("requirements"))
+    rtm_section("Pustaka", rtm.get("references") or _rps_export_value(rps, "references"))
 
     workbook.save(stream)
 
@@ -13256,13 +13366,14 @@ def build_rps_docx(rps: Dict[str, Any], class_doc: Dict[str, Any], settings: Dic
         body.append(_docx_par(line, bold=True, size=26, center=True, after=20))
     body.append(_docx_par("RENCANA PEMBELAJARAN SEMESTER (RPS)", bold=True, size=30, center=True, after=40))
     body.append(_docx_par(
-        f"{_rps_export_value(rps, 'course_code')} - {_rps_export_value(rps, 'program_name') or class_doc.get('program_name', '')} - {class_doc.get('course_name', '')}",
+        f"{_rps_export_value(rps, 'course_code')} - {_rps_export_value(rps, 'program_name') or class_doc.get('program_name', '')} - {_rps_export_value(rps, 'course_name') or class_doc.get('course_name', '')}",
         bold=True, size=22, center=True, after=200,
     ))
 
     identity = [
         ("Kode Mata Kuliah", _rps_export_value(rps, "course_code")),
-        ("Semester / SKS", f"{_rps_export_value(rps, 'semester')} / {_rps_export_value(rps, 'sks')} SKS"),
+        ("Nama Mata Kuliah", _rps_export_value(rps, "course_name") or class_doc.get("course_name", "")),
+        ("Semester / SKS", f"{_rps_export_value(rps, 'semester')} / {_rps_credit_label(rps)}"),
         ("Program Studi", _rps_export_value(rps, "program_name") or class_doc.get("program_name", "")),
         ("Dosen Pengampu", _rps_export_value(rps, "lecturer_name") or class_doc.get("lecturer_name", "")),
         ("Tanggal Penyusunan", _rps_export_value(rps, "compiled_at")),
@@ -13272,12 +13383,15 @@ def build_rps_docx(rps: Dict[str, Any], class_doc: Dict[str, Any], settings: Dic
         body.append(_docx_label_block(label, value))
     body.append(_docx_par("", after=120))
 
+    body.append(_docx_section("CPL-PRODI (Capaian Pembelajaran Lulusan Program Studi)", _rps_export_value(rps, "cpl_prodi")))
     body.append(_docx_section("CPL - Sikap", _rps_export_value(rps, "cpl_sikap")))
     body.append(_docx_section("CPL - Keterampilan Umum", _rps_export_value(rps, "cpl_keterampilan_umum")))
     body.append(_docx_section("CPL - Pengetahuan", _rps_export_value(rps, "cpl_pengetahuan")))
     body.append(_docx_section("CPL - Keterampilan Khusus", _rps_export_value(rps, "cpl_keterampilan_khusus")))
     body.append(_docx_section("CPMK", _rps_export_value(rps, "cpmk")))
     body.append(_docx_section("Deskripsi Mata Kuliah", _rps_export_value(rps, "description")))
+    body.append(_docx_section("Materi Pembelajaran", _rps_export_value(rps, "materials")))
+    body.append(_docx_section("Matakuliah Prasyarat (Jika ada)", _rps_export_value(rps, "prerequisites")))
     body.append(_docx_section("Daftar Referensi", _rps_export_value(rps, "references")))
 
     body.append(_docx_par("TABEL PEMBELAJARAN (16 PERTEMUAN)", bold=True, size=24, after=80))
@@ -13289,17 +13403,32 @@ def build_rps_docx(rps: Dict[str, Any], class_doc: Dict[str, Any], settings: Dic
             meeting.get("materials") or "",
             meeting.get("method") or "",
             meeting.get("waktu") or "",
-            meeting.get("penilaian_teknik") or "",
-            meeting.get("penilaian_bobot") or "",
+            meeting.get("learning_experience") or meeting.get("assignments") or "",
+            meeting.get("penilaian_bentuk_kriteria") or meeting.get("penilaian_teknik") or "",
             meeting.get("penilaian_indikator") or "",
-            meeting.get("penilaian_kriteria") or "",
-            meeting.get("assignments") or "",
+            meeting.get("penilaian_bobot") or "",
         ])
     body.append(_docx_table(rows))
 
     if (rps.get("keterangan") or "").strip():
         body.append(_docx_par("", after=60))
         body.append(_docx_section("KETERANGAN", _rps_export_value(rps, "keterangan")))
+
+    rtm = rps.get("rtm") or {}
+    body.append(_docx_par("RENCANA TUGAS MAHASISWA (RTM)", bold=True, size=24, after=80))
+    for title, key in (
+        ("Bentuk Tugas", "assignment_type"),
+        ("Judul Penilaian", "assessment_titles"),
+        ("Sub-CPMK", "sub_cpmk"),
+        ("Deskripsi", "description"),
+        ("Metode Pengerjaan", "method"),
+        ("Bentuk Format Luaran", "output_formats"),
+        ("Indikator, Kriteria, dan Bobot Penilaian", "assessment_text"),
+        ("Jadwal Pelaksanaan", "schedule_text"),
+        ("Lain-lain yang Diperlukan", "requirements"),
+    ):
+        body.append(_docx_section(title, str(rtm.get(key) or "")))
+    body.append(_docx_section("Pustaka", str(rtm.get("references") or _rps_export_value(rps, "references"))))
 
     body_xml = "".join(body)
     document_xml = (
@@ -13360,12 +13489,13 @@ def build_rps_pdf(rps: Dict[str, Any], class_doc: Dict[str, Any], settings: Dict
     lines.append(
         f"{_rps_export_value(rps, 'course_code')} - "
         f"{_rps_export_value(rps, 'program_name') or class_doc.get('program_name', '')} - "
-        f"{class_doc.get('course_name', '')}"
+        f"{_rps_export_value(rps, 'course_name') or class_doc.get('course_name', '')}"
     )
     lines.append("")
     identity = [
+        ("Nama Mata Kuliah", _rps_export_value(rps, "course_name") or class_doc.get("course_name", "")),
         ("Kode MK", _rps_export_value(rps, "course_code")),
-        ("Semester/SKS", f"{_rps_export_value(rps, 'semester')} / {_rps_export_value(rps, 'sks')} SKS"),
+        ("Semester/SKS", f"{_rps_export_value(rps, 'semester')} / {_rps_credit_label(rps)}"),
         ("Prodi", _rps_export_value(rps, "program_name") or class_doc.get("program_name", "")),
         ("Dosen Pengampu", _rps_export_value(rps, "lecturer_name") or class_doc.get("lecturer_name", "")),
         ("Tanggal Penyusunan", _rps_export_value(rps, "compiled_at")),
@@ -13375,12 +13505,15 @@ def build_rps_pdf(rps: Dict[str, Any], class_doc: Dict[str, Any], settings: Dict
         lines.append(f"{label}: {value}")
     lines.append("")
     sections = [
+        ("CPL-PRODI (Capaian Pembelajaran Lulusan Program Studi)", _rps_export_value(rps, "cpl_prodi")),
         ("CPL - Sikap", _rps_export_value(rps, "cpl_sikap")),
         ("CPL - Keterampilan Umum", _rps_export_value(rps, "cpl_keterampilan_umum")),
         ("CPL - Pengetahuan", _rps_export_value(rps, "cpl_pengetahuan")),
         ("CPL - Keterampilan Khusus", _rps_export_value(rps, "cpl_keterampilan_khusus")),
         ("CPMK", _rps_export_value(rps, "cpmk")),
         ("Deskripsi Mata Kuliah", _rps_export_value(rps, "description")),
+        ("Materi Pembelajaran", _rps_export_value(rps, "materials")),
+        ("Matakuliah Prasyarat (Jika ada)", _rps_export_value(rps, "prerequisites")),
         ("Daftar Referensi", _rps_export_value(rps, "references")),
     ]
     for title, value in sections:
@@ -13399,11 +13532,10 @@ def build_rps_pdf(rps: Dict[str, Any], class_doc: Dict[str, Any], settings: Dict
             ("Materi Pembelajaran", meeting.get("materials") or ""),
             ("Bentuk/Metode/Pengalaman Belajar", meeting.get("method") or ""),
             ("Waktu", meeting.get("waktu") or ""),
-            ("Penilaian Teknik", meeting.get("penilaian_teknik") or ""),
-            ("Penilaian Bobot", meeting.get("penilaian_bobot") or ""),
+            ("Pengalaman Belajar Mahasiswa", meeting.get("learning_experience") or meeting.get("assignments") or ""),
+            ("Bentuk & Kriteria Penilaian", meeting.get("penilaian_bentuk_kriteria") or meeting.get("penilaian_teknik") or ""),
             ("Penilaian Indikator", meeting.get("penilaian_indikator") or ""),
-            ("Penilaian Kriteria", meeting.get("penilaian_kriteria") or ""),
-            ("Tugas/Aktivitas", meeting.get("assignments") or ""),
+            ("Penilaian Bobot", meeting.get("penilaian_bobot") or ""),
         ]
         for label, value in pairs:
             if not str(value or "").strip():
@@ -13415,6 +13547,26 @@ def build_rps_pdf(rps: Dict[str, Any], class_doc: Dict[str, Any], settings: Dict
         lines.append("[KETERANGAN]")
         for wrapped in _pdf_split_line(_rps_export_value(rps, "keterangan"), 100):
             lines.append(f"   {wrapped}")
+    rtm = rps.get("rtm") or {}
+    if rtm:
+        lines.append("")
+        lines.append("RENCANA TUGAS MAHASISWA (RTM)")
+        lines.append("=" * 100)
+        for title, key in (
+            ("Bentuk Tugas", "assignment_type"),
+            ("Judul Penilaian", "assessment_titles"),
+            ("Sub-CPMK", "sub_cpmk"),
+            ("Deskripsi", "description"),
+            ("Metode Pengerjaan", "method"),
+            ("Bentuk Format Luaran", "output_formats"),
+            ("Indikator, Kriteria, dan Bobot Penilaian", "assessment_text"),
+            ("Jadwal Pelaksanaan", "schedule_text"),
+            ("Lain-lain yang Diperlukan", "requirements"),
+            ("Pustaka", "references"),
+        ):
+            lines.append(f"[{title}]")
+            for wrapped in _pdf_split_line(str(rtm.get(key) or ""), 100):
+                lines.append(f"   {wrapped}")
 
     chunks = [lines[index:index + 55] for index in range(0, len(lines), 55)] or [[]]
     objects: List[bytes] = []
@@ -13810,6 +13962,12 @@ async def get_public_bkd_bundle(class_id: str):
     if not rps_doc:
         rps_doc = {
             "class_id": class_id,
+            "course_name": class_doc.get("course_name", ""),
+            "course_code": class_doc.get("course_code", ""),
+            "semester": class_doc.get("semester", ""),
+            "sks": str(class_doc.get("sks") or ""),
+            "program_name": class_doc.get("program_name", ""),
+            "lecturer_name": class_doc.get("lecturer_name", ""),
             "cpmk": f"Memahami konsep dasar dan terapan dari mata kuliah {class_doc.get('course_name')}.",
             "description": "Rencana Pembelajaran Semester standar perguruan tinggi.",
             "references": "Buku Ajar, Jurnal Ilmiah, Dokumentasi Resmi.",
@@ -13826,6 +13984,18 @@ async def get_public_bkd_bundle(class_id: str):
                 for i in range(16)
             ]
         }
+    rps_doc.setdefault("course_name", class_doc.get("course_name", ""))
+    rps_doc.setdefault("course_code", class_doc.get("course_code", ""))
+    rps_doc.setdefault("semester", class_doc.get("semester", ""))
+    rps_doc.setdefault("sks", str(class_doc.get("sks") or ""))
+    rps_doc.setdefault("program_name", class_doc.get("program_name", ""))
+    rps_doc.setdefault("lecturer_name", class_doc.get("lecturer_name", ""))
+    for key in ("cpl_prodi", "materials", "prerequisites", "activity", "output"):
+        rps_doc.setdefault(key, "")
+    rps_doc.setdefault("rtm", {})
+    for meeting in rps_doc.get("meetings") or []:
+        meeting.setdefault("learning_experience", meeting.get("assignments", ""))
+        meeting.setdefault("penilaian_bentuk_kriteria", meeting.get("penilaian_teknik", ""))
         
     admin_user = {"id": lecturer_doc.get("id") or "admin", "role": "admin"}
     try:

@@ -6,14 +6,13 @@ from typing import Any, Dict, List, Optional
 from uuid import uuid4
 from datetime import datetime, timezone
 
-from fastapi import APIRouter, Depends, HTTPException, Request, Header
+from fastapi import APIRouter, Depends, HTTPException, Request, WebSocket, WebSocketDisconnect
 from pydantic import BaseModel, Field
 
 from postgres_database import PostgresDatabase
 from course_lifecycle import (
     course_identity_changes,
     course_identity_lock_detail,
-    course_usage_description,
     course_usage_summary,
 )
 from program_scope import (
@@ -21,6 +20,7 @@ from program_scope import (
     resolve_program_identifiers,
     split_program_identifiers,
 )
+from academic_progress import build_curriculum_progress, summarize_curriculum_progress
 from routers.user_access import (
     normalize_base_role,
     user_is_admin_or_access_role,
@@ -29,6 +29,31 @@ from routers.user_access import (
 
 
 router = APIRouter(prefix="/api/v1/kurikulum", tags=["Kurikulum & Dosen Pengampu SIAKAD"])
+
+
+class _ProgressConnectionManager:
+    """In-process fan-out for progress changes, with frontend polling fallback."""
+
+    def __init__(self) -> None:
+        self.connections: set[WebSocket] = set()
+
+    async def connect(self, websocket: WebSocket) -> None:
+        await websocket.accept()
+        self.connections.add(websocket)
+
+    def disconnect(self, websocket: WebSocket) -> None:
+        self.connections.discard(websocket)
+
+    async def publish(self) -> None:
+        payload = {"type": "curriculum_progress_updated", "generated_at": now_iso()}
+        for websocket in list(self.connections):
+            try:
+                await websocket.send_json(payload)
+            except Exception:
+                self.disconnect(websocket)
+
+
+_progress_connections = _ProgressConnectionManager()
 
 
 # ─────────────────────────── helpers ────────────────────────────
@@ -79,6 +104,19 @@ def now_iso() -> str:
 
 def new_id() -> str:
     return str(uuid4())
+
+
+async def _user_from_token(db: PostgresDatabase, token: str) -> Optional[Dict[str, Any]]:
+    clean_token = str(token or "").strip()
+    if not clean_token:
+        return None
+    session = await db.sessions.find_one({"token": clean_token}, {"_id": 0})
+    if not session:
+        return None
+    user = await db.users.find_one({"id": session.get("user_id")}, {"_id": 0})
+    if not user or user.get("status", "active") != "active":
+        return None
+    return user
 
 
 def _is_ordinary_lecturer(user: Dict[str, Any]) -> bool:
@@ -214,6 +252,12 @@ class AssignDosenMKInput(BaseModel):
     dosen_anggota_namas: List[str] = Field(default_factory=list)
 
 
+class RetireCourseInput(BaseModel):
+    reason: str = Field(..., min_length=3, description="Alasan MK tidak lagi digunakan")
+    replacement_course_id: Optional[str] = Field(None, description="MK pengganti bila ada")
+    effective_from: Optional[str] = Field(None, description="Periode mulai tidak digunakan")
+
+
 # ═══════════════════════════════════════════════════════════════
 #  KURIKULUM MASTER ENDPOINTS
 # ═══════════════════════════════════════════════════════════════
@@ -256,6 +300,87 @@ async def list_kurikulum(
     return items
 
 
+@router.get("/progress")
+async def get_curriculum_progress(
+    request: Request,
+    db: PostgresDatabase = Depends(get_db),
+    _: Dict = Depends(require_admin),
+):
+    """Realtime-ready aggregate progress for curriculum and course lecturers."""
+    programs = await db.programs.find(
+        {"status": {"$ne": "deleted"}},
+        {"_id": 0, "id": 1, "kode": 1, "code": 1, "nama": 1, "name": 1, "status": 1},
+    ).to_list(None)
+    curricula = await db.kurikulum.find(
+        {"status": {"$ne": "deleted"}},
+        {
+            "_id": 0,
+            "id": 1,
+            "prodi_id": 1,
+            "prodi_kode": 1,
+            "prodi_nama": 1,
+            "program_id": 1,
+            "program_name": 1,
+            "kode": 1,
+            "nama": 1,
+            "status": 1,
+            "tahun_mulai": 1,
+            "total_sks_lulus": 1,
+            "created_at": 1,
+            "updated_at": 1,
+        },
+    ).to_list(None)
+    courses = await db.courses.find(
+        {"status": {"$nin": ["deleted", "inactive", "retired"]}},
+        {
+            "_id": 0,
+            "id": 1,
+            "kurikulum_id": 1,
+            "prodi_id": 1,
+            "prodi_kode": 1,
+            "prodi_nama": 1,
+            "program_id": 1,
+            "program_code": 1,
+            "program_name": 1,
+            "total_sks": 1,
+            "sks": 1,
+            "sks_teori": 1,
+            "sks_praktikum": 1,
+            "dosen_utama_id": 1,
+            "dosen_utama_nama": 1,
+            "dosen_anggota_ids": 1,
+            "dosen_anggota_namas": 1,
+            "created_at": 1,
+            "updated_at": 1,
+        },
+    ).to_list(None)
+    items = build_curriculum_progress(programs, curricula, courses)
+    return {
+        "generated_at": now_iso(),
+        "summary": summarize_curriculum_progress(items),
+        "items": items,
+    }
+
+
+@router.websocket("/progress/ws")
+async def curriculum_progress_websocket(websocket: WebSocket):
+    """Push a lightweight invalidation event after curriculum data changes."""
+    db: PostgresDatabase = websocket.app.state.db
+    user = await _user_from_token(db, websocket.query_params.get("token", ""))
+    if not user or not user_is_admin_or_access_role(user, "academic_operator"):
+        await websocket.close(code=1008)
+        return
+
+    await _progress_connections.connect(websocket)
+    try:
+        while True:
+            await websocket.receive_text()
+    except WebSocketDisconnect:
+        _progress_connections.disconnect(websocket)
+    except Exception:
+        _progress_connections.disconnect(websocket)
+
+
 @router.post("")
 async def create_kurikulum(
     body: KurikulumInput,
@@ -286,6 +411,7 @@ async def create_kurikulum(
         "created_at": now_iso(),
     }
     await db.kurikulum.insert_one(doc)
+    await _progress_connections.publish()
     return doc
 
 
@@ -321,6 +447,7 @@ async def update_kurikulum(
         "updated_at": now_iso(),
     }
     await db.kurikulum.update_one({"id": kurikulum_id}, {"$set": updates})
+    await _progress_connections.publish()
     return {**ex, **updates}
 
 
@@ -337,6 +464,7 @@ async def delete_kurikulum(
         raise HTTPException(status_code=404, detail="Kurikulum tidak ditemukan")
     await _require_program_manager_scope(db, user, existing)
     await db.kurikulum.update_one({"id": kurikulum_id}, {"$set": {"status": "inactive", "updated_at": now_iso()}})
+    await _progress_connections.publish()
     return {"ok": True}
 
 
@@ -414,11 +542,13 @@ async def create_course_kurikulum(
         "dosen_utama_nama": body.dosen_utama_nama,
         "dosen_anggota_ids": body.dosen_anggota_ids,
         "dosen_anggota_namas": body.dosen_anggota_namas,
+        "status": "active",
         "created_at": now_iso(),
     }
 
     # Simpan di `courses`
     await db.courses.insert_one(doc)
+    await _progress_connections.publish()
     return doc
 
 
@@ -469,7 +599,100 @@ async def update_course_kurikulum(
         "updated_at": now_iso(),
     }
     await db.courses.update_one({"id": course_id}, {"$set": updates})
+    await _progress_connections.publish()
     return {**ex, **updates}
+
+
+@router.post("/courses/{course_id}/retire")
+async def retire_course_kurikulum(
+    course_id: str,
+    body: RetireCourseInput,
+    request: Request,
+    db: PostgresDatabase = Depends(get_db),
+    user: Dict[str, Any] = Depends(require_admin_or_kaprodi),
+):
+    """Arsipkan MK tanpa menghapus histori akademiknya."""
+    existing = await db.courses.find_one({"id": course_id}, {"_id": 0})
+    if not existing:
+        raise HTTPException(status_code=404, detail="Mata Kuliah tidak ditemukan")
+    await _require_program_manager_course_scope(db, user, existing)
+    if str(existing.get("status") or "active").lower() == "deleted":
+        raise HTTPException(status_code=404, detail="Mata Kuliah sudah dihapus")
+
+    replacement_id = str(body.replacement_course_id or "").strip()
+    replacement = None
+    if replacement_id:
+        if replacement_id == course_id:
+            raise HTTPException(status_code=400, detail="MK pengganti harus berbeda dari MK yang diarsipkan")
+        replacement = await db.courses.find_one(
+            {"id": replacement_id, "status": {"$nin": ["deleted", "inactive", "retired"]}},
+            {"_id": 0},
+        )
+        if not replacement:
+            raise HTTPException(status_code=404, detail="MK pengganti tidak ditemukan atau sudah tidak aktif")
+        await _require_program_manager_course_scope(db, user, replacement)
+        existing_program = str(existing.get("prodi_id") or existing.get("program_id") or "")
+        replacement_program = str(replacement.get("prodi_id") or replacement.get("program_id") or "")
+        if existing_program and replacement_program and existing_program != replacement_program:
+            raise HTTPException(status_code=400, detail="MK pengganti harus berada pada prodi yang sama")
+
+    usage = await course_usage_summary(db, course_id)
+    now = now_iso()
+    updates = {
+        "status": "retired",
+        "retired_at": now,
+        "retired_by": user.get("id", ""),
+        "retired_reason": body.reason.strip(),
+        "retired_effective_from": body.effective_from or "",
+        "replacement_course_id": replacement_id or None,
+        "updated_at": now,
+    }
+    await db.courses.update_one({"id": course_id}, {"$set": updates})
+    await _progress_connections.publish()
+    return {
+        "ok": True,
+        "status": "retired",
+        "course": {**existing, **updates},
+        "usage": usage,
+        "replacement_course": replacement,
+        "message": "Mata kuliah diarsipkan. Histori kelas, KRS, dan nilai tetap dipertahankan.",
+    }
+
+
+@router.post("/courses/{course_id}/restore")
+async def restore_course_kurikulum(
+    course_id: str,
+    request: Request,
+    db: PostgresDatabase = Depends(get_db),
+    user: Dict[str, Any] = Depends(require_admin_or_kaprodi),
+):
+    """Aktifkan kembali MK yang sebelumnya diarsipkan."""
+    existing = await db.courses.find_one({"id": course_id}, {"_id": 0})
+    if not existing:
+        raise HTTPException(status_code=404, detail="Mata Kuliah tidak ditemukan")
+    await _require_program_manager_course_scope(db, user, existing)
+    if str(existing.get("status") or "active").lower() != "retired":
+        raise HTTPException(status_code=409, detail="Mata Kuliah tidak berstatus diarsipkan")
+    updates = {
+        "status": "active",
+        "restored_at": now_iso(),
+        "restored_by": user.get("id", ""),
+        "updated_at": now_iso(),
+    }
+    await db.courses.update_one(
+        {"id": course_id},
+        {
+            "$set": updates,
+            "$unset": {
+                "retired_at": "",
+                "retired_by": "",
+                "retired_reason": "",
+                "retired_effective_from": "",
+            },
+        },
+    )
+    await _progress_connections.publish()
+    return {"ok": True, "status": "active", "course": {**existing, **updates}}
 
 
 @router.delete("/courses/{course_id}")
@@ -479,22 +702,27 @@ async def delete_course_kurikulum(
     db: PostgresDatabase = Depends(get_db),
     user: Dict = Depends(require_admin_or_kaprodi),
 ):
-    """Hapus MK dari Kurikulum."""
+    """Kompatibilitas aman: endpoint hapus lama sekarang mengarsipkan MK."""
     existing = await db.courses.find_one({"id": course_id}, {"_id": 0})
     if not existing:
         raise HTTPException(status_code=404, detail="Mata Kuliah tidak ditemukan")
     await _require_program_manager_course_scope(db, user, existing)
     usage = await course_usage_summary(db, course_id)
-    if usage["locked"]:
-        raise HTTPException(
-            status_code=409,
-            detail=(
-                f"Mata kuliah sudah digunakan oleh {course_usage_description(usage)} dan tidak dapat dihapus. "
-                "Selesaikan/arsipkan kelas untuk menjaga histori, atau buat Mata Kuliah pengganti."
-            ),
-        )
-    await db.courses.delete_one({"id": course_id})
-    return {"ok": True}
+    updates = {
+        "status": "retired",
+        "retired_at": now_iso(),
+        "retired_by": user.get("id", ""),
+        "retired_reason": "Diarsipkan melalui aksi kompatibilitas Hapus MK",
+        "updated_at": now_iso(),
+    }
+    await db.courses.update_one({"id": course_id}, {"$set": updates})
+    await _progress_connections.publish()
+    return {
+        "ok": True,
+        "status": "retired",
+        "usage": usage,
+        "message": "Mata kuliah diarsipkan. Histori akademik tetap dipertahankan.",
+    }
 
 
 @router.post("/assign-dosen")
@@ -518,4 +746,5 @@ async def assign_dosen_mk(
         "updated_at": now_iso(),
     }
     await db.courses.update_one({"id": body.course_id}, {"$set": updates})
+    await _progress_connections.publish()
     return {"ok": True, "message": "Penugasan Dosen Pengampu berhasil disimpan"}

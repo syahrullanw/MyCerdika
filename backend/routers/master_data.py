@@ -13,6 +13,7 @@ from pydantic import BaseModel, Field
 
 from postgres_database import PostgresDatabase
 from academic_period_state import normalize_academic_period_state
+from academic_progress import build_curriculum_progress
 from program_scope import (
     record_matches_program_scope,
     resolve_program_identifiers,
@@ -1025,8 +1026,12 @@ async def _resolve_course_lecturer(
     return lecturer_id, lecturer_name
 
 
-async def _resolve_rombel_context(db: PostgresDatabase, ta: Dict[str, Any]) -> Dict[str, Any]:
-    """Tentukan semester target, academic_year, dan daftar kandidat MK dari semua kurikulum."""
+async def _resolve_rombel_context(
+    db: PostgresDatabase,
+    ta: Dict[str, Any],
+    user: Optional[Dict[str, Any]] = None,
+) -> Dict[str, Any]:
+    """Tentukan kandidat MK per periode, dibatasi scope Kaprodi bila diperlukan."""
     target_sem = str(ta.get("semester") or "Ganjil")
     target_tahun = str(ta.get("tahun") or "").strip()
     if not target_tahun:
@@ -1066,13 +1071,24 @@ async def _resolve_rombel_context(db: PostgresDatabase, ta: Dict[str, Any]) -> D
 
     candidates: List[Dict[str, Any]] = []
     processed_course_ids: set[str] = set()
+    is_scoped_manager = _is_scoped_program_manager(user)
+    program_scope = await _program_manager_scope(db, user or {}) if is_scoped_manager else []
     for kur in kurikulums:
         prodi_id = kur.get("prodi_id", "")
         prodi_info = prodi_map.get(prodi_id, {})
         prodi_nama = prodi_info.get("nama") or kur.get("prodi_nama", "")
         prodi_kode = prodi_info.get("kode") or kur.get("prodi_kode", "")
+        if is_scoped_manager and (
+            not program_scope
+            or not record_matches_program_scope(
+                {"prodi_id": prodi_id, "prodi_kode": prodi_kode, "prodi_nama": prodi_nama},
+                program_scope,
+                fields=("prodi_id", "prodi_kode", "prodi_nama"),
+            )
+        ):
+            continue
         courses = await db.courses.find(
-            {"kurikulum_id": kur["id"], "status": {"$ne": "deleted"}},
+            {"kurikulum_id": kur["id"], "status": {"$nin": ["deleted", "inactive", "retired"]}},
             {"_id": 0},
         ).to_list(None)
         for course in courses:
@@ -1110,12 +1126,229 @@ async def _resolve_rombel_context(db: PostgresDatabase, ta: Dict[str, Any]) -> D
     }
 
 
+def _readiness_reason(item: Dict[str, Any], period: Dict[str, Any]) -> List[str]:
+    reasons: List[str] = []
+    period_status = str(period.get("status") or "draft").strip().lower()
+    if period_status in {"closed", "archived", "inactive"}:
+        reasons.append("Periode akademik sudah ditutup")
+    if not item.get("kurikulum_id"):
+        reasons.append("Kurikulum aktif belum tersedia")
+    elif str(item.get("kurikulum_status") or "").strip().lower() != "active":
+        reasons.append("Kurikulum belum berstatus aktif")
+    if not item.get("course_count"):
+        reasons.append("Mata kuliah belum diisi")
+    if item.get("curriculum_progress", 0) < 100:
+        reasons.append("Kurikulum belum mencapai target SKS")
+    if item.get("lecturer_progress", 0) < 100:
+        reasons.append("Dosen pengampu belum lengkap")
+    return reasons
+
+
+def _course_sks_value(course: Dict[str, Any]) -> float:
+    value = course.get("total_sks", course.get("sks"))
+    if value is None:
+        value = (course.get("sks_teori") or 0) + (course.get("sks_praktikum") or 0)
+    try:
+        return max(0.0, float(value or 0))
+    except (TypeError, ValueError):
+        return 0.0
+
+
+def _course_readiness_reasons(
+    course: Dict[str, Any],
+    program: Optional[Dict[str, Any]],
+    period: Dict[str, Any],
+    available_lecturer_ids: set[str],
+) -> List[str]:
+    reasons: List[str] = []
+    period_status = str(period.get("status") or "draft").strip().lower()
+    if period_status in {"closed", "archived", "inactive"}:
+        reasons.append("Periode akademik sudah ditutup")
+    if not program or not program.get("kurikulum_id"):
+        reasons.append("Kurikulum aktif belum tersedia")
+    elif str(program.get("kurikulum_status") or "").strip().lower() != "active":
+        reasons.append("Kurikulum belum berstatus aktif")
+
+    code = str(course.get("code") or course.get("kode") or "").strip()
+    name = str(course.get("name") or course.get("nama") or "").strip()
+    if not code:
+        reasons.append("Kode mata kuliah belum lengkap")
+    if not name:
+        reasons.append("Nama mata kuliah belum lengkap")
+    if _course_sks_value(course) <= 0:
+        reasons.append("SKS mata kuliah belum diisi")
+
+    lecturer_id = str(course.get("dosen_utama_id") or "").strip()
+    if not lecturer_id:
+        reasons.append("Dosen pengampu utama belum ditetapkan")
+    elif lecturer_id not in available_lecturer_ids:
+        reasons.append("Dosen pengampu utama tidak ditemukan atau tidak aktif")
+    return reasons
+
+
+async def _build_class_readiness(
+    db: PostgresDatabase,
+    ta: Dict[str, Any],
+    ctx: Dict[str, Any],
+    user: Optional[Dict[str, Any]] = None,
+) -> List[Dict[str, Any]]:
+    programs = await db.programs.find(
+        {"status": {"$ne": "deleted"}},
+        {"_id": 0},
+    ).to_list(None)
+    curricula = await db.kurikulum.find(
+        {"status": {"$ne": "deleted"}},
+        {"_id": 0},
+    ).to_list(None)
+    courses = await db.courses.find(
+        {"status": {"$nin": ["deleted", "inactive", "retired"]}},
+        {"_id": 0},
+    ).to_list(None)
+    progress_items = build_curriculum_progress(programs, curricula, courses)
+    if _is_scoped_program_manager(user):
+        scope_values = await _program_manager_scope(db, user or {})
+        progress_items = [
+            item
+            for item in progress_items
+            if scope_values and record_matches_program_scope(
+                item,
+                scope_values,
+                fields=("prodi_id", "prodi_kode", "prodi_nama"),
+            )
+        ]
+
+    existing_classes = await db.classes.find(
+        {
+            "academic_year": ctx["academic_year"],
+            "semester": ctx["semester"],
+            "status": {"$ne": "deleted"},
+        },
+        {"_id": 0, "course_id": 1},
+    ).to_list(None)
+    existing_course_ids = {str(item.get("course_id") or "") for item in existing_classes}
+
+    lecturer_ids = {
+        str(candidate["course"].get("dosen_utama_id") or "").strip()
+        for candidate in ctx.get("candidates", [])
+        if str(candidate["course"].get("dosen_utama_id") or "").strip()
+    }
+    available_lecturer_ids: set[str] = set()
+    if lecturer_ids:
+        lecturer_rows = await db.users.find(
+            {
+                "id": {"$in": sorted(lecturer_ids)},
+                "role": {"$nin": ["student", "Mahasiswa", "mahasiswa"]},
+                "status": {"$ne": "deleted"},
+            },
+            {"_id": 0, "id": 1},
+        ).to_list(None)
+        available_lecturer_ids = {
+            str(row.get("id") or "").strip()
+            for row in lecturer_rows
+            if str(row.get("id") or "").strip()
+        }
+
+    progress_by_program = {
+        str(item.get("prodi_id") or ""): item
+        for item in progress_items
+    }
+
+    candidates_by_program: Dict[str, List[Dict[str, Any]]] = {}
+    for candidate in ctx.get("candidates", []):
+        course = candidate["course"]
+        program_id = str(candidate.get("prodi_id") or "")
+        program = progress_by_program.get(program_id)
+        course_reasons = _course_readiness_reasons(
+            course,
+            program,
+            ta,
+            available_lecturer_ids,
+        )
+        candidates_by_program.setdefault(program_id, []).append({
+            "id": course.get("id", ""),
+            "code": course.get("code") or course.get("kode") or "",
+            "name": course.get("name") or course.get("nama") or "",
+            "sks": course.get("sks", course.get("total_sks", "")),
+            "semester_paket": course.get("semester_paket") or course.get("semester") or "",
+            "dosen_utama_id": course.get("dosen_utama_id") or "",
+            "dosen_utama_nama": course.get("dosen_utama_nama") or "",
+            "has_dosen_pengampu": str(course.get("dosen_utama_id") or "").strip() in available_lecturer_ids,
+            "sudah_punya_kelas": course.get("id") in existing_course_ids,
+            "course_ready_for_class": not course_reasons,
+            "course_readiness_status": "Siap dibuat" if not course_reasons else "Belum siap",
+            "course_readiness_reasons": course_reasons,
+        })
+
+    result: List[Dict[str, Any]] = []
+    for item in progress_items:
+        program_id = str(item.get("prodi_id") or "")
+        reasons = _readiness_reason(item, ta)
+        program_courses = candidates_by_program.get(program_id, [])
+        ready_courses = [
+            course for course in program_courses
+            if course.get("course_ready_for_class") and not course.get("sudah_punya_kelas")
+        ]
+        ready = bool(ready_courses)
+        result.append({
+            "prodi_id": item.get("prodi_id"),
+            "prodi_kode": item.get("prodi_kode") or "",
+            "prodi_nama": item.get("prodi_nama") or "Program Studi",
+            "kurikulum_id": item.get("kurikulum_id"),
+            "kurikulum_nama": item.get("kurikulum_nama"),
+            "kurikulum_status": item.get("kurikulum_status"),
+            "curriculum_progress": item.get("curriculum_progress", 0),
+            "lecturer_progress": item.get("lecturer_progress", 0),
+            "overall_progress": item.get("overall_progress", 0),
+            "course_count": item.get("course_count", 0),
+            "assigned_course_count": item.get("assigned_course_count", 0),
+            "ready_for_class": ready,
+            "readiness_status": "Ada MK siap dibuat" if ready else "Belum ada MK siap dibuat",
+            "readiness_reasons": reasons,
+            "ready_course_count": len(ready_courses),
+            "pending_course_count": sum(
+                1 for course in program_courses
+                if not course.get("sudah_punya_kelas") and not course.get("course_ready_for_class")
+            ),
+            "courses": program_courses,
+        })
+    return sorted(result, key=lambda item: str(item.get("prodi_nama") or "").casefold())
+
+
+@router.get("/kelas/kesiapan")
+async def get_kelas_readiness(
+    request: Request,
+    tahun_ajaran_id: Optional[str] = None,
+    db: PostgresDatabase = Depends(get_db),
+    user: Dict = Depends(require_admin_or_kaprodi),
+):
+    if not tahun_ajaran_id:
+        active = await db.tahun_ajaran.find_one({"is_active": True}, {"_id": 0})
+        tahun_ajaran_id = active.get("id") if active else None
+    if not tahun_ajaran_id:
+        raise HTTPException(status_code=400, detail="Periode akademik belum dipilih")
+    ta = await db.tahun_ajaran.find_one({"id": tahun_ajaran_id}, {"_id": 0})
+    if not ta:
+        raise HTTPException(status_code=404, detail="Tahun ajaran tidak ditemukan")
+    ctx = await _resolve_rombel_context(db, ta, user)
+    items = await _build_class_readiness(db, ta, ctx, user)
+    return {
+        "period": {
+            "id": ta.get("id", ""),
+            "tahun": ta.get("tahun", ""),
+            "semester": ta.get("semester", ""),
+            "status": ta.get("status", "draft"),
+            "label": f"{ta.get('semester', '')} {ta.get('tahun', '')}".strip(),
+        },
+        "items": items,
+    }
+
+
 @router.get("/kelas/mk-baru")
 async def list_mk_baru(
     request: Request,
     tahun_ajaran_id: Optional[str] = None,
     db: PostgresDatabase = Depends(get_db),
-    _: Dict = Depends(require_admin),
+    user: Dict = Depends(require_admin_or_kaprodi),
 ):
     """MK kurikulum kandidat untuk semester target.
 
@@ -1132,7 +1365,18 @@ async def list_mk_baru(
     if not ta:
         raise HTTPException(status_code=404, detail="Tahun ajaran tidak ditemukan")
 
-    ctx = await _resolve_rombel_context(db, ta)
+    ctx = await _resolve_rombel_context(db, ta, user)
+    readiness = await _build_class_readiness(db, ta, ctx, user)
+    readiness_by_program = {
+        str(item.get("prodi_id") or ""): item
+        for item in readiness
+    }
+    readiness_by_course = {
+        str(course.get("id") or ""): (program, course)
+        for program in readiness
+        for course in (program.get("courses") or [])
+        if str(course.get("id") or "").strip()
+    }
     existing = await db.classes.find(
         {
             "academic_year": ctx["academic_year"],
@@ -1147,6 +1391,8 @@ async def list_mk_baru(
     for item in ctx["candidates"]:
         course = item["course"]
         has_class = course["id"] in existing_course_ids
+        program_readiness = readiness_by_program.get(str(item["prodi_id"] or ""), {})
+        course_readiness = readiness_by_course.get(str(course.get("id") or ""), (program_readiness, {}))[1]
         result.append({
             "id": course["id"],
             "code": course.get("code") or course.get("kode") or "",
@@ -1158,8 +1404,16 @@ async def list_mk_baru(
             "prodi_code": item.get("prodi_kode", ""),
             "dosen_utama_id": course.get("dosen_utama_id") or "",
             "dosen_utama_nama": course.get("dosen_utama_nama") or "",
-            "has_dosen_pengampu": bool(str(course.get("dosen_utama_id") or "").strip()),
+            "has_dosen_pengampu": bool(course_readiness.get("has_dosen_pengampu")),
             "sudah_punya_kelas": has_class,
+            "prodi_ready_for_class": bool(course_readiness.get("course_ready_for_class")),
+            "prodi_readiness_status": course_readiness.get("course_readiness_status") or "Belum siap",
+            "prodi_readiness_reasons": course_readiness.get("course_readiness_reasons") or ["Data mata kuliah belum lengkap"],
+            "course_ready_for_class": bool(course_readiness.get("course_ready_for_class")),
+            "course_readiness_status": course_readiness.get("course_readiness_status") or "Belum siap",
+            "course_readiness_reasons": course_readiness.get("course_readiness_reasons") or ["Data mata kuliah belum lengkap"],
+            "program_ready_for_class": bool(program_readiness.get("ready_for_class")),
+            "program_readiness_status": program_readiness.get("readiness_status") or "Belum ada MK siap dibuat",
         })
     return result
 
@@ -1169,7 +1423,7 @@ async def generate_rombel_from_kurikulum(
     body: GenerateRombelInput,
     request: Request,
     db: PostgresDatabase = Depends(get_db),
-    _: Dict = Depends(require_admin),
+    user: Dict = Depends(require_admin_or_kaprodi),
 ):
     """Auto-generate rombel (kelas) dari MK kurikulum yang belum punya kelas untuk TA target.
 
@@ -1179,8 +1433,28 @@ async def generate_rombel_from_kurikulum(
     if not ta:
         raise HTTPException(status_code=404, detail="Tahun ajaran tidak ditemukan")
 
-    ctx = await _resolve_rombel_context(db, ta)
+    ctx = await _resolve_rombel_context(db, ta, user)
+    readiness = await _build_class_readiness(db, ta, ctx, user)
+    readiness_by_program = {
+        str(item.get("prodi_id") or ""): item
+        for item in readiness
+    }
+    readiness_by_course = {
+        str(course.get("id") or ""): (program, course)
+        for program in readiness
+        for course in (program.get("courses") or [])
+        if str(course.get("id") or "").strip()
+    }
     want = set(body.course_ids or [])
+
+    if _is_scoped_program_manager(user):
+        available_course_ids = {item["course"].get("id") for item in ctx["candidates"]}
+        outside_scope = sorted(want - available_course_ids)
+        if outside_scope:
+            raise HTTPException(
+                status_code=403,
+                detail="Ada mata kuliah yang berada di luar prodi yang Anda pimpin",
+            )
 
     existing = await db.classes.find(
         {
@@ -1210,6 +1484,20 @@ async def generate_rombel_from_kurikulum(
                 "status": "exists",
                 "message": "Sudah punya kelas",
             })
+            continue
+
+        program_readiness = readiness_by_program.get(str(item.get("prodi_id") or ""), {})
+        course_readiness = readiness_by_course.get(cid, (program_readiness, {}))[1]
+        if not course_readiness.get("course_ready_for_class"):
+            reasons = course_readiness.get("course_readiness_reasons") or ["Data mata kuliah belum lengkap"]
+            blocked_item = {
+                "course_id": cid,
+                "course_name": course.get("name", ""),
+                "status": "not_ready",
+                "message": f"Mata kuliah belum siap: {'; '.join(reasons)}",
+            }
+            blocked.append(blocked_item)
+            results.append(blocked_item)
             continue
 
         dosen_id, dosen_nama = await _resolve_course_lecturer(db, course)
@@ -1270,7 +1558,7 @@ async def generate_rombel_from_kurikulum(
         "skipped": skipped,
         "blocked": blocked,
         "results": results,
-        "message": f"{len(created)} rombel baru dibuat, {len(skipped)} sudah ada, {len(blocked)} belum dapat dibuat karena dosen pengampu belum lengkap",
+        "message": f"{len(created)} rombel baru dibuat, {len(skipped)} sudah ada, {len(blocked)} belum dapat dibuat karena data mata kuliah belum lengkap",
     }
 
 

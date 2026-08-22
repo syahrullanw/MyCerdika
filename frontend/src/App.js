@@ -16,6 +16,7 @@ import { apiErrorMessage } from "@/lib/utils";
 import {
   canAccessAdminPage,
   canAccessStudentPage,
+  isAcademicOperatorUser,
   isKaprodiUser,
   normalizeUserRole,
   userHasModuleAction,
@@ -91,6 +92,7 @@ import {
   Reply,
   RotateCcw,
   Search,
+  School,
   Smile,
   Target,
   Video,
@@ -144,11 +146,13 @@ const EnrollWizardPage = lazyNamed(() => import("@/components/MasterDataComponen
 const MigrationPage = lazyNamed(() => import("@/components/MasterDataComponents"), "MigrationPage");
 const GedungPage = lazyNamed(() => import("@/components/MasterDataComponents"), "GedungPage");
 const RuanganPage = lazyNamed(() => import("@/components/MasterDataComponents"), "RuanganPage");
+const PembuatanKelasPage = lazyNamed(() => import("@/components/MasterDataComponents"), "PembuatanKelasPage");
 const JadwalMengajarPage = lazyNamed(() => import("@/components/MasterDataComponents"), "JadwalMengajarPage");
 const SkMengajarPage = lazyNamed(() => import("@/components/SkMengajarComponents"), "SkMengajarPage");
 const SkJabatanPage = lazyNamed(() => import("@/components/SkJabatanComponents"), "SkJabatanPage");
 const StudentAttendancePage = lazyNamed(() => import("@/components/StudentAttendanceComponents"), "StudentAttendancePage");
 const KurikulumMasterPage = lazyNamed(() => import("@/components/KurikulumComponents"), "KurikulumMasterPage");
+const KurikulumProgressPage = lazyNamed(() => import("@/components/KurikulumComponents"), "KurikulumProgressPage");
 const UserAccessPage = lazyNamed(() => import("@/components/UserAccessComponents"), "UserAccessPage");
 const StaffPage = lazyNamed(() => import("@/components/StaffComponents"), "StaffPage");
 const IntegrationSettingsPage = lazyNamed(() => import("@/components/IntegrationSettingsPage"), "IntegrationSettingsPage");
@@ -226,7 +230,6 @@ const StatusBadge = ({ children, color = "blue" }) => {
 
 const logoUrl = "/app-icon.svg";
 const authBg = "/campus/poltek-campus-main-1280.jpg";
-const authCampusDetail = "/campus/poltek-campus-aerial.webp";
 const practicumCover =
   "https://images.unsplash.com/photo-1619410283995-43d9134e7656?crop=entropy&cs=srgb&fm=jpg&ixid=M3w4NjA1MDZ8MHwxfHNlYXJjaHwxfHxjb21wdXRlciUyMHNjaWVuY2UlMjBwcm9ncmFtbWluZyUyMHNjcmVlbnxlbnwwfHx8fDE3Nzk1NTA1NDd8MA&ixlib=rb-4.1.0&q=85";
 const defaultWhatsAppForm = {
@@ -340,6 +343,12 @@ function updateAppIcon(href) {
 
 function brandingLogo(branding) {
   const url = branding?.app_logo_url?.trim() || branding?.campus_logo_url?.trim() || "";
+  if (url) return url.startsWith("http") ? url : `${BACKEND_URL}${url}`;
+  return logoUrl;
+}
+
+function campusLogo(branding) {
+  const url = branding?.campus_logo_url?.trim() || branding?.app_logo_url?.trim() || "";
   if (url) return url.startsWith("http") ? url : `${BACKEND_URL}${url}`;
   return logoUrl;
 }
@@ -1697,9 +1706,10 @@ function LoginScreen({ onAuth, branding, ssoError = "", version }) {
         <div className="absolute inset-0 bg-gradient-to-tr from-[#020b1c] via-[#061a3d]/35 to-sky-950/10" />
         <div className="absolute left-10 top-10 flex items-center gap-3 rounded-2xl border border-white/20 bg-slate-950/35 px-4 py-3 text-white backdrop-blur-md">
           <img
-            src={authCampusDetail}
-            alt="Detail arsitektur Politeknik SCI"
-            className="h-12 w-12 rounded-xl object-cover"
+            src={campusLogo(branding)}
+            alt={`Logo resmi ${campusName}`}
+            className="h-12 w-12 rounded-xl bg-white/95 p-1 object-contain shadow-sm"
+            data-testid="login-campus-logo-image"
           />
           <div>
             <p className="text-[10px] font-bold uppercase tracking-[0.22em] text-cyan-300">Kampus berbasis teknologi</p>
@@ -6254,8 +6264,10 @@ function AdminApp({
       label: "Kurikulum & Penugasan",
       items: [
         ["master_kurikulum", BookOpen, "Kurikulum & Dosen MK", canOpenAdminPage("master_kurikulum")],
+        ["progress_kurikulum", BarChart3, "Progres Kurikulum Prodi", (isCampusAdmin || isAcademicOperatorUser(user)) && canOpenAdminPage("progress_kurikulum")],
         ["progres_nilai_prodi", Award, "Progres Nilai Prodi", !isKaprodi && canOpenAdminPage("progres_nilai_prodi")],
         ["analisis_rps_prodi", ClipboardCheck, "Analisis & Approval RPS", !isKaprodi && canOpenAdminPage("analisis_rps_prodi")],
+        ["master_pembuatan_kelas", School, "Pembuatan Kelas", canOpenAdminPage("master_pembuatan_kelas")],
         ["master_jadwal_mengajar", CalendarClock, "Jadwal Mengajar", canOpenAdminPage("master_jadwal_mengajar")],
         ["sk_mengajar", FileText, "SK Mengajar Dosen", canOpenAdminPage("sk_mengajar")],
         ["sk_jabatan", BadgeCheck, "SK Jabatan Akademik Dosen", canOpenAdminPage("sk_jabatan")],
@@ -6593,6 +6605,7 @@ function AdminApp({
           {page === "wizard_semester" && <WizardSemesterBaru onDone={() => setPage("dashboard")} />}
           {page === "master_tahun_ajaran" && <TahunAjaranPage />}
           {page === "master_kurikulum" && <KurikulumMasterPage user={user} />}
+          {page === "progress_kurikulum" && <KurikulumProgressPage />}
           {page === "progres_nilai_prodi" && <ProgresNilaiProdiPage user={user} token={token} selectedSemester={selectedSemester} programs={data.programs || []} />}
           {page === "analisis_mahasiswa_prodi" && <AnalisisMahasiswaProdiPage user={user} token={token} selectedSemester={selectedSemester} programs={data.programs || []} />}
           {page === "analisis_rps_prodi" && <AnalisisRpsProdiPage user={user} token={token} selectedSemester={selectedSemester} programs={data.programs || []} />}
@@ -6600,6 +6613,13 @@ function AdminApp({
           {page === "master_prodi" && <ProdiMasterPage />}
           {page === "master_gedung" && <GedungPage />}
           {page === "master_ruangan" && <RuanganPage />}
+          {page === "master_pembuatan_kelas" && (
+            <PembuatanKelasPage
+              user={user}
+              selectedSemester={displayedSemester}
+              tahunAjaran={data.tahunAjaran}
+            />
+          )}
           {page === "master_jadwal_mengajar" && (
             <JadwalMengajarPage
               user={user}
@@ -18292,7 +18312,9 @@ const RpsPage = memo(function RpsPage({ data, token, isLecturer }) {
   const [rpsUploading, setRpsUploading] = useState(false);
   const [rpsExtraction, setRpsExtraction] = useState(null);
   const [editingMeeting, setEditingMeeting] = useState(null);
+  const [rtmForm, setRtmForm] = useState({});
   const [cpmkForm, setCpmkForm] = useState({
+    course_name: "",
     course_code: "",
     semester: "",
     sks: "",
@@ -18303,10 +18325,15 @@ const RpsPage = memo(function RpsPage({ data, token, isLecturer }) {
     cpl_keterampilan_umum: "",
     cpl_pengetahuan: "",
     cpl_keterampilan_khusus: "",
+    cpl_prodi: "",
     keterangan: "",
     cpmk: "",
     description: "",
+    materials: "",
+    prerequisites: "",
     references: "",
+    activity: "",
+    output: "",
     document_url: "",
   });
 
@@ -18332,6 +18359,7 @@ const RpsPage = memo(function RpsPage({ data, token, isLecturer }) {
       });
       setRps(res.data);
       setCpmkForm({
+        course_name: res.data.course_name || "",
         course_code: res.data.course_code || "",
         semester: res.data.semester || "",
         sks: res.data.sks || "",
@@ -18342,12 +18370,18 @@ const RpsPage = memo(function RpsPage({ data, token, isLecturer }) {
         cpl_keterampilan_umum: res.data.cpl_keterampilan_umum || "",
         cpl_pengetahuan: res.data.cpl_pengetahuan || "",
         cpl_keterampilan_khusus: res.data.cpl_keterampilan_khusus || "",
+        cpl_prodi: res.data.cpl_prodi || "",
         keterangan: res.data.keterangan || "",
         cpmk: res.data.cpmk || "",
         description: res.data.description || "",
+        materials: res.data.materials || "",
+        prerequisites: res.data.prerequisites || "",
         references: res.data.references || "",
+        activity: res.data.activity || "",
+        output: res.data.output || "",
         document_url: res.data.document_url || "",
       });
+      setRtmForm(res.data.rtm || {});
       setRpsExtraction(res.data.document_extraction || null);
     } catch (e) {
       toast.error("Gagal memuat data RPS");
@@ -18388,6 +18422,7 @@ const RpsPage = memo(function RpsPage({ data, token, isLecturer }) {
         next.document_url = res.data.document_url || current.document_url;
         return next;
       });
+      if (res.data.extracted?.rtm) setRtmForm(res.data.extracted.rtm);
       setRps((current) => ({
         ...(current || {}),
         document_url: res.data.document_url || current?.document_url || "",
@@ -18440,6 +18475,7 @@ const RpsPage = memo(function RpsPage({ data, token, isLecturer }) {
     try {
       const payload = {
         ...cpmkForm,
+        rtm: rtmForm,
         meetings: rps?.meetings || []
       };
       await axios.post(`${API}/classes/${selectedClassId}/rps`, payload, {
@@ -18711,6 +18747,17 @@ const RpsPage = memo(function RpsPage({ data, token, isLecturer }) {
             </h3>
             <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4">
               <div>
+                <label className="block text-xs font-semibold text-slate-700 mb-1">Nama Mata Kuliah</label>
+                <Input
+                  type="text"
+                  disabled={!isLecturer}
+                  placeholder="Nama mata kuliah sesuai RPS"
+                  className="text-xs"
+                  value={cpmkForm.course_name}
+                  onChange={(e) => setCpmkForm({ ...cpmkForm, course_name: e.target.value })}
+                />
+              </div>
+              <div>
                 <label className="block text-xs font-semibold text-slate-700 mb-1">Kode Mata Kuliah</label>
                 <Input
                   type="text"
@@ -18779,9 +18826,55 @@ const RpsPage = memo(function RpsPage({ data, token, isLecturer }) {
           </div>
 
           <div className="bg-white p-5 rounded-xl border border-slate-200 shadow-sm space-y-4">
+            <div className="flex items-center justify-between border-b border-slate-100 pb-3">
+              <h3 className="font-semibold text-slate-900 text-base flex items-center gap-2">
+                <ClipboardList className="w-5 h-5 text-indigo-600" /> Rencana Tugas Mahasiswa (RTM)
+              </h3>
+              <span className="text-[11px] text-slate-500">Bagian lampiran format RPS resmi</span>
+            </div>
+            <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+              {[
+                ["assignment_type", "Bentuk Tugas"],
+                ["assessment_titles", "Judul Penilaian"],
+                ["sub_cpmk", "Sub-CPMK"],
+                ["description", "Deskripsi RTM"],
+                ["method", "Metode Pengerjaan"],
+                ["output_formats", "Bentuk Format Luaran"],
+                ["assessment_text", "Indikator, Kriteria, dan Bobot Penilaian"],
+                ["schedule_text", "Jadwal Pelaksanaan"],
+                ["requirements", "Lain-lain yang Diperlukan"],
+                ["references", "Pustaka RTM"],
+              ].map(([key, label]) => (
+                <div key={key} className={key === "assessment_text" || key === "schedule_text" ? "md:col-span-2" : ""}>
+                  <label className="block text-xs font-semibold text-slate-700 mb-1">{label}</label>
+                  <textarea
+                    rows={key === "assessment_text" || key === "schedule_text" ? 5 : 3}
+                    disabled={!isLecturer}
+                    className="form-textarea text-xs w-full rounded-lg border-slate-200"
+                    value={rtmForm[key] || ""}
+                    onChange={(e) => setRtmForm((current) => ({ ...current, [key]: e.target.value }))}
+                    placeholder={`Isi ${label.toLowerCase()} sesuai format RTM...`}
+                  />
+                </div>
+              ))}
+            </div>
+          </div>
+
+          <div className="bg-white p-5 rounded-xl border border-slate-200 shadow-sm space-y-4">
             <h3 className="font-semibold text-slate-900 text-base flex items-center gap-2 border-b border-slate-100 pb-3">
               <Target className="w-5 h-5 text-indigo-600" /> Capaian Pembelajaran Lulusan (CPL)
             </h3>
+            <div>
+              <label className="block text-xs font-semibold text-slate-700 mb-1">CPL-PRODI yang Dibebankan pada Mata Kuliah</label>
+              <textarea
+                rows={5}
+                disabled={!isLecturer}
+                className="form-textarea text-xs w-full rounded-lg border-slate-200"
+                value={cpmkForm.cpl_prodi}
+                onChange={(e) => setCpmkForm({ ...cpmkForm, cpl_prodi: e.target.value })}
+                placeholder="Kode CPL dan uraian capaian, satu butir per baris..."
+              />
+            </div>
             <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
               <div>
                 <label className="block text-xs font-semibold text-slate-700 mb-1">Sikap</label>
@@ -18875,6 +18968,30 @@ const RpsPage = memo(function RpsPage({ data, token, isLecturer }) {
               </div>
 
               <div>
+                <label className="block text-xs font-semibold text-slate-700 mb-1">Materi Pembelajaran</label>
+                <textarea
+                  rows={4}
+                  disabled={!isLecturer}
+                  className="form-textarea text-xs w-full rounded-lg border-slate-200"
+                  value={cpmkForm.materials}
+                  onChange={(e) => setCpmkForm({ ...cpmkForm, materials: e.target.value })}
+                  placeholder="1. Materi minggu pertama..."
+                />
+              </div>
+
+              <div>
+                <label className="block text-xs font-semibold text-slate-700 mb-1">Matakuliah Prasyarat (Jika ada)</label>
+                <textarea
+                  rows={4}
+                  disabled={!isLecturer}
+                  className="form-textarea text-xs w-full rounded-lg border-slate-200"
+                  value={cpmkForm.prerequisites}
+                  onChange={(e) => setCpmkForm({ ...cpmkForm, prerequisites: e.target.value })}
+                  placeholder="Tuliskan matakuliah prasyarat atau kosongkan jika tidak ada."
+                />
+              </div>
+
+              <div>
                 <label className="block text-xs font-semibold text-slate-700 mb-1">Keterangan</label>
                 <textarea
                   rows={3}
@@ -18883,6 +19000,30 @@ const RpsPage = memo(function RpsPage({ data, token, isLecturer }) {
                   value={cpmkForm.keterangan}
                   onChange={(e) => setCpmkForm({ ...cpmkForm, keterangan: e.target.value })}
                   placeholder="Kegiatan Proses Belajar (KPB); Kegiatan Penanganan Terstruktur (KPT); dan Kegiatan Mandiri (KM); Seminar (S); Praktikum/Praktik Lapangan (P/PL)."
+                />
+              </div>
+
+              <div>
+                <label className="block text-xs font-semibold text-slate-700 mb-1">Kegiatan</label>
+                <textarea
+                  rows={3}
+                  disabled={!isLecturer}
+                  className="form-textarea text-xs w-full rounded-lg border-slate-200"
+                  value={cpmkForm.activity}
+                  onChange={(e) => setCpmkForm({ ...cpmkForm, activity: e.target.value })}
+                  placeholder="Contoh: Presentasi/Pitching ide usaha..."
+                />
+              </div>
+
+              <div>
+                <label className="block text-xs font-semibold text-slate-700 mb-1">Output</label>
+                <textarea
+                  rows={3}
+                  disabled={!isLecturer}
+                  className="form-textarea text-xs w-full rounded-lg border-slate-200"
+                  value={cpmkForm.output}
+                  onChange={(e) => setCpmkForm({ ...cpmkForm, output: e.target.value })}
+                  placeholder="Jelaskan output pembelajaran yang diharapkan..."
                 />
               </div>
 
@@ -18922,7 +19063,7 @@ const RpsPage = memo(function RpsPage({ data, token, isLecturer }) {
                   )}
                 </div>
                 <p className="text-[11px] text-slate-500 mt-1.5">
-                  PDF/DOCX/Word maksimal 20 MB. Data yang terbaca akan mengisi identitas, CPL, CPMK, deskripsi, referensi, dan tabel pertemuan.
+                  PDF/DOCX/Word maksimal 20 MB. Data yang terbaca akan mengisi identitas, CPL, CPMK, materi, RTM, referensi, dan tabel pertemuan.
                 </p>
                 {rps?.document_file?.file_name && (
                   <p className="text-[11px] text-slate-600 mt-1">
@@ -18932,7 +19073,7 @@ const RpsPage = memo(function RpsPage({ data, token, isLecturer }) {
                 {rpsExtraction && (
                   <div className="mt-3 rounded-lg border border-indigo-100 bg-indigo-50/60 p-3 text-[11px] text-indigo-900" data-testid="rps-extraction-summary">
                     <div className="flex flex-wrap items-center gap-x-4 gap-y-1 font-semibold">
-                      <span>{rpsExtraction.stats?.fields_found || 0}/{rpsExtraction.stats?.fields_total || 14} field terbaca</span>
+                      <span>{rpsExtraction.stats?.fields_found || 0}/{rpsExtraction.stats?.fields_total || 20} field terbaca</span>
                       <span>{rpsExtraction.stats?.meetings_found || 0}/16 pertemuan terbaca</span>
                     </div>
                     <p className="mt-1 text-indigo-800">Hasil ekstraksi adalah draft. Tinjau dan edit kolom di bawah sebelum klik Simpan RPS.</p>
@@ -19090,18 +19231,27 @@ const RpsPage = memo(function RpsPage({ data, token, isLecturer }) {
                   placeholder="cth: KPB 3x50 / 90 menit"
                 />
               </div>
+              <div>
+                <label className="block font-semibold mb-1">Pengalaman Belajar Mahasiswa</label>
+                <textarea
+                  rows={2}
+                  className="form-textarea w-full text-xs rounded-lg border-slate-200"
+                  value={editingMeeting.learning_experience || editingMeeting.assignments || ""}
+                  onChange={(e) => setEditingMeeting({ ...editingMeeting, learning_experience: e.target.value, assignments: e.target.value })}
+                  placeholder="Aktivitas belajar, latihan, diskusi, atau penugasan mahasiswa..."
+                />
+              </div>
               <div className="border-t border-slate-100 pt-2">
                 <p className="font-bold text-slate-700 mb-2">Penilaian</p>
                 <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
                   <div>
-                    <label className="block font-semibold mb-1">Teknik</label>
-                    <Input
-                      type="text"
-                      value={editingMeeting.penilaian_teknik}
-                      onChange={(e) =>
-                        setEditingMeeting({ ...editingMeeting, penilaian_teknik: e.target.value })
-                      }
-                      placeholder="cth: FGD / penugasan / ujian"
+                    <label className="block font-semibold mb-1">Bentuk &amp; Kriteria Penilaian</label>
+                    <textarea
+                      rows={2}
+                      className="form-textarea w-full text-xs rounded-lg border-slate-200"
+                      value={editingMeeting.penilaian_bentuk_kriteria || editingMeeting.penilaian_teknik || ""}
+                      onChange={(e) => setEditingMeeting({ ...editingMeeting, penilaian_bentuk_kriteria: e.target.value, penilaian_teknik: e.target.value })}
+                      placeholder="Contoh: Refleksi individu dan diskusi..."
                     />
                   </div>
                   <div>
@@ -19127,30 +19277,7 @@ const RpsPage = memo(function RpsPage({ data, token, isLecturer }) {
                       placeholder="Indikator pencapaian..."
                     />
                   </div>
-                  <div>
-                    <label className="block font-semibold mb-1">Kriteria</label>
-                    <textarea
-                      rows={2}
-                      className="form-textarea w-full text-xs rounded-lg border-slate-200"
-                      value={editingMeeting.penilaian_kriteria}
-                      onChange={(e) =>
-                        setEditingMeeting({ ...editingMeeting, penilaian_kriteria: e.target.value })
-                      }
-                      placeholder="Kriteria penilaian..."
-                    />
-                  </div>
                 </div>
-              </div>
-              <div>
-                <label className="block font-semibold mb-1">Tugas / Aktivitas Sesi</label>
-                <Input
-                  type="text"
-                  value={editingMeeting.assignments}
-                  onChange={(e) =>
-                    setEditingMeeting({ ...editingMeeting, assignments: e.target.value })
-                  }
-                  placeholder="cth: Kuis singkat & latihan mandiri"
-                />
               </div>
               </div>
             </div>
@@ -22646,35 +22773,110 @@ function PublicBKDBundlePage({ classId, docType = "all", branding }) {
                   </p>
                 </div>
 
-                <div className="p-4 bg-slate-50 rounded border text-xs space-y-2">
-                  <h4 className="font-bold text-slate-800">CPMK (Capaian Pembelajaran):</h4>
-                  <p className="text-slate-700 italic">{bundleData.rps?.cpmk || "-"}</p>
+                <div className="grid grid-cols-1 sm:grid-cols-2 gap-3 bg-slate-50 rounded border p-4 text-xs">
+                  {[
+                    ["Nama Mata Kuliah", bundleData.rps?.course_name || bundleData.class_info?.course_name],
+                    ["Kode Mata Kuliah", bundleData.rps?.course_code],
+                    ["Satuan Kredit Semester", bundleData.rps?.sks],
+                    ["Semester", bundleData.rps?.semester],
+                    ["Tgl Penyusunan", bundleData.rps?.compiled_at],
+                    ["Dosen Pengampu", bundleData.rps?.lecturer_name || bundleData.lecturer?.name],
+                    ["Program Studi", bundleData.rps?.program_name || bundleData.class_info?.program_name],
+                  ].map(([label, value]) => (
+                    <div key={label} className="border-b border-slate-200 pb-1">
+                      <span className="font-semibold text-slate-500">{label}: </span>
+                      <span className="font-medium text-slate-900">{value || "-"}</span>
+                    </div>
+                  ))}
+                </div>
+
+                <div className="grid grid-cols-1 md:grid-cols-2 gap-3 text-xs">
+                  {[
+                    ["CPL-PRODI", bundleData.rps?.cpl_prodi],
+                    ["CPMK", bundleData.rps?.cpmk],
+                    ["Deskripsi Mata Kuliah", bundleData.rps?.description],
+                    ["Materi Pembelajaran", bundleData.rps?.materials],
+                    ["Matakuliah Prasyarat", bundleData.rps?.prerequisites],
+                    ["Daftar Referensi", bundleData.rps?.references],
+                    ["Kegiatan", bundleData.rps?.activity],
+                    ["Output", bundleData.rps?.output],
+                  ].map(([label, value]) => (
+                    <div key={label} className="rounded border border-slate-200 bg-white p-3">
+                      <h4 className="font-bold text-slate-800">{label}</h4>
+                      <p className="mt-1 whitespace-pre-line break-words text-slate-700">{value || "-"}</p>
+                    </div>
+                  ))}
                 </div>
 
                 <div className="overflow-x-auto">
-                  <table className="w-full text-xs text-left border border-slate-300">
+                  <table className="min-w-[1320px] w-full text-xs text-left border border-slate-300">
                     <thead className="bg-slate-100 font-bold border-b border-slate-300">
                       <tr>
-                        <th className="p-2 border-r border-slate-300 text-center w-12">Sesi</th>
-                        <th className="p-2 border-r border-slate-300">Topik Materi</th>
-                        <th className="p-2 border-r border-slate-300">Sub Topik / Rincian</th>
-                        <th className="p-2 border-r border-slate-300">Metode Pembelajaran</th>
-                        <th className="p-2">Bahan Ajar</th>
+                        <th className="p-2 border-r border-slate-300 text-center w-14">Minggu Ke</th>
+                        <th className="p-2 border-r border-slate-300">Kemampuan Akhir Yang Direncanakan (SUB-CPMK)</th>
+                        <th className="p-2 border-r border-slate-300">Materi Pembelajaran</th>
+                        <th className="p-2 border-r border-slate-300">Modalitas, Bentuk, Strategi, dan Metode Pembelajaran (Media &amp; Sumber belajar)</th>
+                        <th className="p-2 border-r border-slate-300">Estimasi Waktu</th>
+                        <th className="p-2 border-r border-slate-300">Pengalaman Belajar Mahasiswa</th>
+                        <th className="p-2 border-r border-slate-300">Bentuk &amp; Kriteria Penilaian</th>
+                        <th className="p-2 border-r border-slate-300">Indikator Penilaian</th>
+                        <th className="p-2 text-center">Bobot (%)</th>
                       </tr>
                     </thead>
                     <tbody>
                       {(bundleData.rps?.meetings || []).map((m) => (
                         <tr key={m.meeting_number} className={`border-b border-slate-200 ${m.is_exam ? "bg-amber-50 font-bold" : ""}`}>
                           <td className="p-2 border-r border-slate-200 text-center font-bold">{m.meeting_number}</td>
-                          <td className="p-2 border-r border-slate-200">{m.topic}</td>
-                          <td className="p-2 border-r border-slate-200">{m.sub_topic}</td>
-                          <td className="p-2 border-r border-slate-200">{m.method}</td>
-                          <td className="p-2">{m.materials}</td>
+                          <td className="p-2 border-r border-slate-200 whitespace-pre-line">{m.learning_outcome || m.sub_cpmk || m.topic}</td>
+                          <td className="p-2 border-r border-slate-200 whitespace-pre-line">{m.materials || m.sub_topic}</td>
+                          <td className="p-2 border-r border-slate-200 whitespace-pre-line">{m.method}</td>
+                          <td className="p-2 border-r border-slate-200 whitespace-pre-line">{m.waktu}</td>
+                          <td className="p-2 border-r border-slate-200 whitespace-pre-line">{m.learning_experience || m.assignments}</td>
+                          <td className="p-2 border-r border-slate-200 whitespace-pre-line">{m.penilaian_bentuk_kriteria || m.penilaian_teknik}</td>
+                          <td className="p-2 border-r border-slate-200 whitespace-pre-line">{m.penilaian_indikator}</td>
+                          <td className="p-2 text-center">{m.penilaian_bobot}</td>
                         </tr>
                       ))}
                     </tbody>
                   </table>
                 </div>
+
+                {bundleData.rps?.rtm && (
+                  <div className="space-y-3 rounded border border-indigo-200 bg-indigo-50/40 p-4 text-xs">
+                    <h4 className="font-bold uppercase tracking-wide text-indigo-900">Rencana Tugas Mahasiswa (RTM)</h4>
+                    {[
+                      ["Bentuk Tugas", bundleData.rps.rtm.assignment_type],
+                      ["Judul Penilaian", bundleData.rps.rtm.assessment_titles],
+                      ["Sub-CPMK", bundleData.rps.rtm.sub_cpmk],
+                      ["Deskripsi", bundleData.rps.rtm.description],
+                      ["Metode Pengerjaan", bundleData.rps.rtm.method],
+                      ["Bentuk Format Luaran", bundleData.rps.rtm.output_formats],
+                    ].map(([label, value]) => (
+                      <div key={label}>
+                        <p className="font-semibold text-slate-700">{label}</p>
+                        <p className="whitespace-pre-line break-words text-slate-600">{value || "-"}</p>
+                      </div>
+                    ))}
+                    {(bundleData.rps.rtm.assessment_items || []).length > 0 && (
+                      <div className="overflow-x-auto">
+                        <table className="min-w-[620px] w-full border border-slate-300 bg-white">
+                          <thead className="bg-slate-100 font-bold"><tr><th className="p-2 text-left">Aspek Penilaian</th><th className="p-2 text-left">Kriteria</th><th className="p-2 text-center">Bobot (%)</th></tr></thead>
+                          <tbody>{bundleData.rps.rtm.assessment_items.map((item) => <tr key={item.aspect} className="border-t border-slate-200"><td className="p-2">{item.aspect}</td><td className="p-2">{item.criteria}</td><td className="p-2 text-center">{item.weight}</td></tr>)}</tbody>
+                        </table>
+                      </div>
+                    )}
+                    {(bundleData.rps.rtm.schedule || []).length > 0 && (
+                      <div className="overflow-x-auto">
+                        <table className="min-w-[620px] w-full border border-slate-300 bg-white">
+                          <thead className="bg-slate-100 font-bold"><tr><th className="p-2 text-center">Minggu ke-</th><th className="p-2 text-left">Kegiatan/Tugas</th><th className="p-2 text-left">Luaran</th></tr></thead>
+                          <tbody>{bundleData.rps.rtm.schedule.map((item) => <tr key={item.meeting_number} className="border-t border-slate-200"><td className="p-2 text-center">{item.meeting_number}</td><td className="p-2">{item.activity}</td><td className="p-2">{item.output || "-"}</td></tr>)}</tbody>
+                        </table>
+                      </div>
+                    )}
+                    <p className="whitespace-pre-line break-words"><strong>Lain-lain yang Diperlukan:</strong> {bundleData.rps.rtm.requirements || "-"}</p>
+                    <p className="whitespace-pre-line break-words"><strong>Pustaka:</strong> {bundleData.rps.rtm.references || bundleData.rps.references || "-"}</p>
+                  </div>
+                )}
               </div>
             )}
 
